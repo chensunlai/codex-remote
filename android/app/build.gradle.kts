@@ -72,7 +72,10 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    // 0.39.2 is the last release aligned with this project's Kotlin 2.3 and Compose 1.10 toolchain.
+    //noinspection NewerVersionAvailable
     implementation("com.mikepenz:multiplatform-markdown-renderer:0.39.2")
+    //noinspection NewerVersionAvailable
     implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.39.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 

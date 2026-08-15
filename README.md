@@ -22,7 +22,17 @@ Android App 关闭不会发出 turn interrupt，也不会关闭服务器 Agent �
 - Android 8.0（API 26）+
 - 从源码构建：Node.js 22+
 
-Codex 的连接握手、thread、turn 和事件模型遵循 [Codex App Server 文档](https://developers.openai.com/codex/app-server)。
+Codex 的连接握手、thread、turn 和事件模型遵循 [Codex App Server 文档](https://learn.chatgpt.com/docs/app-server)。
+
+## Android 工作台
+
+App 默认进入“工作”页，交互参考 [Codex app](https://learn.chatgpt.com/docs/app) 和 [Codex IDE 扩展](https://learn.chatgpt.com/docs/codex/ide)，但只保留远程操作需要的功能：
+
+- 会话支持搜索、当前/归档筛选、重命名、审阅未提交更改、压缩上下文、归档、恢复和删除；宽屏设备自动使用会话列表与对话分栏。
+- 对话以 Markdown 展示回答，并把推理摘要、命令输出、文件差异、计划和工具调用呈现为可展开的结构化活动。
+- 输入框可引用服务器文件或图片、启用服务器上的 Skill，并针对每轮选择模型与推理强度；任务运行时可以补充指令或停止当前 turn。
+- 命令、文件变更、权限、MCP elicitation 和 `request_user_input` 会显示为必须明确处理的原生审批界面，App 不会静默丢弃待处理请求。
+- 手机使用底部“工作 / 终端 / 文件 / 服务器”导航；平板和横屏使用常驻导航轨，设置入口独立放在底部。
 
 ## 一键安装
 
@@ -106,8 +116,9 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 1. 输入 Gateway 地址。
 2. 输入与该服务器 Agent 相同的用户 Token。
-3. 在“服务”中选择在线服务。
-4. 在“会话”中创建或继续 Codex thread；在“终端”和“文件”中进行服务器操作。
+3. 在“服务器”中选择在线服务。
+4. 在“工作”中创建或继续 Codex thread。
+5. 在对话输入框中按需添加远端文件、图片或 Skill；在“终端”和“文件”中进行服务器操作。
 
 会话列表先读取轻量摘要。聊天正文按 `(Gateway, Token, Service, Thread)` 缓存在 Android SQLite 中，只有远端 `updatedAt` 变化、会话仍在运行或用户继续对话时才读取完整历史；缓存采用 LRU，最多 200 个 thread / 50MiB。事件游标按服务持久化，重连只重放增量事件。
 
