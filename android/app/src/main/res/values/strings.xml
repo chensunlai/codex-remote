@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Codex Remote</string>
-    <string name="services">服务</string>
-    <string name="sessions">会话</string>
+    <string name="services">服务器</string>
+    <string name="sessions">工作</string>
     <string name="terminal">终端</string>
     <string name="files">文件</string>
     <string name="settings">设置</string>

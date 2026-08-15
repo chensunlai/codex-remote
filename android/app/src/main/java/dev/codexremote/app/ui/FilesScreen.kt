@@ -37,7 +37,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -50,7 +49,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.model.AppState
@@ -138,7 +139,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
                             },
                             onDelete = { deleteTarget = file },
                         )
-                        HorizontalDivider(Modifier.padding(start = 64.dp))
+                        HorizontalDivider(Modifier.padding(start = 52.dp))
                     }
                 }
             }
@@ -239,66 +240,67 @@ private fun FileRow(
     onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
-    ListItem(
-        modifier = Modifier.clickable(onClick = onOpen),
-        leadingContent = {
-            Icon(
-                when (file.type) {
-                    RemoteFileType.DIRECTORY -> Icons.Outlined.Folder
-                    RemoteFileType.SYMLINK -> Icons.Outlined.Link
-                    else -> Icons.AutoMirrored.Outlined.InsertDriveFile
-                },
-                contentDescription = null,
-                tint = if (file.type == RemoteFileType.DIRECTORY) {
-                    MaterialTheme.colorScheme.tertiary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        },
-        headlineContent = { Text(file.name, maxLines = 1) },
-        supportingContent = {
-            Column {
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    if (file.type != RemoteFileType.DIRECTORY) Text(formatBytes(file.size))
-                    if (file.modifiedAt > 0) {
-                        Text(
-                            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-                                .format(Date(file.modifiedAt * 1000)),
-                        )
-                    }
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 14.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            when (file.type) {
+                RemoteFileType.DIRECTORY -> Icons.Outlined.Folder
+                RemoteFileType.SYMLINK -> Icons.Outlined.Link
+                else -> Icons.AutoMirrored.Outlined.InsertDriveFile
+            },
+            contentDescription = null,
+            tint = if (file.type == RemoteFileType.DIRECTORY) {
+                MaterialTheme.colorScheme.tertiary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (file.type != RemoteFileType.DIRECTORY) {
+                    Text(formatBytes(file.size), style = MaterialTheme.typography.bodySmall)
                 }
-                if (file.type != RemoteFileType.DIRECTORY && !downloadable) {
+                if (file.modifiedAt > 0) {
                     Text(
-                        "超过 ${formatBytes(maxDownloadBytes)} 下载限制",
-                        color = MaterialTheme.colorScheme.error,
+                        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                            .format(Date(file.modifiedAt * 1000)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-        },
-        trailingContent = {
-            Box {
-                IconButton(onClick = { menu = true }) {
-                    Icon(Icons.Outlined.MoreVert, contentDescription = "文件菜单")
-                }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    if (file.type != RemoteFileType.DIRECTORY) {
-                        DropdownMenuItem(
-                            text = { Text("下载") },
-                            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
-                            onClick = { menu = false; onDownload() },
-                            enabled = downloadable,
-                        )
-                    }
+            if (file.type != RemoteFileType.DIRECTORY && !downloadable) {
+                Text(
+                    "超过 ${formatBytes(maxDownloadBytes)} 下载限制",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+        Box {
+            IconButton(onClick = { menu = true }) {
+                Icon(Icons.Outlined.MoreVert, contentDescription = "文件菜单")
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (file.type != RemoteFileType.DIRECTORY) {
                     DropdownMenuItem(
-                        text = { Text("删除") },
-                        leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
-                        onClick = { menu = false; onDelete() },
+                        text = { Text("下载") },
+                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                        onClick = { menu = false; onDownload() },
+                        enabled = downloadable,
                     )
                 }
+                DropdownMenuItem(
+                    text = { Text("删除") },
+                    leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                    onClick = { menu = false; onDelete() },
+                )
             }
-        },
-    )
+        }
+    }
 }
 
 private fun formatBytes(bytes: Long): String {

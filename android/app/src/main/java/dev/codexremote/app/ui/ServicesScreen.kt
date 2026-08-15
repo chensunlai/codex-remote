@@ -10,19 +10,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -46,8 +46,11 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("服务") },
+                title = { Text("服务器") },
                 actions = {
+                    IconButton(onClick = { viewModel.setSection(MainSection.SETTINGS) }) {
+                        Icon(Icons.Outlined.Settings, contentDescription = "设置")
+                    }
                     IconButton(onClick = viewModel::refreshServices) {
                         Icon(Icons.Outlined.Refresh, contentDescription = "刷新服务")
                     }
@@ -64,12 +67,12 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
             ) {
                 items(state.services, key = RemoteService::id) { service ->
                     ServiceRow(
                         service = service,
+                        selected = service.id == state.selectedServiceId,
                         onSelect = {
                             viewModel.selectService(service.id)
                             viewModel.setSection(MainSection.SESSIONS)
@@ -77,6 +80,7 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
                         onTest = { viewModel.testService(service.id) },
                         onDelete = { deleteTarget = service },
                     )
+                    HorizontalDivider(Modifier.padding(start = 48.dp))
                 }
             }
         }
@@ -107,16 +111,16 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
 @Composable
 private fun ServiceRow(
     service: RemoteService,
+    selected: Boolean,
     onSelect: () -> Unit,
     onTest: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val connected = service.runtimeState == RuntimeState.CONNECTED
-    Card(
+    Surface(
         onClick = onSelect,
         enabled = connected,
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surface,
     ) {
         Row(
             Modifier.fillMaxWidth().padding(14.dp),
@@ -142,8 +146,9 @@ private fun ServiceRow(
                     maxLines = 2,
                 )
             }
-            IconButton(onClick = onTest, enabled = connected) {
-                Icon(Icons.Outlined.Science, contentDescription = "测试 Codex")
+            TextButton(onClick = onTest, enabled = connected) {
+                Icon(Icons.Outlined.Science, contentDescription = null)
+                Text("测试", Modifier.padding(start = 4.dp))
             }
             IconButton(onClick = onDelete, enabled = !connected) {
                 Icon(Icons.Outlined.Delete, contentDescription = "删除服务")

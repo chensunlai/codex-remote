@@ -63,6 +63,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastEventSequence = 0L
     private var currentEventServiceId: String? = null
     private var eventGeneration = 0L
+    private var activeOperations = 0
     private val subscribedThreads = mutableSetOf<String>()
 
     init {
@@ -100,6 +101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cacheScope = ""
         lastEventSequence = 0
         currentEventServiceId = null
+        activeOperations = 0
         subscribedThreads.clear()
         _state.value = AppState()
     }
@@ -224,9 +226,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSession(threadId: String) {
         val serviceId = _state.value.selectedServiceId ?: return
+        val resume = !_state.value.showingArchivedSessions
         _state.update { it.copy(selectedThreadId = threadId, thread = null) }
         launchOperation("正在载入会话") {
-            loadThread(serviceId, threadId, resume = true, allowCache = true)
+            loadThread(serviceId, threadId, resume = resume, allowCache = true)
         }
     }
 
@@ -482,6 +485,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun respondToPermission(requestId: String, permissionsJson: String, session: Boolean) {
+        val requested = runCatching { JSONObject(permissionsJson) }.getOrElse { JSONObject() }
+        val permissions = JSONObject().apply {
+            requested.optJSONObject("network")?.let { put("network", it) }
+            requested.optJSONObject("fileSystem")?.let { put("fileSystem", it) }
+        }
+        launchOperation("正在提交权限审批") {
+            api.respond(
+                requestId,
+                JSONObject()
+                    .put("permissions", permissions)
+                    .put("scope", if (session) "session" else "turn"),
+            )
+            loadPending(_state.value.selectedServiceId)
+        }
+    }
+
+    fun respondToElicitation(requestId: String, action: String, content: JSONObject? = null) {
+        launchOperation("正在提交工具确认") {
+            api.respond(
+                requestId,
+                JSONObject()
+                    .put("action", action)
+                    .put("content", content ?: JSONObject.NULL)
+                    .put("_meta", JSONObject.NULL),
+            )
+            loadPending(_state.value.selectedServiceId)
+        }
+    }
+
     override fun onCleared() {
         events?.close(1000, "Android client closed")
         sessionSearchJob?.cancel()
@@ -520,6 +553,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ) {
                 loadServiceWorkspace(selected)
             }
+        } else {
+            _state.update { it.copy(section = MainSection.SERVICES) }
         }
     }
 
@@ -544,7 +579,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadPending(serviceId)
         val path = _state.value.services.firstOrNull { it.id == serviceId }?.home
             ?: api.home(serviceId)
-        loadSkills(serviceId, path)
+        runCatching { loadSkills(serviceId, path) }
         browseNow(serviceId, path)
         loadServices()
     }
@@ -962,12 +997,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun launchOperation(label: String, block: suspend () -> Unit) {
         viewModelScope.launch {
+            activeOperations += 1
             _state.update { it.copy(loading = true, operation = label, error = null) }
-            runCatching { block() }
-                .onFailure { error ->
-                    _state.update { it.copy(error = error.message ?: error.toString()) }
+            try {
+                block()
+            } catch (error: Throwable) {
+                _state.update { it.copy(error = error.message ?: error.toString()) }
+            } finally {
+                activeOperations = (activeOperations - 1).coerceAtLeast(0)
+                _state.update {
+                    it.copy(
+                        loading = activeOperations > 0,
+                        operation = if (activeOperations > 0) it.operation else null,
+                    )
                 }
-            _state.update { it.copy(loading = false, operation = null) }
+            }
         }
     }
 }

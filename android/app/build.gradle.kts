@@ -72,6 +72,8 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("com.mikepenz:multiplatform-markdown-renderer:0.39.2")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.39.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

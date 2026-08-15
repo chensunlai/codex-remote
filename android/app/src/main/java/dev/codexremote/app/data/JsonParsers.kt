@@ -348,6 +348,9 @@ fun parsePending(array: JSONArray): List<PendingRequest> = array.objects().map {
             .ifBlank { params.toString(2) },
         createdAt = value.optString("createdAt"),
         questions = questions,
+        permissionsJson = params.optJSONObject("permissions")?.toString(),
+        elicitationMode = params.nullableString("mode"),
+        paramsJson = params.toString(),
     )
 }
 

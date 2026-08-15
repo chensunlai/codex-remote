@@ -133,6 +133,9 @@ data class PendingRequest(
     val detail: String,
     val createdAt: String,
     val questions: List<PendingQuestion> = emptyList(),
+    val permissionsJson: String? = null,
+    val elicitationMode: String? = null,
+    val paramsJson: String = "{}",
 )
 
 data class PendingQuestion(
@@ -152,7 +155,7 @@ data class PendingOption(
 data class AppState(
     val configured: Boolean = false,
     val gatewayConfig: GatewayConfig? = null,
-    val section: MainSection = MainSection.SERVICES,
+    val section: MainSection = MainSection.SESSIONS,
     val loading: Boolean = false,
     val error: String? = null,
     val services: List<RemoteService> = emptyList(),
