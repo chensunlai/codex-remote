@@ -36,6 +36,32 @@ const threadParams = serviceParams.extend({ threadId: z.string().min(1).max(255)
 const filePath = z.string().min(1).max(4096).refine((value) => value.startsWith("/"), {
   message: "远端路径必须是绝对路径",
 });
+const promptContext = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("mention"),
+    name: z.string().trim().min(1).max(255),
+    path: filePath,
+  }),
+  z.object({ type: z.literal("localImage"), path: filePath }),
+  z.object({
+    type: z.literal("skill"),
+    name: z.string().trim().min(1).max(255),
+    path: filePath,
+  }),
+]);
+const reviewTarget = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("uncommittedChanges") }),
+  z.object({ type: z.literal("baseBranch"), branch: z.string().trim().min(1).max(255) }),
+  z.object({
+    type: z.literal("commit"),
+    sha: z.string().trim().min(1).max(255),
+    title: z.string().trim().max(255).nullable().default(null),
+  }),
+  z.object({
+    type: z.literal("custom"),
+    instructions: z.string().trim().min(1).max(16 * 1024),
+  }),
+]);
 
 export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> {
   const events = await EventJournal.open(resolve(config.dataDirectory, "events.jsonl"));
@@ -128,6 +154,8 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
         "approvals",
         "terminal",
         "files",
+        "review",
+        "prompt-context",
       ],
     },
   }));
@@ -199,6 +227,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         cursor: z.string().optional(),
         limit: z.coerce.number().int().min(1).max(100).default(100),
         archived: z.stringbool().optional().default(false),
+        searchTerm: z.string().trim().min(1).max(255).optional(),
       }),
       request.query,
     );
@@ -212,6 +241,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
           cursor: query.cursor,
           limit: query.limit,
           archived: query.archived,
+          searchTerm: query.searchTerm,
           sortKey: "updated_at",
           sortDirection: "desc",
           sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
@@ -292,6 +322,59 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
     };
   });
 
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/unarchive", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    return {
+      data: await codexRpc(services, request, serviceId, "thread/unarchive", { threadId }),
+    };
+  });
+
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/compact", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    return {
+      data: await codexRpc(
+        services,
+        request,
+        serviceId,
+        "thread/compact/start",
+        { threadId },
+        90_000,
+      ),
+    };
+  });
+
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/review", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const body = parse(
+      z.object({
+        target: reviewTarget.default({ type: "uncommittedChanges" }),
+        delivery: z.enum(["inline", "detached"]).optional(),
+      }).default({ target: { type: "uncommittedChanges" } }),
+      request.body,
+    );
+    return {
+      data: await codexRpc(
+        services,
+        request,
+        serviceId,
+        "review/start",
+        compact({ threadId, target: body.target, delivery: body.delivery }),
+        90_000,
+      ),
+    };
+  });
+
+  app.get("/api/v1/services/:serviceId/skills", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const query = parse(z.object({ cwd: filePath }), request.query);
+    return {
+      data: await codexRpc(services, request, serviceId, "skills/list", {
+        cwds: [query.cwd],
+        forceReload: false,
+      }),
+    };
+  });
+
   app.delete("/api/v1/services/:serviceId/sessions/:threadId", async (request, reply) => {
     const { serviceId, threadId } = parse(threadParams, request.params);
     await codexRpc(services, request, serviceId, "thread/delete", { threadId });
@@ -305,6 +388,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         text: z.string().min(1).max(1024 * 1024),
         model: z.string().min(1).max(255).optional(),
         effort: z.string().trim().min(1).max(32).optional(),
+        context: z.array(promptContext).max(24).default([]),
       }),
       request.body,
     );
@@ -315,7 +399,10 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
       "turn/start",
       compact({
         threadId,
-        input: [{ type: "text", text: body.text }],
+        input: [
+          { type: "text", text: body.text, text_elements: [] },
+          ...body.context,
+        ],
         model: body.model,
         effort: body.effort,
       }),
@@ -330,6 +417,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
       z.object({
         turnId: z.string().min(1).max(255),
         text: z.string().min(1).max(1024 * 1024),
+        context: z.array(promptContext).max(24).default([]),
       }),
       request.body,
     );
@@ -337,7 +425,10 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
       data: await codexRpc(services, request, serviceId, "turn/steer", {
         threadId,
         expectedTurnId: body.turnId,
-        input: [{ type: "text", text: body.text }],
+        input: [
+          { type: "text", text: body.text, text_elements: [] },
+          ...body.context,
+        ],
       }),
     };
   });

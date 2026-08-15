@@ -152,11 +152,99 @@ describe("Gateway Agent relay", () => {
     ]);
   });
 
+  it("maps rich client operations to Codex App Server RPCs", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+    const threadId = "thread-rich-client";
+
+    const sessions = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions?archived=true&searchTerm=review`,
+      TOKEN_A,
+    );
+    expect(sessions.status).toBe(200);
+
+    const skills = await api(
+      `/api/v1/services/${SERVICE_ID}/skills?cwd=%2Fhome%2Ffixture%2Fproject`,
+      TOKEN_A,
+    );
+    expect(skills.status).toBe(200);
+
+    const turn = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/turns`,
+      TOKEN_A,
+      jsonBody({
+        text: "review this",
+        model: "fixture-model",
+        effort: "high",
+        context: [
+          { type: "mention", name: "app.ts", path: "/home/fixture/project/app.ts" },
+          { type: "localImage", path: "/home/fixture/project/screenshot.png" },
+          { type: "skill", name: "review", path: "/home/fixture/.codex/skills/review" },
+        ],
+      }),
+    );
+    expect(turn.status).toBe(202);
+
+    for (const action of ["unarchive", "compact"]) {
+      const response = await api(
+        `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/${action}`,
+        TOKEN_A,
+        jsonBody({}),
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const review = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/review`,
+      TOKEN_A,
+      jsonBody({ target: { type: "uncommittedChanges" } }),
+    );
+    expect(review.status).toBe(200);
+
+    expect(agent.codexRequests).toEqual([
+      {
+        method: "thread/list",
+        params: expect.objectContaining({ archived: true, searchTerm: "review" }),
+      },
+      {
+        method: "skills/list",
+        params: { cwds: ["/home/fixture/project"], forceReload: false },
+      },
+      {
+        method: "turn/start",
+        params: {
+          threadId,
+          input: [
+            { type: "text", text: "review this", text_elements: [] },
+            { type: "mention", name: "app.ts", path: "/home/fixture/project/app.ts" },
+            { type: "localImage", path: "/home/fixture/project/screenshot.png" },
+            { type: "skill", name: "review", path: "/home/fixture/.codex/skills/review" },
+          ],
+          model: "fixture-model",
+          effort: "high",
+        },
+      },
+      { method: "thread/unarchive", params: { threadId } },
+      { method: "thread/compact/start", params: { threadId } },
+      {
+        method: "review/start",
+        params: { threadId, target: { type: "uncommittedChanges" } },
+      },
+    ]);
+  });
+
   function api(path: string, token: string, init?: RequestInit): Promise<Response> {
     return fetch(`${baseUrl}${path}`, {
       ...init,
       headers: { ...init?.headers, Authorization: `Bearer ${token}` },
     });
+  }
+
+  function jsonBody(body: unknown): RequestInit {
+    return {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    };
   }
 });
 
@@ -258,6 +346,12 @@ class MockAgent {
             status: { type: "notLoaded" },
           },
         });
+      } else if (method === "thread/list" || method === "skills/list") {
+        this.respond(message.id!, { data: [] });
+      } else if (method === "turn/start" || method === "review/start") {
+        this.respond(message.id!, { turn: { id: "turn-1" } });
+      } else if (method === "thread/unarchive" || method === "thread/compact/start") {
+        this.respond(message.id!, {});
       } else {
         this.send({
           type: "response",

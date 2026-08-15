@@ -12,13 +12,17 @@ import dev.codexremote.app.data.ChatCache
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.objects
+import dev.codexremote.app.data.parseChatItem
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseModels
 import dev.codexremote.app.data.parsePending
+import dev.codexremote.app.data.parsePlanSteps
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.data.parseSession
 import dev.codexremote.app.data.parseSessions
+import dev.codexremote.app.data.parseSkills
 import dev.codexremote.app.data.parseThread
+import dev.codexremote.app.data.strings
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.ChatMessage
 import dev.codexremote.app.model.FilePreview
@@ -26,6 +30,7 @@ import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.NewSessionOptions
+import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
@@ -53,6 +58,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var events: WebSocket? = null
     private var reconnectJob: Job? = null
+    private var sessionSearchJob: Job? = null
     private var cacheScope = ""
     private var lastEventSequence = 0L
     private var currentEventServiceId: String? = null
@@ -123,6 +129,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         selectedServiceId = null,
                         sessions = emptyList(),
                         models = emptyList(),
+                        skills = emptyList(),
                         remoteFiles = emptyList(),
                         selectedThreadId = null,
                         thread = null,
@@ -147,6 +154,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 selectedServiceId = serviceId,
                 sessions = emptyList(),
                 models = emptyList(),
+                skills = emptyList(),
                 selectedThreadId = null,
                 thread = null,
                 remoteFiles = emptyList(),
@@ -161,6 +169,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshSessions() {
         val serviceId = _state.value.selectedServiceId ?: return
         launchOperation("正在刷新会话") { loadSessions(serviceId) }
+    }
+
+    fun setSessionSearch(value: String) {
+        _state.update { it.copy(sessionSearch = value) }
+        val serviceId = _state.value.selectedServiceId ?: return
+        sessionSearchJob?.cancel()
+        sessionSearchJob = viewModelScope.launch {
+            delay(300)
+            runCatching { loadSessions(serviceId) }
+                .onFailure { error ->
+                    _state.update { it.copy(error = error.message ?: error.toString()) }
+                }
+        }
+    }
+
+    fun showArchivedSessions(value: Boolean) {
+        val serviceId = _state.value.selectedServiceId ?: return
+        _state.update {
+            it.copy(
+                showingArchivedSessions = value,
+                selectedThreadId = null,
+                thread = null,
+            )
+        }
+        launchOperation(if (value) "正在载入归档" else "正在载入会话") {
+            loadSessions(serviceId)
+        }
     }
 
     fun createSession(options: NewSessionOptions, onComplete: () -> Unit = {}) {
@@ -182,6 +217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     section = MainSection.SESSIONS,
                 )
             }
+            loadSkills(serviceId, options.cwd)
             onComplete()
         }
     }
@@ -198,7 +234,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(selectedThreadId = null, thread = null) }
     }
 
-    fun sendMessage(text: String, model: String?, effort: String?, onAccepted: () -> Unit = {}) {
+    fun sendMessage(
+        text: String,
+        model: String?,
+        effort: String?,
+        context: List<PromptContext> = emptyList(),
+        onAccepted: () -> Unit = {},
+    ) {
         if (text.isBlank()) return
         val current = _state.value
         val serviceId = current.selectedServiceId ?: return
@@ -213,9 +255,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             val activeTurnId = _state.value.thread?.activeTurnId
             if (activeTurnId != null) {
-                api.steer(serviceId, threadId, activeTurnId, text)
+                api.steer(serviceId, threadId, activeTurnId, text, context)
             } else {
-                val result = api.sendTurn(serviceId, threadId, text, model, effort)
+                val result = api.sendTurn(serviceId, threadId, text, model, effort, context)
                 val turnId = result.optJSONObject("turn")?.optString("id")
                 val optimistic = ChatMessage(
                     id = "local-" + System.nanoTime(),
@@ -251,6 +293,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chatCache.delete(cacheScope, serviceId, threadId)
             if (_state.value.selectedThreadId == threadId) closeSession()
             loadSessions(serviceId)
+        }
+    }
+
+    fun unarchiveSession(threadId: String) {
+        val serviceId = _state.value.selectedServiceId ?: return
+        launchOperation("正在恢复会话") {
+            api.unarchiveSession(serviceId, threadId)
+            loadSessions(serviceId)
+        }
+    }
+
+    fun renameSession(threadId: String, name: String, onComplete: () -> Unit = {}) {
+        if (name.isBlank()) return
+        val serviceId = _state.value.selectedServiceId ?: return
+        launchOperation("正在重命名会话") {
+            api.renameSession(serviceId, threadId, name.trim())
+            _state.update { state ->
+                state.copy(
+                    sessions = state.sessions.map { session ->
+                        if (session.id == threadId) session.copy(name = name.trim()) else session
+                    },
+                    thread = state.thread?.takeIf { it.id == threadId }?.copy(name = name.trim())
+                        ?: state.thread,
+                )
+            }
+            onComplete()
+        }
+    }
+
+    fun compactSession() {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        launchOperation("正在压缩上下文") {
+            api.compactSession(serviceId, threadId)
+        }
+    }
+
+    fun reviewUncommitted() {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        launchOperation("正在开始代码审阅") {
+            val result = api.reviewUncommitted(serviceId, threadId)
+            val turnId = result.optJSONObject("turn")?.optString("id")
+            if (!turnId.isNullOrBlank()) {
+                _state.update { state ->
+                    state.copy(thread = state.thread?.copy(activeTurnId = turnId))
+                }
+            }
         }
     }
 
@@ -376,8 +468,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun respondToInput(requestId: String, answers: Map<String, List<String>>) {
+        val payload = JSONObject()
+        answers.forEach { (questionId, values) ->
+            payload.put(
+                questionId,
+                JSONObject().put("answers", org.json.JSONArray(values)),
+            )
+        }
+        launchOperation("正在提交回答") {
+            api.respond(requestId, JSONObject().put("answers", payload))
+            loadPending(_state.value.selectedServiceId)
+        }
+    }
+
     override fun onCleared() {
         events?.close(1000, "Android client closed")
+        sessionSearchJob?.cancel()
         chatCache.close()
     }
 
@@ -437,12 +544,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadPending(serviceId)
         val path = _state.value.services.firstOrNull { it.id == serviceId }?.home
             ?: api.home(serviceId)
+        loadSkills(serviceId, path)
         browseNow(serviceId, path)
         loadServices()
     }
 
     private suspend fun loadSessions(serviceId: String) {
-        _state.update { it.copy(sessions = parseSessions(api.sessions(serviceId))) }
+        val current = _state.value
+        val archived = current.showingArchivedSessions
+        val searchTerm = current.sessionSearch
+        val sessions = parseSessions(
+            api.sessions(
+                serviceId = serviceId,
+                archived = archived,
+                searchTerm = searchTerm,
+            ),
+        )
+        val latest = _state.value
+        if (
+            latest.selectedServiceId == serviceId &&
+            latest.showingArchivedSessions == archived &&
+            latest.sessionSearch == searchTerm
+        ) {
+            _state.update { it.copy(sessions = sessions) }
+        }
+    }
+
+    private suspend fun loadSkills(serviceId: String, cwd: String) {
+        val skills = parseSkills(api.skills(serviceId, cwd))
+        val current = _state.value
+        if (
+            current.selectedServiceId == serviceId &&
+            (current.thread == null || current.thread.cwd == cwd)
+        ) {
+            _state.update { it.copy(skills = skills.filter { skill -> skill.enabled }) }
+        }
     }
 
     private suspend fun loadThread(
@@ -459,7 +595,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, it)
         }
         if (cached == null && resume) subscribedThreads.add(threadKey(serviceId, threadId))
-        _state.update { it.copy(thread = parseThread(root)) }
+        val detail = parseThread(root)
+        if (
+            _state.value.selectedServiceId != serviceId ||
+            _state.value.selectedThreadId != threadId
+        ) return
+        _state.update { it.copy(thread = detail) }
+        detail.cwd?.let { cwd -> runCatching { loadSkills(serviceId, cwd) } }
     }
 
     private suspend fun loadPending(serviceId: String?) {
@@ -530,30 +672,131 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val payload = event.optJSONObject("payload") ?: JSONObject()
         val selectedThread = _state.value.selectedThreadId
         when (type) {
+            "codex.item/started", "codex.item/completed" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                val turnId = payload.optString("turnId")
+                val item = payload.optJSONObject("item") ?: return
+                val turnStatus = if (type.endsWith("completed")) "completed" else "inProgress"
+                parseChatItem(turnId, turnStatus, 0, item)?.let { message ->
+                    upsertMessage(threadId, turnId, message)
+                }
+            }
             "codex.item/agentMessage/delta" -> {
-                if (payload.optString("threadId") != selectedThread) return
-                val itemId = payload.optString("itemId")
-                val delta = payload.optString("delta")
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                mutateMessage(
+                    threadId = threadId,
+                    turnId = payload.optString("turnId"),
+                    itemId = payload.optString("itemId"),
+                    fallback = ChatMessage(
+                        payload.optString("itemId"),
+                        MessageRole.ASSISTANT,
+                        "",
+                        "inProgress",
+                        "agentMessage",
+                    ),
+                ) { it.copy(text = it.text + payload.optString("delta")) }
+            }
+            "codex.item/plan/delta" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                mutateMessage(
+                    threadId,
+                    payload.optString("turnId"),
+                    payload.optString("itemId"),
+                    ChatMessage(
+                        payload.optString("itemId"),
+                        MessageRole.SYSTEM,
+                        "",
+                        "inProgress",
+                        "plan",
+                        title = "计划",
+                    ),
+                ) { it.copy(text = it.text + payload.optString("delta")) }
+            }
+            "codex.item/reasoning/summaryTextDelta" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                mutateReasoning(payload, detail = false)
+            }
+            "codex.item/reasoning/textDelta" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                mutateReasoning(payload, detail = true)
+            }
+            "codex.item/commandExecution/outputDelta" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                mutateMessage(
+                    threadId,
+                    payload.optString("turnId"),
+                    payload.optString("itemId"),
+                    ChatMessage(
+                        payload.optString("itemId"),
+                        MessageRole.TOOL,
+                        "",
+                        "inProgress",
+                        "commandExecution",
+                        title = "命令",
+                    ),
+                ) { message ->
+                    message.copy(detail = message.detail.orEmpty() + payload.optString("delta"))
+                }
+            }
+            "codex.item/fileChange/patchUpdated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                val item = JSONObject()
+                    .put("type", "fileChange")
+                    .put("id", payload.optString("itemId"))
+                    .put("status", "inProgress")
+                    .put("changes", payload.optJSONArray("changes"))
+                parseChatItem(payload.optString("turnId"), "inProgress", 0, item)?.let { message ->
+                    upsertMessage(threadId, payload.optString("turnId"), message)
+                }
+            }
+            "codex.turn/diff/updated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                updateThread(threadId) { it.copy(latestDiff = payload.optString("diff")) }
+            }
+            "codex.turn/plan/updated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                updateThread(threadId) {
+                    it.copy(
+                        planExplanation = payload.optString("explanation").takeIf(String::isNotBlank),
+                        plan = parsePlanSteps(payload.optJSONArray("plan")),
+                    )
+                }
+            }
+            "codex.thread/status/changed" -> {
+                val threadId = payload.optString("threadId")
+                val status = payload.optJSONObject("status") ?: JSONObject()
+                val statusType = status.optString("type", "notLoaded")
                 _state.update { state ->
-                    val thread = state.thread ?: return@update state
-                    val index = thread.messages.indexOfLast { it.id == itemId }
-                    val messages = if (index >= 0) {
-                        thread.messages.toMutableList().also { list ->
-                            list[index] = list[index].copy(text = list[index].text + delta)
-                        }
-                    } else {
-                        thread.messages + ChatMessage(
-                            itemId,
-                            MessageRole.ASSISTANT,
-                            delta,
-                            "inProgress",
-                        )
-                    }
                     state.copy(
-                        thread = thread.copy(
-                            messages = messages,
-                            activeTurnId = payload.optString("turnId"),
-                        ),
+                        sessions = state.sessions.map { session ->
+                            if (session.id == threadId) session.copy(status = statusType) else session
+                        },
+                        thread = state.thread?.takeIf { it.id == threadId }?.copy(
+                            status = statusType,
+                            activeFlags = status.optJSONArray("activeFlags")?.strings()?.toSet().orEmpty(),
+                        ) ?: state.thread,
+                    )
+                }
+            }
+            "codex.thread/name/updated" -> {
+                val threadId = payload.optString("threadId")
+                val name = payload.optString("threadName").takeIf(String::isNotBlank)
+                _state.update { state ->
+                    state.copy(
+                        sessions = state.sessions.map { session ->
+                            if (session.id == threadId) session.copy(name = name) else session
+                        },
+                        thread = state.thread?.takeIf { it.id == threadId }?.copy(name = name)
+                            ?: state.thread,
                     )
                 }
             }
@@ -568,6 +811,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "codex.turn/completed", "codex.error" -> {
                 val serviceId = _state.value.selectedServiceId ?: return
                 val threadId = selectedThread
+                if (threadId != null && payload.optString("threadId") == threadId) {
+                    if (type == "codex.error") {
+                        val error = payload.optJSONObject("error")?.optString("message")
+                            ?: payload.optString("message", "Codex 执行失败")
+                        upsertMessage(
+                            threadId,
+                            payload.optString("turnId"),
+                            ChatMessage(
+                                id = "${payload.optString("turnId")}-error",
+                                role = MessageRole.SYSTEM,
+                                text = error,
+                                status = "failed",
+                                kind = "error",
+                                title = "执行失败",
+                            ),
+                            markActive = false,
+                        )
+                    }
+                    updateThread(threadId) { it.copy(activeTurnId = null) }
+                }
                 viewModelScope.launch {
                     runCatching { loadSessions(serviceId) }
                     if (threadId != null) {
@@ -577,6 +840,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     runCatching { loadPending(serviceId) }
                 }
+            }
+            "codex.thread/archived", "codex.thread/unarchived", "codex.thread/deleted" -> {
+                val serviceId = _state.value.selectedServiceId ?: return
+                viewModelScope.launch { runCatching { loadSessions(serviceId) } }
             }
             "codex.request", "codex.request.resolved" -> {
                 viewModelScope.launch {
@@ -594,6 +861,91 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 viewModelScope.launch { runCatching { loadServices() } }
             }
+        }
+    }
+
+    private fun mutateReasoning(payload: JSONObject, detail: Boolean) {
+        val itemId = payload.optString("itemId")
+        mutateMessage(
+            threadId = payload.optString("threadId"),
+            turnId = payload.optString("turnId"),
+            itemId = itemId,
+            fallback = ChatMessage(
+                id = itemId,
+                role = MessageRole.SYSTEM,
+                text = if (detail) "正在分析" else "",
+                status = "inProgress",
+                kind = "reasoning",
+                title = "分析",
+            ),
+        ) { message ->
+            if (detail) {
+                message.copy(detail = message.detail.orEmpty() + payload.optString("delta"))
+            } else {
+                message.copy(text = message.text + payload.optString("delta"))
+            }
+        }
+    }
+
+    private fun mutateMessage(
+        threadId: String,
+        turnId: String,
+        itemId: String,
+        fallback: ChatMessage,
+        transform: (ChatMessage) -> ChatMessage,
+    ) {
+        _state.update { state ->
+            val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
+            val index = thread.messages.indexOfLast { it.id == itemId }
+            val messages = if (index >= 0) {
+                thread.messages.toMutableList().also { list ->
+                    list[index] = transform(list[index])
+                }
+            } else {
+                thread.messages + transform(fallback)
+            }
+            state.copy(
+                thread = thread.copy(
+                    messages = messages,
+                    activeTurnId = turnId.takeIf(String::isNotBlank) ?: thread.activeTurnId,
+                ),
+            )
+        }
+    }
+
+    private fun upsertMessage(
+        threadId: String,
+        turnId: String,
+        message: ChatMessage,
+        markActive: Boolean = true,
+    ) {
+        _state.update { state ->
+            val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
+            var current = thread.messages
+            if (message.role == MessageRole.USER) {
+                current = current.filterNot {
+                    it.id.startsWith("local-") && it.role == MessageRole.USER && it.text == message.text
+                }
+            }
+            val index = current.indexOfLast { it.id == message.id }
+            val messages = if (index >= 0) {
+                current.toMutableList().also { it[index] = message }
+            } else {
+                current + message
+            }
+            state.copy(
+                thread = thread.copy(
+                    messages = messages,
+                    activeTurnId = if (markActive && turnId.isNotBlank()) turnId else thread.activeTurnId,
+                ),
+            )
+        }
+    }
+
+    private fun updateThread(threadId: String, transform: (dev.codexremote.app.model.ThreadDetail) -> dev.codexremote.app.model.ThreadDetail) {
+        _state.update { state ->
+            val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
+            state.copy(thread = transform(thread))
         }
     }
 

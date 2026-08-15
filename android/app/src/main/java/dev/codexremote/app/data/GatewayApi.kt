@@ -2,6 +2,8 @@ package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.NewSessionOptions
+import dev.codexremote.app.model.PromptContext
+import dev.codexremote.app.model.PromptContextType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -58,12 +60,29 @@ class GatewayApi {
     suspend fun models(serviceId: String): JSONObject =
         data(request("GET", "api/v1/services/$serviceId/models")) as JSONObject
 
-    suspend fun sessions(serviceId: String, archived: Boolean = false): JSONObject =
+    suspend fun sessions(
+        serviceId: String,
+        archived: Boolean = false,
+        searchTerm: String? = null,
+    ): JSONObject =
         data(
             request(
                 "GET",
                 "api/v1/services/$serviceId/sessions",
-                query = mapOf("limit" to "100", "archived" to archived.toString()),
+                query = buildMap {
+                    put("limit", "100")
+                    put("archived", archived.toString())
+                    searchTerm?.trim()?.takeIf(String::isNotBlank)?.let { put("searchTerm", it) }
+                },
+            ),
+        ) as JSONObject
+
+    suspend fun skills(serviceId: String, cwd: String): JSONObject =
+        data(
+            request(
+                "GET",
+                "api/v1/services/$serviceId/skills",
+                query = mapOf("cwd" to cwd),
             ),
         ) as JSONObject
 
@@ -102,6 +121,26 @@ class GatewayApi {
         request("POST", "api/v1/services/$serviceId/sessions/$threadId/archive", JSONObject())
     }
 
+    suspend fun unarchiveSession(serviceId: String, threadId: String) {
+        request("POST", "api/v1/services/$serviceId/sessions/$threadId/unarchive", JSONObject())
+    }
+
+    suspend fun compactSession(serviceId: String, threadId: String) {
+        request("POST", "api/v1/services/$serviceId/sessions/$threadId/compact", JSONObject())
+    }
+
+    suspend fun reviewUncommitted(serviceId: String, threadId: String): JSONObject =
+        data(
+            request(
+                "POST",
+                "api/v1/services/$serviceId/sessions/$threadId/review",
+                JSONObject().put(
+                    "target",
+                    JSONObject().put("type", "uncommittedChanges"),
+                ),
+            ),
+        ) as JSONObject
+
     suspend fun deleteSession(serviceId: String, threadId: String) {
         request("DELETE", "api/v1/services/$serviceId/sessions/$threadId")
     }
@@ -112,9 +151,11 @@ class GatewayApi {
         text: String,
         model: String?,
         effort: String?,
+        context: List<PromptContext> = emptyList(),
     ): JSONObject {
         val body = JSONObject()
             .put("text", text)
+            .put("context", context.toJson())
             .putIfNotBlank("model", model)
             .putIfNotBlank("effort", effort)
         return data(
@@ -122,11 +163,20 @@ class GatewayApi {
         ) as JSONObject
     }
 
-    suspend fun steer(serviceId: String, threadId: String, turnId: String, text: String) {
+    suspend fun steer(
+        serviceId: String,
+        threadId: String,
+        turnId: String,
+        text: String,
+        context: List<PromptContext> = emptyList(),
+    ) {
         request(
             "POST",
             "api/v1/services/$serviceId/sessions/$threadId/steer",
-            JSONObject().put("turnId", turnId).put("text", text),
+            JSONObject()
+                .put("turnId", turnId)
+                .put("text", text)
+                .put("context", context.toJson()),
         )
     }
 
@@ -374,6 +424,26 @@ class GatewayException(val statusCode: Int, override val message: String) : Exce
 private fun JSONObject.putIfNotBlank(key: String, value: String?): JSONObject {
     if (!value.isNullOrBlank()) put(key, value)
     return this
+}
+
+private fun List<PromptContext>.toJson(): JSONArray = JSONArray().also { array ->
+    forEach { context ->
+        array.put(
+            JSONObject()
+                .put(
+                    "type",
+                    when (context.type) {
+                        PromptContextType.FILE -> "mention"
+                        PromptContextType.IMAGE -> "localImage"
+                        PromptContextType.SKILL -> "skill"
+                    },
+                )
+                .put("path", context.path)
+                .apply {
+                    if (context.type != PromptContextType.IMAGE) put("name", context.name)
+                },
+        )
+    }
 }
 
 private fun String.ensureTrailingSlash(): String = if (endsWith('/')) this else "$this/"

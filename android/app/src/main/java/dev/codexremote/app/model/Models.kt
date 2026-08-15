@@ -48,6 +48,22 @@ data class NewSessionOptions(
     val networkAccess: Boolean = true,
 )
 
+enum class PromptContextType { FILE, IMAGE, SKILL }
+
+data class PromptContext(
+    val type: PromptContextType,
+    val name: String,
+    val path: String,
+)
+
+data class SkillOption(
+    val name: String,
+    val displayName: String,
+    val description: String,
+    val path: String,
+    val enabled: Boolean,
+)
+
 enum class MessageRole { USER, ASSISTANT, SYSTEM, TOOL }
 
 data class ChatMessage(
@@ -56,6 +72,24 @@ data class ChatMessage(
     val text: String,
     val status: String? = null,
     val kind: String? = null,
+    val title: String? = null,
+    val detail: String? = null,
+    val cwd: String? = null,
+    val exitCode: Int? = null,
+    val durationMs: Long? = null,
+    val changes: List<FileChangeSummary> = emptyList(),
+    val phase: String? = null,
+)
+
+data class FileChangeSummary(
+    val path: String,
+    val kind: String,
+    val diff: String,
+)
+
+data class PlanStep(
+    val step: String,
+    val status: String,
 )
 
 data class ThreadDetail(
@@ -65,6 +99,10 @@ data class ThreadDetail(
     val status: String,
     val messages: List<ChatMessage>,
     val activeTurnId: String?,
+    val activeFlags: Set<String> = emptySet(),
+    val latestDiff: String = "",
+    val planExplanation: String? = null,
+    val plan: List<PlanStep> = emptyList(),
 )
 
 enum class RemoteFileType { DIRECTORY, FILE, SYMLINK, OTHER }
@@ -94,6 +132,21 @@ data class PendingRequest(
     val title: String,
     val detail: String,
     val createdAt: String,
+    val questions: List<PendingQuestion> = emptyList(),
+)
+
+data class PendingQuestion(
+    val id: String,
+    val header: String,
+    val question: String,
+    val isOther: Boolean,
+    val isSecret: Boolean,
+    val options: List<PendingOption>,
+)
+
+data class PendingOption(
+    val label: String,
+    val description: String,
 )
 
 data class AppState(
@@ -105,7 +158,10 @@ data class AppState(
     val services: List<RemoteService> = emptyList(),
     val selectedServiceId: String? = null,
     val models: List<ModelOption> = emptyList(),
+    val skills: List<SkillOption> = emptyList(),
     val sessions: List<SessionSummary> = emptyList(),
+    val showingArchivedSessions: Boolean = false,
+    val sessionSearch: String = "",
     val selectedThreadId: String? = null,
     val thread: ThreadDetail? = null,
     val remotePath: String = "",
