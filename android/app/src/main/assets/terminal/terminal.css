@@ -1,0 +1,42 @@
+html,
+body,
+#terminal {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #101214;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+}
+
+#terminal {
+  box-sizing: border-box;
+  padding: 8px 6px;
+}
+
+#status {
+  position: fixed;
+  top: 8px;
+  right: 10px;
+  max-width: calc(100% - 20px);
+  padding: 4px 7px;
+  border-radius: 4px;
+  background: #303438;
+  color: #d8dde2;
+  font: 12px sans-serif;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+#status:empty {
+  display: none;
+}
+
+#status.error {
+  background: #712f32;
+  color: #fff;
+}

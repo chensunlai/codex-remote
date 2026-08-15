@@ -1,0 +1,37 @@
+name: Release standalone binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run package:binaries -- --targets linux-x64,linux-arm64
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          gh release upload "$GITHUB_REF_NAME" \
+            release/codex-remote-agent-linux-x64 \
+            release/codex-remote-agent-linux-arm64 \
+            release/codex-remote-gateway-linux-x64 \
+            release/codex-remote-gateway-linux-arm64 \
+            release/SHA256SUMS \
+            --clobber
