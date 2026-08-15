@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket, { type RawData } from "ws";
 import { buildGateway, type BuiltGateway } from "./app.js";
 import type { ServerConfig } from "./config.js";
+import { APP_VERSION } from "./version.js";
 
 const TOKEN_A = "test-token-a-with-enough-entropy";
 const TOKEN_B = "test-token-b-with-enough-entropy";
@@ -43,6 +44,9 @@ describe("Gateway Agent relay", () => {
   });
 
   it("isolates users and relays files and terminal data", async () => {
+    const health = await fetch(`${baseUrl}/healthz`);
+    expect(await health.json()).toEqual({ status: "ok", version: APP_VERSION });
+
     const unauthorized = await fetch(`${baseUrl}/api/v1/meta`);
     expect(unauthorized.status).toBe(401);
 
@@ -174,7 +178,7 @@ class MockAgent {
         hostname: "fixture-host",
         platform: "linux",
         arch: "x64",
-        agentVersion: "0.2.0",
+        agentVersion: "fixture-version",
         home: "/home/fixture",
         capabilities: ["terminal", "files"],
       });

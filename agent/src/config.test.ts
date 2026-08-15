@@ -3,12 +3,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  configPathBesideProgram,
   loadAgentConfig,
   normalizeGatewayUrl,
   toAgentWebSocketUrl,
 } from "./config.js";
 
 describe("Agent configuration", () => {
+  it("stores its default configuration beside the program", () => {
+    expect(configPathBesideProgram("/srv/codex-remote/codex-remote-agent"))
+      .toBe("/srv/codex-remote/agent.json");
+  });
+
   it("uses normal scheme ports and maps HTTPS to WSS", () => {
     expect(normalizeGatewayUrl("gateway.example.com")).toBe("https://gateway.example.com");
     const socket = toAgentWebSocketUrl({

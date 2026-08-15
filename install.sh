@@ -81,18 +81,14 @@ if [[ "$INSTALL_SYSTEMD" == true && "$EUID" -ne 0 ]]; then
 fi
 
 if [[ -z "$INSTALL_DIRECTORY" ]]; then
-  if [[ "$EUID" -eq 0 ]]; then
-    INSTALL_DIRECTORY="/usr/local/bin"
+  if [[ "$COMPONENT" == "gateway" ]]; then
+    INSTALL_DIRECTORY="/opt/codex-remote"
   else
-    INSTALL_DIRECTORY="${HOME}/.local/bin"
+    INSTALL_DIRECTORY="$PWD"
   fi
 fi
-if [[ -z "$DATA_DIRECTORY" ]]; then
-  if [[ "$INSTALL_SYSTEMD" == true ]]; then
-    DATA_DIRECTORY="/var/lib/codex-remote"
-  else
-    DATA_DIRECTORY="${XDG_DATA_HOME:-${HOME}/.local/share}/codex-remote"
-  fi
+if [[ -z "$DATA_DIRECTORY" && "$COMPONENT" == "gateway" ]]; then
+  DATA_DIRECTORY="$INSTALL_DIRECTORY/data"
 fi
 
 ASSET="codex-remote-${COMPONENT}-${PLATFORM}"
@@ -121,7 +117,13 @@ if [[ -n "$LOCAL_SOURCE" ]]; then
   cp "$LOCAL_SOURCE/$ASSET" "$TEMP_DIRECTORY/$ASSET"
   cp "$LOCAL_SOURCE/SHA256SUMS" "$TEMP_DIRECTORY/SHA256SUMS"
 else
-  command -v curl >/dev/null 2>&1 || fail "缺少命令: curl"
+  if command -v curl >/dev/null 2>&1; then
+    DOWNLOAD_TOOL="curl"
+  elif command -v wget >/dev/null 2>&1; then
+    DOWNLOAD_TOOL="wget"
+  else
+    fail "缺少下载命令: curl 或 wget"
+  fi
   [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
     fail "请通过 --repo OWNER/REPO 或 CODEX_REMOTE_REPO 指定 GitHub 仓库"
   [[ "$VERSION" == "latest" || "$VERSION" =~ ^v[0-9A-Za-z._-]+$ ]] || \
@@ -155,19 +157,27 @@ fi
 download() {
   local url="$1"
   local output="$2"
-  curl --fail --silent --show-error --location --retry 3 \
-    --proto '=https' --tlsv1.2 \
-    --output "$output" "$url"
+  if [[ "$DOWNLOAD_TOOL" == "curl" ]]; then
+    curl --fail --silent --show-error --location --retry 3 \
+      --proto '=https' --tlsv1.2 \
+      --output "$output" "$url"
+  else
+    wget --quiet --tries=3 --output-document="$output" "$url"
+  fi
 }
 
 install_gateway_service() {
-  for command in systemctl useradd groupadd getent id; do
+  for command in systemctl useradd groupadd getent id ln; do
     command -v "$command" >/dev/null 2>&1 || fail "缺少 systemd 安装命令: $command"
   done
   [[ "$DESTINATION" =~ ^/[A-Za-z0-9._/-]+$ ]] || \
     fail "systemd 二进制路径只能包含字母、数字、点、下划线、横线和斜线"
   [[ "$DATA_DIRECTORY" =~ ^/[A-Za-z0-9._/-]+$ ]] || \
     fail "systemd 数据路径只能包含字母、数字、点、下划线、横线和斜线"
+
+  local config_file="$INSTALL_DIRECTORY/gateway.env"
+  local service_file="$INSTALL_DIRECTORY/codex-remote-gateway.service"
+  local systemd_link="/etc/systemd/system/codex-remote-gateway.service"
 
   local service_user="codex-remote"
   local service_group="codex-remote"
@@ -183,10 +193,9 @@ install_gateway_service() {
       --no-create-home --shell "$nologin" "$service_user"
   fi
   install -d -m 0700 -o "$service_user" -g "$service_group" "$DATA_DIRECTORY"
-  install -d -m 0755 /etc/codex-remote
 
-  if [[ ! -e /etc/codex-remote/gateway.env ]]; then
-    cat >/etc/codex-remote/gateway.env <<EOF
+  if [[ ! -e "$config_file" ]]; then
+    cat >"$config_file" <<EOF
 HOST=0.0.0.0
 PORT=6767
 CODEX_REMOTE_DATA_DIR=$DATA_DIRECTORY
@@ -194,10 +203,10 @@ CODEX_REMOTE_MAX_DOWNLOAD_BYTES=10485760
 CODEX_REMOTE_MAX_UPLOAD_BYTES=536870912
 LOG_LEVEL=info
 EOF
-    chmod 0600 /etc/codex-remote/gateway.env
+    chmod 0600 "$config_file"
   fi
 
-  cat >/etc/systemd/system/codex-remote-gateway.service <<EOF
+  cat >"$service_file" <<EOF
 [Unit]
 Description=Codex Remote Gateway
 After=network-online.target
@@ -208,7 +217,7 @@ Type=simple
 User=$service_user
 Group=$service_group
 WorkingDirectory=$DATA_DIRECTORY
-EnvironmentFile=/etc/codex-remote/gateway.env
+EnvironmentFile=$config_file
 ExecStart=$DESTINATION start
 Restart=on-failure
 RestartSec=3
@@ -227,6 +236,8 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 EOF
+  chmod 0644 "$service_file"
+  ln -sfn "$service_file" "$systemd_link"
 
   systemctl daemon-reload
   systemctl enable codex-remote-gateway.service >/dev/null
@@ -236,7 +247,7 @@ EOF
 
   printf '%s\n' \
     "Gateway 已安装并启动: $DESTINATION" \
-    "配置文件: /etc/codex-remote/gateway.env" \
+    "配置文件: $config_file" \
     "首次 Token: sudo cat $DATA_DIRECTORY/api-token" \
     "状态检查: sudo systemctl status codex-remote-gateway"
 }
@@ -271,8 +282,8 @@ install.sh <agent|gateway> [options]
   --repo OWNER/REPO       覆盖 GitHub 仓库
   --version VERSION       release 标签，默认 latest
   --from DIRECTORY        从本地 release 目录安装
-  --install-dir DIRECTORY 二进制目录，默认 ~/.local/bin 或 /usr/local/bin
-  --data-dir DIRECTORY    Gateway 数据目录
+  --install-dir DIRECTORY 程序目录；Agent 默认当前目录，Gateway 默认 /opt/codex-remote
+  --data-dir DIRECTORY    Gateway 数据目录，默认位于程序目录的 data
   --systemd               安装并启动 Gateway systemd 服务（需要 root）
 
 Agent 安装器只放置程序，不配置后台运行方式，也不会安装 Codex CLI。

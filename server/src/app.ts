@@ -11,6 +11,7 @@ import { AppError, ConflictError, errorMessage } from "./errors.js";
 import { EventJournal } from "./event-journal.js";
 import { ServiceStore } from "./service-store.js";
 import { TokenStore } from "./token-store.js";
+import { APP_VERSION } from "./version.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -107,12 +108,12 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
 }
 
 function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
-  app.get("/healthz", async () => ({ status: "ok", version: "0.2.0" }));
+  app.get("/healthz", async () => ({ status: "ok", version: APP_VERSION }));
   app.get("/readyz", async () => ({ status: "ready" }));
   app.get("/api/v1/meta", async () => ({
     data: {
       name: "Codex Remote Gateway",
-      version: "0.2.0",
+      version: APP_VERSION,
       port: config.port,
       limits: {
         downloadBytes: config.maxDownloadBytes,

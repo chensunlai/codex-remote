@@ -4,6 +4,7 @@ import type {
   ServerRequestMessage,
 } from "./codex/json-rpc-peer.js";
 import { JsonRpcPeer } from "./codex/json-rpc-peer.js";
+import { APP_VERSION } from "./version.js";
 
 interface CodexCallbacks {
   notification: (message: NotificationMessage) => void;
@@ -107,7 +108,7 @@ export class CodexRuntime {
         clientInfo: {
           name: "codex_remote_agent",
           title: "Codex Remote Agent",
-          version: "0.2.0",
+          version: APP_VERSION,
         },
         capabilities: {
           experimentalApi: true,

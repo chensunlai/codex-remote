@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 
@@ -35,7 +34,7 @@ export async function loadAgentConfig(
   argv = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<AgentConfig> {
-  const args = parseArguments(argv);
+  const args = parseArguments(argv, env);
   const existing = await readStored(args.configPath);
   const stored = args.configure ? undefined : existing;
   let gatewayUrl = args.gatewayUrl ?? env.CODEX_REMOTE_GATEWAY ?? stored?.gatewayUrl;
@@ -101,11 +100,22 @@ export function normalizeGatewayUrl(value: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-function parseArguments(argv: string[]): Arguments {
+export function configPathBesideProgram(programPath: string): string {
+  return resolve(dirname(programPath), "agent.json");
+}
+
+function defaultAgentProgramPath(): string {
+  // Standalone releases run on Bun; source and dist development run on Node.
+  return process.versions.bun
+    ? process.execPath
+    : (process.argv[1] ?? process.execPath);
+}
+
+function parseArguments(argv: string[], env: NodeJS.ProcessEnv): Arguments {
   const result: Arguments = {
     configPath: resolve(
-      process.env.CODEX_REMOTE_AGENT_CONFIG
-        ?? `${homedir()}/.config/codex-remote/agent.json`,
+      env.CODEX_REMOTE_AGENT_CONFIG
+        ?? configPathBesideProgram(defaultAgentProgramPath()),
     ),
     configure: false,
   };

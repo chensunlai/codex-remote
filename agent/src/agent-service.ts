@@ -4,6 +4,7 @@ import { CodexRuntime } from "./codex-runtime.js";
 import { FileService } from "./file-service.js";
 import type { GatewayStream } from "./protocol-client.js";
 import { TerminalService } from "./terminal-service.js";
+import { APP_VERSION } from "./version.js";
 
 interface Transport {
   event: (event: string, payload: unknown) => Promise<void>;
@@ -57,7 +58,7 @@ export class AgentService {
           hostname: hostname(),
           platform: platform(),
           arch: arch(),
-          agentVersion: "0.2.0",
+          agentVersion: APP_VERSION,
           home: homedir(),
           capabilities: [
             "codex-app-server",

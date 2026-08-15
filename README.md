@@ -28,23 +28,25 @@ Codex 的连接握手、thread、turn 和事件模型遵循 [Codex App Server �
 
 安装器根据 `x86_64` / `aarch64` 自动选择 GitHub Release 二进制，并使用同一 release 的 `SHA256SUMS` 校验后再原子替换程序。
 
-服务器 Agent（不需要 root，也不配置后台运行）：
+服务器 Agent（不需要 root，也不配置后台运行；安装到当前目录）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
+mkdir -p ~/codex-remote-agent
+cd ~/codex-remote-agent
+wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
 
-~/.local/bin/codex-remote-agent
+./codex-remote-agent
 ```
 
 公网 Gateway（安装为 systemd service）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
+wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | sudo bash -s -- gateway --systemd
 ```
 
-固定版本时追加 `--version v0.2.0`。安装器只下载 Codex Remote；不会下载或打包 Codex CLI。Gateway 安装器只管理自身 systemd service，不配置 Nginx；Agent 安装器只放置二进制，后台方式由使用者决定。
+固定版本时追加 `--version vX.Y.Z`。安装器内部会使用可用的 `curl` 或 `wget` 下载 release。它只下载 Codex Remote，不会下载或打包 Codex CLI。Gateway 安装器只管理自身 systemd service，不配置 Nginx；Agent 安装器只放置二进制，后台方式由使用者决定。
 
 ## 1. 使用 Gateway
 
@@ -52,42 +54,43 @@ systemd 安装完成后：
 
 ```bash
 sudo systemctl status codex-remote-gateway
-sudo cat /var/lib/codex-remote/api-token
+sudo cat /opt/codex-remote/data/api-token
 ```
 
 首次 Token 只用于初始化。继续创建和管理用户 Token：
 
 ```bash
-sudo env CODEX_REMOTE_DATA_DIR=/var/lib/codex-remote \
-  codex-remote-gateway token create phone-user
-sudo env CODEX_REMOTE_DATA_DIR=/var/lib/codex-remote \
-  codex-remote-gateway token list
-sudo env CODEX_REMOTE_DATA_DIR=/var/lib/codex-remote \
-  codex-remote-gateway token revoke TOKEN_ID
-sudo env CODEX_REMOTE_DATA_DIR=/var/lib/codex-remote \
-  codex-remote-gateway service list
+sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
+  /opt/codex-remote/codex-remote-gateway token create phone-user
+sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
+  /opt/codex-remote/codex-remote-gateway token list
+sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
+  /opt/codex-remote/codex-remote-gateway token revoke TOKEN_ID
+sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
+  /opt/codex-remote/codex-remote-gateway service list
 ```
 
 Token 明文只在创建时显示，Gateway 持久化 SHA-256 摘要。撤销记录会持久化，环境变量或 bootstrap 文件不会在下次启动时把已撤销 Token 重新启用。
 
-配置位于 `/etc/codex-remote/gateway.env`，默认监听 `0.0.0.0:6767`，下载/预览上限为 `10MiB`。项目同时保留 [systemd 示例](deploy/codex-remote-gateway.service.example)；Gateway 没有网页管理端。
+Gateway 自有文件全部位于 `/opt/codex-remote`：程序和 `gateway.env` 在根目录，持久化数据位于 `data/`，systemd unit 源文件也在根目录。`/etc/systemd/system` 中只有 systemd 所需的符号链接。默认监听 `0.0.0.0:6767`，下载/预览上限为 `10MiB`。项目同时保留 [systemd 示例](deploy/codex-remote-gateway.service.example)；Gateway 没有网页管理端。
 
 ## 2. 使用服务器 Agent
 
 ```bash
-~/.local/bin/codex-remote-agent
+cd ~/codex-remote-agent
+./codex-remote-agent
 ```
 
 程序依次询问 Gateway 地址、服务名和 Token。也可以显式传参：
 
 ```bash
-~/.local/bin/codex-remote-agent \
+./codex-remote-agent \
   --gateway https://gateway.example.com \
   --name build-server \
   --token TOKEN
 ```
 
-默认调用 `PATH` 中的 `codex`，也可以传入 `--codex /path/to/codex`。配置保存在 `~/.config/codex-remote/agent.json`，目录权限 `0700`、文件权限 `0600`。再次运行会复用服务 ID；`--configure` 更新地址、名称或 Token 时也不会产生重复服务记录。
+默认调用 `PATH` 中的 `codex`，也可以传入 `--codex /path/to/codex`。配置以 `agent.json` 保存在 Agent 程序所在目录，文件权限为 `0600`；因此移动整个目录即可同时移动程序和配置。再次运行会复用服务 ID；`--configure` 更新地址、名称或 Token 时也不会产生重复服务记录。
 
 Agent 优先执行 Codex daemon bootstrap 并通过 app-server proxy 连接；若当前 Codex 不是 standalone managed install，则自动回退到 stdio app-server。两种模式都允许 App 关闭后继续运行任务，daemon 模式还支持 Agent 重启后恢复。Agent 与 Gateway 断线后会指数退避重连；它不开放监听端口。
 
@@ -151,15 +154,16 @@ npm run package:binaries -- --targets linux-x64,linux-arm64
 本地构建后可以直接测试安装器：
 
 ```bash
-./install.sh agent --from release
-./install.sh gateway --from release
+./install.sh agent --from release --install-dir "$PWD/release/test-agent"
+./install.sh gateway --from release --install-dir "$PWD/release/test-gateway"
 ```
 
 推送版本标签会触发 `.github/workflows/release.yml`，运行测试后自动创建包含 x64/arm64 二进制和摘要的 GitHub Release：
 
 ```bash
-git tag v0.2.0
-git push origin main v0.2.0
+VERSION="v$(node -p "require('./package.json').version")"
+git tag "$VERSION"
+git push origin main "$VERSION"
 ```
 
 Android 开发构建：
