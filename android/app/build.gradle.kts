@@ -1,7 +1,16 @@
+import groovy.json.JsonSlurper
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val productVersion =
+    (JsonSlurper().parse(rootProject.file("../package.json")) as Map<*, *>)["version"] as String
+val productVersionParts = productVersion.substringBefore('-').split('.').map(String::toInt)
+require(productVersionParts.size == 3) { "Root package version must use major.minor.patch" }
+val productVersionCode =
+    productVersionParts[0] * 1_000_000 + productVersionParts[1] * 1_000 + productVersionParts[2]
 
 android {
     namespace = "dev.codexremote.app"
@@ -11,8 +20,8 @@ android {
         applicationId = "dev.codexremote.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = productVersionCode
+        versionName = productVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true

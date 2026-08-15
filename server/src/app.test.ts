@@ -118,6 +118,40 @@ describe("Gateway Agent relay", () => {
     terminal.close();
   });
 
+  it.each([
+    ["structured RPC error", "unmaterialized-thread"],
+    ["legacy Agent error", "legacy-unmaterialized-thread"],
+  ])("returns an empty history for %s", async (_case, threadId) => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+
+    const response = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}`,
+      TOKEN_A,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      data: {
+        thread: {
+          id: threadId,
+          cwd: "/home/fixture",
+          status: { type: "notLoaded" },
+          turns: [],
+        },
+      },
+    });
+    expect(agent.codexRequests).toEqual([
+      {
+        method: "thread/read",
+        params: { threadId, includeTurns: true },
+      },
+      {
+        method: "thread/read",
+        params: { threadId },
+      },
+    ]);
+  });
+
   function api(path: string, token: string, init?: RequestInit): Promise<Response> {
     return fetch(`${baseUrl}${path}`, {
       ...init,
@@ -128,6 +162,7 @@ describe("Gateway Agent relay", () => {
 
 class MockAgent {
   readonly downloadStarts: string[] = [];
+  readonly codexRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
 
   private constructor(private readonly socket: WebSocket) {
     socket.on("message", (raw, binary) => {
@@ -199,6 +234,38 @@ class MockAgent {
       });
     } else if (message.method === "terminal.open") {
       this.respond(message.id!, { terminalId: "terminal-1" });
+    } else if (message.method === "codex.rpc") {
+      const method = String(params.method);
+      const rpcParams = (params.params ?? {}) as Record<string, unknown>;
+      this.codexRequests.push({ method, params: rpcParams });
+      if (method === "thread/read" && rpcParams.includeTurns === true) {
+        const legacy = rpcParams.threadId === "legacy-unmaterialized-thread";
+        this.send({
+          type: "response",
+          id: message.id,
+          ok: false,
+          error: {
+            code: legacy ? "AGENT_OPERATION_FAILED" : "CODEX_RPC_ERROR",
+            message: "Codex RPC -32600: includeTurns is unavailable before first user message",
+            ...(legacy ? {} : { details: { rpcCode: -32600 } }),
+          },
+        });
+      } else if (method === "thread/read") {
+        this.respond(message.id!, {
+          thread: {
+            id: String(rpcParams.threadId),
+            cwd: "/home/fixture",
+            status: { type: "notLoaded" },
+          },
+        });
+      } else {
+        this.send({
+          type: "response",
+          id: message.id,
+          ok: false,
+          error: { code: "CODEX_RPC_ERROR", message: `Unsupported Codex RPC: ${method}` },
+        });
+      }
     } else {
       this.send({
         type: "response",

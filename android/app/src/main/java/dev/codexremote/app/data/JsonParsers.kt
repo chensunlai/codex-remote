@@ -46,17 +46,17 @@ fun parseModels(root: JSONObject): List<ModelOption> =
     }.orEmpty()
 
 fun parseSessions(root: JSONObject): List<SessionSummary> =
-    root.optJSONArray("data")?.objects()?.map { value ->
-        SessionSummary(
-            id = value.getString("id"),
-            name = value.nullableString("name"),
-            preview = value.optString("preview"),
-            cwd = value.nullableString("cwd"),
-            updatedAt = value.optLong("updatedAt", value.optLong("createdAt")),
-            status = value.optJSONObject("status")?.optString("type", "notLoaded") ?: "notLoaded",
-            isPinned = value.optBoolean("isPinned"),
-        )
-    }.orEmpty()
+    root.optJSONArray("data")?.objects()?.map(::parseSession).orEmpty()
+
+fun parseSession(value: JSONObject): SessionSummary = SessionSummary(
+    id = value.getString("id"),
+    name = value.nullableString("name"),
+    preview = value.optString("preview"),
+    cwd = value.nullableString("cwd"),
+    updatedAt = value.optLong("updatedAt", value.optLong("createdAt")),
+    status = value.optJSONObject("status")?.optString("type", "notLoaded") ?: "notLoaded",
+    isPinned = value.optBoolean("isPinned"),
+)
 
 fun parseThread(root: JSONObject): ThreadDetail {
     val thread = root.getJSONObject("thread")

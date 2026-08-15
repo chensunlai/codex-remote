@@ -260,10 +260,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
   app.get("/api/v1/services/:serviceId/sessions/:threadId", async (request) => {
     const { serviceId, threadId } = parse(threadParams, request.params);
     return {
-      data: await codexRpc(services, request, serviceId, "thread/read", {
-        threadId,
-        includeTurns: true,
-      }),
+      data: await readThreadWithTurns(services, request, serviceId, threadId),
     };
   });
 
@@ -614,6 +611,43 @@ function codexRpc(
     { method, params },
     timeoutMs,
   );
+}
+
+async function readThreadWithTurns(
+  services: GatewayServices,
+  request: FastifyRequest,
+  serviceId: string,
+  threadId: string,
+): Promise<unknown> {
+  try {
+    return await codexRpc(services, request, serviceId, "thread/read", {
+      threadId,
+      includeTurns: true,
+    });
+  } catch (error) {
+    if (codexRpcCode(error) !== -32600) throw error;
+    const summary = await codexRpc(services, request, serviceId, "thread/read", { threadId });
+    return withEmptyTurns(summary);
+  }
+}
+
+function codexRpcCode(error: unknown): number | undefined {
+  if (error instanceof AppError && error.details && typeof error.details === "object") {
+    const rpcCode = (error.details as { rpcCode?: unknown }).rpcCode;
+    if (typeof rpcCode === "number") return rpcCode;
+  }
+  const match = errorMessage(error).match(/Codex RPC (-?\d+):/);
+  return match?.[1] ? Number(match[1]) : undefined;
+}
+
+function withEmptyTurns(result: unknown): unknown {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+  const root = result as Record<string, unknown>;
+  if (!root.thread || typeof root.thread !== "object" || Array.isArray(root.thread)) return result;
+  return {
+    ...root,
+    thread: { ...(root.thread as Record<string, unknown>), turns: [] },
+  };
 }
 
 function parse<T>(schema: ZodType<T>, value: unknown): T {

@@ -1,5 +1,6 @@
 import type { Readable } from "node:stream";
 import WebSocket, { type RawData } from "ws";
+import { JsonRpcError } from "./codex/json-rpc-peer.js";
 
 interface GatewayRequest {
   type: "request";
@@ -142,13 +143,20 @@ export class ProtocolClient {
       const result = await this.handlers.request(message.method, message.params ?? {});
       await this.send({ type: "response", id: message.id, ok: true, result });
     } catch (error) {
+      const rpcDetails = error instanceof JsonRpcError
+        ? {
+            rpcCode: error.rpcCode,
+            ...(error.data === undefined ? {} : { data: error.data }),
+          }
+        : undefined;
       await this.send({
         type: "response",
         id: message.id,
         ok: false,
         error: {
-          code: "AGENT_OPERATION_FAILED",
+          code: error instanceof JsonRpcError ? "CODEX_RPC_ERROR" : "AGENT_OPERATION_FAILED",
           message: error instanceof Error ? error.message : String(error),
+          ...(rpcDetails ? { details: rpcDetails } : {}),
         },
       }).catch(() => {});
     }

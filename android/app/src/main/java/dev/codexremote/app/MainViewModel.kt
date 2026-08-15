@@ -16,6 +16,7 @@ import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseModels
 import dev.codexremote.app.data.parsePending
 import dev.codexremote.app.data.parseServices
+import dev.codexremote.app.data.parseSession
 import dev.codexremote.app.data.parseSessions
 import dev.codexremote.app.data.parseThread
 import dev.codexremote.app.model.AppState
@@ -166,14 +167,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val serviceId = _state.value.selectedServiceId ?: return
         launchOperation("正在创建会话") {
             val result = api.createSession(serviceId, options)
-            val threadId = result.optJSONObject("thread")?.optString("id").orEmpty()
+            val thread = result.optJSONObject("thread")
+                ?: error("Codex 未返回会话")
+            val threadId = thread.optString("id")
             require(threadId.isNotBlank()) { "Codex 未返回会话 ID" }
             subscribedThreads.add(threadKey(serviceId, threadId))
-            loadSessions(serviceId)
-            _state.update {
-                it.copy(selectedThreadId = threadId, section = MainSection.SESSIONS)
+            val summary = parseSession(thread)
+            val detail = parseThread(result)
+            _state.update { state ->
+                state.copy(
+                    sessions = listOf(summary) + state.sessions.filterNot { it.id == threadId },
+                    selectedThreadId = threadId,
+                    thread = detail,
+                    section = MainSection.SESSIONS,
+                )
             }
-            loadThread(serviceId, threadId, resume = false, allowCache = false)
             onComplete()
         }
     }

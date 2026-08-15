@@ -28,6 +28,17 @@ export interface NotificationMessage {
   params: unknown;
 }
 
+export class JsonRpcError extends Error {
+  constructor(
+    public readonly rpcCode: number,
+    message: string,
+    public readonly data?: unknown,
+  ) {
+    super(`Codex RPC ${rpcCode}: ${message}`);
+    this.name = "JsonRpcError";
+  }
+}
+
 const MAX_LINE_BYTES = 16 * 1024 * 1024;
 
 export class JsonRpcPeer extends EventEmitter {
@@ -115,7 +126,9 @@ export class JsonRpcPeer extends EventEmitter {
       clearTimeout(call.timer);
       this.pending.delete(message.id);
       if (message.error) {
-        call.reject(new Error(`Codex RPC ${message.error.code}: ${message.error.message}`));
+        call.reject(
+          new JsonRpcError(message.error.code, message.error.message, message.error.data),
+        );
       } else {
         call.resolve(message.result);
       }
