@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { CodexRuntime } from "./codex-runtime.js";
 
 describe("CodexRuntime takeover", () => {
-  it("restarts the managed daemon before resuming the thread", async () => {
+  it("unsubscribes without requiring the managed daemon before resuming", async () => {
     const directory = await mkdtemp(join(tmpdir(), "codex-runtime-test-"));
     const executable = join(directory, "fake-codex.mjs");
     const log = join(directory, "commands.log");
@@ -21,7 +21,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   if (request.id === undefined) return;
   const result = request.method === "thread/resume"
     ? { thread: { id: request.params.threadId } }
-    : {};
+    : request.method === "thread/unsubscribe"
+      ? { status: "unsubscribed" }
+      : {};
   process.stdout.write(JSON.stringify({ id: request.id, result }) + "\\n");
 });
 `, "utf8");
@@ -39,7 +41,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         thread: { id: "thread-occupied" },
       });
       expect((await readFile(log, "utf8")).trim().split("\n")).toEqual([
-        "app-server daemon restart",
+        "app-server daemon bootstrap --remote-control",
+        "app-server proxy",
         "app-server daemon bootstrap --remote-control",
         "app-server proxy",
       ]);

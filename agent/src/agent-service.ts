@@ -64,6 +64,7 @@ export class AgentService {
             "codex-app-server",
             "codex-daemon-preferred",
             "codex-thread-takeover",
+            "codex-thread-release",
             "terminal",
             "files",
             "stream-transfer",
@@ -78,6 +79,8 @@ export class AgentService {
         return {};
       case "codex.takeover":
         return this.codex.takeoverThread(stringValue(params.threadId, "threadId"));
+      case "codex.release":
+        return this.codex.releaseThread(stringValue(params.threadId, "threadId"));
       case "fs.home":
         return this.files.home();
       case "fs.list":
