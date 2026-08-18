@@ -146,7 +146,7 @@ class ChatCache(context: Context) : SQLiteOpenHelper(context, DATABASE, null, VE
         }
 
         private const val DATABASE = "chat-cache.db"
-        private const val VERSION = 1
+        private const val VERSION = 2
         private const val MAX_THREADS = 200
         private const val MAX_BYTES = 50L * 1024 * 1024
     }

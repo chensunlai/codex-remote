@@ -46,6 +46,44 @@ data class NewSessionOptions(
     val approvalPolicy: String = "on-request",
     val sandbox: String = "workspace-write",
     val networkAccess: Boolean = true,
+    val permissionProfile: String? = null,
+)
+
+data class ThreadSettings(
+    val cwd: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+    val approvalPolicy: String = "on-request",
+    val sandbox: String = "workspace-write",
+    val networkAccess: Boolean = true,
+    val permissionProfile: String? = null,
+)
+
+data class ThreadSettingsUpdate(
+    val cwd: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+    val approvalPolicy: String? = null,
+    val sandbox: String? = null,
+    val networkAccess: Boolean? = null,
+    val permissionProfile: String? = null,
+)
+
+data class PermissionProfile(
+    val id: String,
+    val description: String?,
+    val allowed: Boolean,
+)
+
+data class ThreadGoal(
+    val threadId: String,
+    val objective: String,
+    val status: String,
+    val tokenBudget: Long?,
+    val tokensUsed: Long,
+    val timeUsedSeconds: Long,
+    val createdAt: Long,
+    val updatedAt: Long,
 )
 
 enum class PromptContextType { FILE, IMAGE, SKILL }
@@ -127,6 +165,8 @@ data class ThreadDetail(
     val plan: List<PlanStep> = emptyList(),
     val turns: List<TurnSummary> = emptyList(),
     val tokenUsage: ThreadTokenUsage? = null,
+    val settings: ThreadSettings = ThreadSettings(),
+    val goal: ThreadGoal? = null,
 )
 
 enum class RemoteFileType { DIRECTORY, FILE, SYMLINK, OTHER }
@@ -185,6 +225,7 @@ data class AppState(
     val services: List<RemoteService> = emptyList(),
     val selectedServiceId: String? = null,
     val models: List<ModelOption> = emptyList(),
+    val permissionProfiles: List<PermissionProfile> = emptyList(),
     val skills: List<SkillOption> = emptyList(),
     val sessions: List<SessionSummary> = emptyList(),
     val showingArchivedSessions: Boolean = false,

@@ -17,6 +17,15 @@ class JsonParsersInstrumentedTest {
             JSONObject(
                 """
                 {
+                  "model": "gpt-fixture",
+                  "reasoningEffort": "max",
+                  "approvalPolicy": "on-request",
+                  "sandbox": {
+                    "type": "workspaceWrite",
+                    "networkAccess": true,
+                    "writableRoots": ["/workspace"]
+                  },
+                  "activePermissionProfile": {"id": ":workspace", "extends": null},
                   "thread": {
                     "id": "thread-1",
                     "name": "Fixture",
@@ -57,6 +66,52 @@ class JsonParsersInstrumentedTest {
         assertEquals(100_000L, detail.turns.single().startedAtMs)
         assertEquals(103_000L, detail.turns.single().completedAtMs)
         assertEquals(3_200L, detail.turns.single().durationMs)
+        assertEquals("gpt-fixture", detail.settings.model)
+        assertEquals("max", detail.settings.effort)
+        assertEquals(":workspace", detail.settings.permissionProfile)
+        assertEquals("workspace-write", detail.settings.sandbox)
+        assertTrue(detail.settings.networkAccess)
+    }
+
+    @Test
+    fun permissionProfilesAndGoalUseNativeProtocolFields() {
+        val profiles = parsePermissionProfiles(
+            JSONObject(
+                """
+                {
+                  "data": [
+                    {"id": ":read-only", "description": "Read only", "allowed": true},
+                    {"id": "blocked", "description": null, "allowed": false}
+                  ],
+                  "nextCursor": null
+                }
+                """.trimIndent(),
+            ),
+        )
+        val goal = parseThreadGoal(
+            JSONObject(
+                """
+                {
+                  "threadId": "thread-1",
+                  "objective": "Finish the fixture",
+                  "status": "paused",
+                  "tokenBudget": 50000,
+                  "tokensUsed": 1200,
+                  "timeUsedSeconds": 90,
+                  "createdAt": 10,
+                  "updatedAt": 20
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals(2, profiles.size)
+        assertEquals(":read-only", profiles.first().id)
+        assertFalse(profiles.last().allowed)
+        assertEquals("Finish the fixture", goal?.objective)
+        assertEquals("paused", goal?.status)
+        assertEquals(50_000L, goal?.tokenBudget)
+        assertEquals(1_200L, goal?.tokensUsed)
     }
 
     @Test

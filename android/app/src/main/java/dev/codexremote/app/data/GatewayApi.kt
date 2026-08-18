@@ -4,6 +4,7 @@ import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.NewSessionOptions
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.PromptContextType
+import dev.codexremote.app.model.ThreadSettingsUpdate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -90,10 +91,14 @@ class GatewayApi {
         val body = JSONObject()
             .put("cwd", options.cwd)
             .put("approvalPolicy", options.approvalPolicy)
-            .put("sandbox", options.sandbox)
-            .put("networkAccess", options.networkAccess)
             .putIfNotBlank("model", options.model)
             .putIfNotBlank("effort", options.effort)
+        if (options.permissionProfile.isNullOrBlank()) {
+            body.put("sandbox", options.sandbox)
+                .put("networkAccess", options.networkAccess)
+        } else {
+            body.put("permissions", options.permissionProfile)
+        }
         return data(request("POST", "api/v1/services/$serviceId/sessions", body)) as JSONObject
     }
 
@@ -108,6 +113,52 @@ class GatewayApi {
                 JSONObject(),
             ),
         ) as JSONObject
+
+    suspend fun permissionProfiles(serviceId: String, cwd: String?): JSONObject =
+        data(
+            request(
+                "GET",
+                "api/v1/services/$serviceId/permission-profiles",
+                query = cwd?.takeIf(String::isNotBlank)?.let { mapOf("cwd" to it) }.orEmpty(),
+            ),
+        ) as JSONObject
+
+    suspend fun updateThreadSettings(
+        serviceId: String,
+        threadId: String,
+        update: ThreadSettingsUpdate,
+    ) {
+        val body = JSONObject()
+            .putIfNotBlank("cwd", update.cwd)
+            .putIfNotBlank("model", update.model)
+            .putIfNotBlank("effort", update.effort)
+            .putIfNotBlank("approvalPolicy", update.approvalPolicy)
+            .putIfNotBlank("permissions", update.permissionProfile)
+            .putIfNotBlank("sandbox", update.sandbox)
+        update.networkAccess?.let { body.put("networkAccess", it) }
+        request("PUT", "api/v1/services/$serviceId/sessions/$threadId/settings", body)
+    }
+
+    suspend fun goal(serviceId: String, threadId: String): JSONObject =
+        data(request("GET", "api/v1/services/$serviceId/sessions/$threadId/goal")) as JSONObject
+
+    suspend fun setGoal(
+        serviceId: String,
+        threadId: String,
+        objective: String? = null,
+        status: String? = null,
+    ): JSONObject {
+        val body = JSONObject()
+            .putIfNotBlank("objective", objective)
+            .putIfNotBlank("status", status)
+        return data(
+            request("PUT", "api/v1/services/$serviceId/sessions/$threadId/goal", body),
+        ) as JSONObject
+    }
+
+    suspend fun clearGoal(serviceId: String, threadId: String) {
+        request("DELETE", "api/v1/services/$serviceId/sessions/$threadId/goal")
+    }
 
     suspend fun renameSession(serviceId: String, threadId: String, name: String) {
         request(

@@ -11,17 +11,21 @@ import androidx.lifecycle.viewModelScope
 import dev.codexremote.app.data.ChatCache
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.SecretStore
+import dev.codexremote.app.data.SessionPreferences
 import dev.codexremote.app.data.objects
 import dev.codexremote.app.data.parseChatItem
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseModels
 import dev.codexremote.app.data.parsePending
+import dev.codexremote.app.data.parsePermissionProfiles
 import dev.codexremote.app.data.parsePlanSteps
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.data.parseSession
 import dev.codexremote.app.data.parseSessions
 import dev.codexremote.app.data.parseSkills
 import dev.codexremote.app.data.parseThread
+import dev.codexremote.app.data.parseThreadGoal
+import dev.codexremote.app.data.parseThreadSettings
 import dev.codexremote.app.data.parseThreadTokenUsage
 import dev.codexremote.app.data.parseTurnSummary
 import dev.codexremote.app.data.strings
@@ -36,6 +40,8 @@ import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
+import dev.codexremote.app.model.ThreadSettings
+import dev.codexremote.app.model.ThreadSettingsUpdate
 import dev.codexremote.app.model.TurnSummary
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +60,7 @@ import java.net.URI
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val secretStore = SecretStore(application)
     private val chatCache = ChatCache(application)
+    private val sessionPreferences = SessionPreferences(application)
     private val eventPreferences = application.getSharedPreferences("event_offsets", 0)
     private val api = GatewayApi()
     private val _state = MutableStateFlow(AppState())
@@ -134,6 +141,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         selectedServiceId = null,
                         sessions = emptyList(),
                         models = emptyList(),
+                        permissionProfiles = emptyList(),
                         skills = emptyList(),
                         remoteFiles = emptyList(),
                         selectedThreadId = null,
@@ -159,6 +167,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 selectedServiceId = serviceId,
                 sessions = emptyList(),
                 models = emptyList(),
+                permissionProfiles = emptyList(),
                 skills = emptyList(),
                 selectedThreadId = null,
                 thread = null,
@@ -203,8 +212,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createSession(options: NewSessionOptions, onComplete: () -> Unit = {}) {
+    fun createSession(onComplete: () -> Unit = {}) {
         val serviceId = _state.value.selectedServiceId ?: return
+        val options = initialSessionOptions(serviceId)
         launchOperation("正在创建会话") {
             val result = api.createSession(serviceId, options)
             val thread = result.optJSONObject("thread")
@@ -213,7 +223,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             require(threadId.isNotBlank()) { "Codex 未返回会话 ID" }
             subscribedThreads.add(threadKey(serviceId, threadId))
             val summary = parseSession(thread)
-            val detail = parseThread(result)
+            val parsed = parseThread(result)
+            val detail = parsed.copy(
+                settings = resolveThreadSettings(result, parsed.settings, options),
+            )
             _state.update { state ->
                 state.copy(
                     sessions = listOf(summary) + state.sessions.filterNot { it.id == threadId },
@@ -222,7 +235,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     section = MainSection.SESSIONS,
                 )
             }
-            loadSkills(serviceId, options.cwd)
+            rememberThreadSettings(serviceId, detail.settings)
+            loadPermissionProfiles(serviceId, detail.cwd ?: options.cwd)
+            loadSkills(serviceId, detail.cwd ?: options.cwd)
             onComplete()
         }
     }
@@ -256,14 +271,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val resumed = api.resume(serviceId, threadId)
                 val summary = _state.value.sessions.firstOrNull { it.id == threadId }
                 chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, resumed)
-                val parsed = parseThread(resumed)
+                val rawParsed = parseThread(resumed)
+                val parsed = rawParsed.copy(
+                    settings = resolveThreadSettings(
+                        resumed,
+                        rawParsed.settings,
+                        _state.value.thread?.settings?.toOptions(),
+                    ),
+                )
                 _state.update { state ->
                     state.copy(
                         thread = parsed.copy(
                             tokenUsage = state.thread?.takeIf { it.id == parsed.id }?.tokenUsage,
+                            goal = state.thread?.takeIf { it.id == parsed.id }?.goal,
                         ),
                     )
                 }
+                rememberThreadSettings(serviceId, parsed.settings)
                 subscribedThreads.add(threadKey(serviceId, threadId))
             }
             val activeTurnId = _state.value.thread?.activeTurnId
@@ -302,6 +326,69 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val threadId = current.selectedThreadId ?: return
         val turnId = current.thread?.activeTurnId ?: return
         launchOperation("正在停止") { api.interrupt(serviceId, threadId, turnId) }
+    }
+
+    fun updateThreadSettings(update: ThreadSettingsUpdate) {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        current.thread ?: return
+        launchOperation("正在更新会话设置") {
+            api.updateThreadSettings(serviceId, threadId, update)
+            var appliedSettings: ThreadSettings? = null
+            _state.update { state ->
+                val selected = state.thread?.takeIf { it.id == threadId } ?: return@update state
+                val settings = selected.settings.apply(update)
+                appliedSettings = settings
+                state.copy(
+                    thread = selected.copy(
+                        cwd = settings.cwd ?: selected.cwd,
+                        settings = settings,
+                    ),
+                )
+            }
+            appliedSettings?.let { rememberThreadSettings(serviceId, it) }
+            chatCache.delete(cacheScope, serviceId, threadId)
+            if (update.cwd != null) {
+                loadPermissionProfiles(serviceId, update.cwd)
+                runCatching { loadSkills(serviceId, update.cwd) }
+            }
+        }
+    }
+
+    fun setGoal(objective: String, onAccepted: () -> Unit = {}) {
+        val value = objective.trim()
+        if (value.isBlank()) return
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        launchOperation("正在设置 Goal") {
+            val goal = parseThreadGoal(api.setGoal(serviceId, threadId, objective = value).optJSONObject("goal"))
+                ?: error("Codex 未返回 Goal")
+            updateThread(threadId) { it.copy(goal = goal) }
+            onAccepted()
+        }
+    }
+
+    fun setGoalStatus(status: String) {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        launchOperation("正在更新 Goal") {
+            val goal = parseThreadGoal(api.setGoal(serviceId, threadId, status = status).optJSONObject("goal"))
+                ?: error("Codex 未返回 Goal")
+            updateThread(threadId) { it.copy(goal = goal) }
+        }
+    }
+
+    fun clearGoal() {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.selectedThreadId ?: return
+        launchOperation("正在清除 Goal") {
+            api.clearGoal(serviceId, threadId)
+            updateThread(threadId) { it.copy(goal = null) }
+        }
     }
 
     fun archiveSession(threadId: String) {
@@ -590,10 +677,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun loadServiceWorkspace(serviceId: String) {
         val models = parseModels(api.models(serviceId))
         _state.update { it.copy(models = models) }
-        loadSessions(serviceId)
-        loadPending(serviceId)
         val path = _state.value.services.firstOrNull { it.id == serviceId }?.home
             ?: api.home(serviceId)
+        loadPermissionProfiles(serviceId, path)
+        loadSessions(serviceId)
+        loadPending(serviceId)
         runCatching { loadSkills(serviceId, path) }
         browseNow(serviceId, path)
         loadServices()
@@ -631,6 +719,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun loadPermissionProfiles(serviceId: String, cwd: String?) {
+        val profiles = runCatching {
+            parsePermissionProfiles(api.permissionProfiles(serviceId, cwd))
+        }.getOrElse { emptyList() }
+        if (_state.value.selectedServiceId == serviceId) {
+            _state.update {
+                it.copy(permissionProfiles = profiles.filter { profile -> profile.allowed })
+            }
+        }
+    }
+
     private suspend fun loadThread(
         serviceId: String,
         threadId: String,
@@ -645,7 +744,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, it)
         }
         if (cached == null && resume) subscribedThreads.add(threadKey(serviceId, threadId))
-        val detail = parseThread(root)
+        val rawDetail = parseThread(root)
+        val fallback = _state.value.thread
+            ?.takeIf { it.id == threadId }
+            ?.settings
+            ?.toOptions()
+            ?: sessionPreferences.load(cacheScope, serviceId)
+        val currentGoal = _state.value.thread?.takeIf { it.id == threadId }?.goal
+        val goal = runCatching {
+            parseThreadGoal(api.goal(serviceId, threadId).optJSONObject("goal"))
+        }.getOrElse { currentGoal }
+        val detail = rawDetail.copy(
+            settings = resolveThreadSettings(root, rawDetail.settings, fallback),
+            goal = goal,
+        )
         if (
             _state.value.selectedServiceId != serviceId ||
             _state.value.selectedThreadId != threadId
@@ -657,6 +769,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ),
             )
         }
+        rememberThreadSettings(serviceId, detail.settings)
+        loadPermissionProfiles(serviceId, detail.cwd)
         detail.cwd?.let { cwd -> runCatching { loadSkills(serviceId, cwd) } }
     }
 
@@ -866,6 +980,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateThread(threadId) { it.copy(tokenUsage = tokenUsage) }
                 }
             }
+            "codex.thread/settings/updated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                val value = payload.optJSONObject("threadSettings") ?: return
+                val settings = parseThreadSettings(value, _state.value.thread?.cwd)
+                updateThread(threadId) { thread ->
+                    thread.copy(cwd = settings.cwd ?: thread.cwd, settings = settings)
+                }
+                _state.value.selectedServiceId?.let { serviceId ->
+                    rememberThreadSettings(serviceId, settings)
+                    viewModelScope.launch {
+                        runCatching { chatCache.delete(cacheScope, serviceId, threadId) }
+                    }
+                }
+            }
+            "codex.thread/goal/updated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                parseThreadGoal(payload.optJSONObject("goal"))?.let { goal ->
+                    updateThread(threadId) { it.copy(goal = goal) }
+                }
+            }
+            "codex.thread/goal/cleared" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                updateThread(threadId) { it.copy(goal = null) }
+            }
             "codex.turn/started" -> {
                 if (payload.optString("threadId") != selectedThread) return
                 val turnJson = payload.optJSONObject("turn")
@@ -1036,6 +1177,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun initialSessionOptions(serviceId: String): NewSessionOptions {
+        sessionPreferences.load(cacheScope, serviceId)?.let { return it }
+        val current = _state.value
+        val cwd = current.services.firstOrNull { it.id == serviceId }?.home
+            ?: current.remotePath.takeIf { it.startsWith('/') }
+            ?: error("服务器未返回工作目录")
+        return NewSessionOptions(cwd = cwd, model = null, effort = null)
+    }
+
+    private fun resolveThreadSettings(
+        root: JSONObject,
+        parsed: ThreadSettings,
+        fallback: NewSessionOptions?,
+    ): ThreadSettings {
+        val hasRemoteSettings = root.has("model") ||
+            root.has("reasoningEffort") ||
+            root.has("approvalPolicy") ||
+            root.has("sandbox") ||
+            root.has("activePermissionProfile")
+        return if (hasRemoteSettings || fallback == null) {
+            parsed
+        } else {
+            fallback.toThreadSettings()
+        }
+    }
+
+    private fun rememberThreadSettings(serviceId: String, settings: ThreadSettings) {
+        settings.toOptions()?.let { sessionPreferences.save(cacheScope, serviceId, it) }
+    }
+
     private fun updateThread(threadId: String, transform: (dev.codexremote.app.model.ThreadDetail) -> dev.codexremote.app.model.ThreadDetail) {
         _state.update { state ->
             val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
@@ -1074,6 +1245,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 }
+
+private fun NewSessionOptions.toThreadSettings(): ThreadSettings = ThreadSettings(
+    cwd = cwd,
+    model = model,
+    effort = effort,
+    approvalPolicy = approvalPolicy,
+    sandbox = sandbox,
+    networkAccess = networkAccess,
+    permissionProfile = permissionProfile,
+)
+
+private fun ThreadSettings.toOptions(): NewSessionOptions? {
+    val directory = cwd?.takeIf { it.startsWith('/') } ?: return null
+    return NewSessionOptions(
+        cwd = directory,
+        model = model,
+        effort = effort,
+        approvalPolicy = approvalPolicy,
+        sandbox = sandbox,
+        networkAccess = networkAccess,
+        permissionProfile = permissionProfile,
+    )
+}
+
+private fun ThreadSettings.apply(update: ThreadSettingsUpdate): ThreadSettings = copy(
+    cwd = update.cwd ?: cwd,
+    model = update.model ?: model,
+    effort = update.effort ?: effort,
+    approvalPolicy = update.approvalPolicy ?: approvalPolicy,
+    sandbox = update.sandbox ?: sandbox,
+    networkAccess = update.networkAccess ?: networkAccess,
+    permissionProfile = when {
+        update.permissionProfile != null -> update.permissionProfile
+        update.sandbox != null -> null
+        else -> permissionProfile
+    },
+)
 
 private fun normalizeGatewayUrl(value: String): String {
     val input = value.trim()

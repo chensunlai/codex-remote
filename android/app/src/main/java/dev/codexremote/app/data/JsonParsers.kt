@@ -8,6 +8,7 @@ import dev.codexremote.app.model.ModelOption
 import dev.codexremote.app.model.PendingOption
 import dev.codexremote.app.model.PendingQuestion
 import dev.codexremote.app.model.PendingRequest
+import dev.codexremote.app.model.PermissionProfile
 import dev.codexremote.app.model.PlanStep
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
@@ -16,6 +17,8 @@ import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.SkillOption
 import dev.codexremote.app.model.ThreadDetail
+import dev.codexremote.app.model.ThreadGoal
+import dev.codexremote.app.model.ThreadSettings
 import dev.codexremote.app.model.ThreadTokenUsage
 import dev.codexremote.app.model.TurnSummary
 import org.json.JSONArray
@@ -50,6 +53,15 @@ fun parseModels(root: JSONObject): List<ModelOption> =
             efforts = efforts,
             defaultEffort = value.nullableString("defaultReasoningEffort"),
             isDefault = value.optBoolean("isDefault"),
+        )
+    }.orEmpty()
+
+fun parsePermissionProfiles(root: JSONObject): List<PermissionProfile> =
+    root.optJSONArray("data")?.objects()?.map { value ->
+        PermissionProfile(
+            id = value.optString("id"),
+            description = value.nullableString("description"),
+            allowed = value.optBoolean("allowed", true),
         )
     }.orEmpty()
 
@@ -126,6 +138,48 @@ fun parseThread(root: JSONObject): ThreadDetail {
         activeTurnId = activeTurn,
         activeFlags = status.optJSONArray("activeFlags")?.strings()?.toSet().orEmpty(),
         turns = turns.map(::parseTurnSummary),
+        settings = parseThreadSettings(root, thread.nullableString("cwd")),
+    )
+}
+
+fun parseThreadSettings(value: JSONObject, fallbackCwd: String? = null): ThreadSettings {
+    val sandbox = value.optJSONObject("sandbox")
+        ?: value.optJSONObject("sandboxPolicy")
+        ?: JSONObject()
+    val sandboxType = when (sandbox.optString("type")) {
+        "dangerFullAccess" -> "danger-full-access"
+        "readOnly" -> "read-only"
+        "workspaceWrite" -> "workspace-write"
+        "externalSandbox" -> "external-sandbox"
+        else -> "workspace-write"
+    }
+    val permissionProfile = value.optJSONObject("activePermissionProfile")
+        ?.nullableString("id")
+    return ThreadSettings(
+        cwd = value.nullableString("cwd") ?: fallbackCwd,
+        model = value.nullableString("model"),
+        effort = value.nullableString("reasoningEffort") ?: value.nullableString("effort"),
+        approvalPolicy = value.optString("approvalPolicy", "on-request"),
+        sandbox = sandboxType,
+        networkAccess = sandbox.optBoolean("networkAccess", true),
+        permissionProfile = permissionProfile,
+    )
+}
+
+fun parseThreadGoal(value: JSONObject?): ThreadGoal? {
+    if (value == null || value == JSONObject.NULL) return null
+    val threadId = value.optString("threadId")
+    val objective = value.optString("objective")
+    if (threadId.isBlank() || objective.isBlank()) return null
+    return ThreadGoal(
+        threadId = threadId,
+        objective = objective,
+        status = value.optString("status", "active"),
+        tokenBudget = value.nullableLong("tokenBudget"),
+        tokensUsed = value.optLong("tokensUsed"),
+        timeUsedSeconds = value.optLong("timeUsedSeconds"),
+        createdAt = value.optLong("createdAt"),
+        updatedAt = value.optLong("updatedAt"),
     )
 }
 

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,6 +38,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Compress
@@ -46,9 +46,13 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RateReview
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
@@ -72,7 +76,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -83,10 +86,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -106,13 +112,15 @@ import dev.codexremote.app.model.ChatMessage
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.ModelOption
-import dev.codexremote.app.model.NewSessionOptions
+import dev.codexremote.app.model.PermissionProfile
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.PromptContextType
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.ThreadDetail
+import dev.codexremote.app.model.ThreadGoal
+import dev.codexremote.app.model.ThreadSettingsUpdate
 import dev.codexremote.app.model.ThreadTokenUsage
 import dev.codexremote.app.model.TurnSummary
 import java.time.Instant
@@ -123,6 +131,18 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 private data class SessionTarget(val id: String, val title: String)
+
+private data class SlashCommand(
+    val value: String,
+    val description: String,
+)
+
+private val slashCommands = listOf(
+    SlashCommand("/goal", "设置持续目标"),
+    SlashCommand("/compact", "压缩上下文"),
+    SlashCommand("/review-mode", "审阅未提交更改"),
+    SlashCommand("/new", "在相同工作目录新建会话"),
+)
 
 private sealed interface ChatTimelineEntry {
     val key: String
@@ -141,7 +161,6 @@ private sealed interface ChatTimelineEntry {
 
 @Composable
 fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
-    var showCreate by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<SessionTarget?>(null) }
     var renameTarget by remember { mutableStateOf<SessionTarget?>(null) }
 
@@ -152,7 +171,7 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
                 SessionListPane(
                     state = state,
                     viewModel = viewModel,
-                    onCreate = { showCreate = true },
+                    onCreate = { viewModel.createSession() },
                     onRename = { renameTarget = it.target() },
                     onDelete = { deleteTarget = it.target() },
                     modifier = Modifier.width(380.dp),
@@ -188,7 +207,7 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
             SessionListPane(
                 state = state,
                 viewModel = viewModel,
-                onCreate = { showCreate = true },
+                onCreate = { viewModel.createSession() },
                 onRename = { renameTarget = it.target() },
                 onDelete = { deleteTarget = it.target() },
                 modifier = Modifier.fillMaxSize(),
@@ -196,14 +215,6 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
         }
     }
 
-    if (showCreate) {
-        NewSessionDialog(
-            state = state,
-            viewModel = viewModel,
-            onDismiss = { showCreate = false },
-            onCreate = { options -> viewModel.createSession(options) { showCreate = false } },
-        )
-    }
     renameTarget?.let { target ->
         RenameSessionDialog(
             target = target,
@@ -470,13 +481,14 @@ private fun ChatPane(
     val thread = state.thread ?: return
     var input by remember(thread.id) { mutableStateOf("") }
     var contexts by remember(thread.id) { mutableStateOf<List<PromptContext>>(emptyList()) }
-    var model by remember(thread.id, state.models) {
-        mutableStateOf(state.models.firstOrNull { it.isDefault }?.id ?: state.models.firstOrNull()?.id)
-    }
+    var showGoalEditor by remember(thread.id) { mutableStateOf(false) }
+    var goalDraft by remember(thread.id) { mutableStateOf("") }
+    val activityExpansion = remember(thread.id) { mutableStateMapOf<String, Boolean>() }
+    val model = thread.settings.model
+        ?: state.models.firstOrNull { it.isDefault }?.id
+        ?: state.models.firstOrNull()?.id
     val selectedModel = state.models.firstOrNull { it.id == model }
-    var effort by remember(thread.id, selectedModel?.id) {
-        mutableStateOf(selectedModel?.defaultEffort ?: selectedModel?.efforts?.firstOrNull())
-    }
+    val effort = thread.settings.effort
     var menu by remember { mutableStateOf(false) }
     var showFilePicker by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -567,39 +579,123 @@ private fun ChatPane(
         },
         bottomBar = {
             if (!state.showingArchivedSessions) {
-                PromptComposer(
-                    input = input,
-                    onInput = { input = it },
-                    contexts = contexts,
-                    onRemoveContext = { removed -> contexts = contexts.filterNot { it == removed } },
-                    models = state.models,
-                    model = model,
-                    onModel = { selected ->
-                        model = selected
-                        effort = state.models.firstOrNull { it.id == selected }?.defaultEffort
-                    },
-                    effort = effort,
-                    onEffort = { effort = it },
-                    active = thread.activeTurnId != null,
-                    hasMessages = thread.messages.isNotEmpty(),
-                    tokenUsage = thread.tokenUsage,
-                    skills = state.skills,
-                    onBrowseFile = {
-                        viewModel.browse(thread.cwd)
-                        showFilePicker = true
-                    },
-                    onAddSkill = { skill ->
-                        val context = PromptContext(PromptContextType.SKILL, skill.name, skill.path)
-                        if (contexts.none { it.path == context.path }) contexts = contexts + context
-                    },
-                    onSend = {
-                        viewModel.sendMessage(input.trim(), model, effort, contexts) {
+                Column(Modifier.fillMaxWidth()) {
+                    if (thread.goal != null || showGoalEditor) {
+                        GoalPanel(
+                            goal = thread.goal,
+                            editing = showGoalEditor,
+                            draft = goalDraft,
+                            onDraft = { goalDraft = it },
+                            onEdit = {
+                                goalDraft = thread.goal?.objective.orEmpty()
+                                showGoalEditor = true
+                            },
+                            onSave = {
+                                viewModel.setGoal(goalDraft) {
+                                    showGoalEditor = false
+                                    goalDraft = ""
+                                }
+                            },
+                            onCancel = {
+                                showGoalEditor = false
+                                goalDraft = ""
+                            },
+                            onPause = { viewModel.setGoalStatus("paused") },
+                            onResume = { viewModel.setGoalStatus("active") },
+                            onClear = viewModel::clearGoal,
+                        )
+                    }
+                    PromptComposer(
+                        input = input,
+                        onInput = { input = it },
+                        contexts = contexts,
+                        onRemoveContext = { removed -> contexts = contexts.filterNot { it == removed } },
+                        models = state.models,
+                        model = model,
+                        onModel = { nextModel ->
+                            val option = state.models.firstOrNull { it.id == nextModel }
+                            val nextEffort = effort?.takeIf { it in option?.efforts.orEmpty() }
+                                ?: option?.defaultEffort
+                                ?: option?.efforts?.firstOrNull()
+                            viewModel.updateThreadSettings(
+                                ThreadSettingsUpdate(model = nextModel, effort = nextEffort),
+                            )
+                        },
+                        effort = effort,
+                        onEffort = { nextEffort ->
+                            viewModel.updateThreadSettings(ThreadSettingsUpdate(effort = nextEffort))
+                        },
+                        permissionProfiles = state.permissionProfiles,
+                        permissionProfile = thread.settings.permissionProfile,
+                        onPermissionProfile = { profile ->
+                            viewModel.updateThreadSettings(
+                                ThreadSettingsUpdate(permissionProfile = profile),
+                            )
+                        },
+                        active = thread.activeTurnId != null,
+                        hasMessages = thread.messages.isNotEmpty(),
+                        tokenUsage = thread.tokenUsage,
+                        skills = state.skills,
+                        onBrowseFile = {
+                            viewModel.browse(thread.cwd)
+                            showFilePicker = true
+                        },
+                        onAddSkill = { skill ->
+                            val context = PromptContext(PromptContextType.SKILL, skill.name, skill.path)
+                            if (contexts.none { it.path == context.path }) contexts = contexts + context
+                        },
+                        onSlashCommand = { command ->
+                            when (command.value) {
+                                "/goal" -> {
+                                    goalDraft = thread.goal?.objective.orEmpty()
+                                    showGoalEditor = true
+                                }
+                                "/compact" -> viewModel.compactSession()
+                                "/review-mode" -> viewModel.reviewUncommitted()
+                                "/new" -> viewModel.createSession()
+                            }
                             input = ""
                             contexts = emptyList()
-                        }
-                    },
-                    onStop = viewModel::interruptTurn,
-                )
+                        },
+                        onSend = {
+                            val submitted = input.trim()
+                            when {
+                                submitted == "/goal" -> {
+                                    goalDraft = thread.goal?.objective.orEmpty()
+                                    showGoalEditor = true
+                                    input = ""
+                                    contexts = emptyList()
+                                }
+                                submitted.startsWith("/goal ") -> {
+                                    viewModel.setGoal(submitted.removePrefix("/goal ").trim()) {
+                                        input = ""
+                                        contexts = emptyList()
+                                    }
+                                }
+                                submitted == "/compact" -> {
+                                    viewModel.compactSession()
+                                    input = ""
+                                    contexts = emptyList()
+                                }
+                                submitted == "/review-mode" -> {
+                                    viewModel.reviewUncommitted()
+                                    input = ""
+                                    contexts = emptyList()
+                                }
+                                submitted == "/new" -> {
+                                    viewModel.createSession()
+                                    input = ""
+                                    contexts = emptyList()
+                                }
+                                else -> viewModel.sendMessage(submitted, model, effort, contexts) {
+                                    input = ""
+                                    contexts = emptyList()
+                                }
+                            }
+                        },
+                        onStop = viewModel::interruptTurn,
+                    )
+                }
             }
         },
     ) { padding ->
@@ -624,6 +720,16 @@ private fun ChatPane(
                             messages = entry.messages,
                             turn = entry.turn,
                             isActiveTurn = entry.turnId == thread.activeTurnId,
+                            expanded = activityExpansion[entry.key]
+                                ?: (entry.turnId == thread.activeTurnId),
+                            onExpandedChange = { activityExpansion[entry.key] = it },
+                            itemExpanded = { message ->
+                                activityExpansion["item:${message.id}"]
+                                    ?: message.status.isRunningStatus()
+                            },
+                            onItemExpandedChange = { message, expanded ->
+                                activityExpansion["item:${message.id}"] = expanded
+                            },
                             modifier = itemModifier,
                         )
                     }
@@ -807,6 +913,150 @@ private fun ActiveFlags(flags: Set<String>, modifier: Modifier = Modifier) {
 }
 
 @Composable
+private fun GoalPanel(
+    goal: ThreadGoal?,
+    editing: Boolean,
+    draft: String,
+    onDraft: (String) -> Unit,
+    onEdit: () -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onClear: () -> Unit,
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(editing) {
+        if (editing) focusRequester.requestFocus()
+    }
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Box(
+            Modifier.fillMaxWidth().padding(start = 12.dp, top = 6.dp, end = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                if (editing) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 12.dp, top = 7.dp, end = 5.dp, bottom = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Flag,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        BasicTextField(
+                            value = draft,
+                            onValueChange = onDraft,
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 36.dp, max = 88.dp)
+                                .focusRequester(focusRequester),
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (draft.isBlank()) {
+                                        Text(
+                                            "Goal",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.outline,
+                                        )
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                        IconButton(onClick = onCancel, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = "取消编辑 Goal")
+                        }
+                        IconButton(
+                            onClick = onSave,
+                            enabled = draft.isNotBlank(),
+                            modifier = Modifier.size(34.dp),
+                        ) {
+                            Icon(Icons.Outlined.Check, contentDescription = "保存 Goal")
+                        }
+                    }
+                } else if (goal != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(start = 12.dp, top = 7.dp, end = 5.dp, bottom = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Flag,
+                            contentDescription = null,
+                            tint = if (goal.status == "active") {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                goal.objective,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                goalStatusLabel(goal),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Outlined.Edit, contentDescription = "编辑 Goal")
+                        }
+                        when (goal.status) {
+                            "active" -> IconButton(onClick = onPause, modifier = Modifier.size(34.dp)) {
+                                Icon(Icons.Outlined.Pause, contentDescription = "暂停 Goal")
+                            }
+                            "paused", "blocked", "usageLimited", "budgetLimited" -> IconButton(
+                                onClick = onResume,
+                                modifier = Modifier.size(34.dp),
+                            ) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = "继续 Goal")
+                            }
+                        }
+                        IconButton(onClick = onClear, modifier = Modifier.size(34.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = "清除 Goal")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun goalStatusLabel(goal: ThreadGoal): String {
+    val status = when (goal.status) {
+        "active" -> "进行中"
+        "paused" -> "已暂停"
+        "blocked" -> "已阻塞"
+        "usageLimited" -> "用量受限"
+        "budgetLimited" -> "预算已用尽"
+        "complete" -> "已完成"
+        else -> goal.status
+    }
+    val budget = goal.tokenBudget?.let { " · ${formatTokenCount(goal.tokensUsed)} / ${formatTokenCount(it)} tokens" }
+        .orEmpty()
+    return status + budget
+}
+
+@Composable
 private fun PromptComposer(
     input: String,
     onInput: (String) -> Unit,
@@ -817,20 +1067,33 @@ private fun PromptComposer(
     onModel: (String) -> Unit,
     effort: String?,
     onEffort: (String) -> Unit,
+    permissionProfiles: List<PermissionProfile>,
+    permissionProfile: String?,
+    onPermissionProfile: (String) -> Unit,
     active: Boolean,
     hasMessages: Boolean,
     tokenUsage: ThreadTokenUsage?,
     skills: List<dev.codexremote.app.model.SkillOption>,
     onBrowseFile: () -> Unit,
     onAddSkill: (dev.codexremote.app.model.SkillOption) -> Unit,
+    onSlashCommand: (SlashCommand) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
     val selected = models.firstOrNull { it.id == model }
     var contextMenu by remember { mutableStateOf(false) }
+    val slashQuery = input.trimStart().takeIf { value ->
+        value.startsWith('/') && value.none(Char::isWhitespace)
+    }
+    val matchingCommands = slashQuery?.let { query ->
+        slashCommands.filter {
+            it.value.startsWith(query, ignoreCase = true) &&
+                (!active || it.value !in setOf("/compact", "/review-mode"))
+        }
+    }.orEmpty()
     Surface(color = MaterialTheme.colorScheme.background) {
         Box(
-            modifier = Modifier.fillMaxWidth().imePadding(),
+            modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter,
         ) {
             Column(
@@ -839,6 +1102,13 @@ private fun PromptComposer(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
+                if (matchingCommands.isNotEmpty()) {
+                    SlashCommandPreview(
+                        commands = matchingCommands,
+                        onSelect = onSlashCommand,
+                    )
+                    Spacer(Modifier.size(4.dp))
+                }
                 Surface(
                     shape = RoundedCornerShape(24.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -955,11 +1225,10 @@ private fun PromptComposer(
                                     }
                                 }
                             }
-                            Icon(
-                                Icons.Outlined.Shield,
-                                contentDescription = "审批保护已启用",
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(horizontal = 7.dp).size(19.dp),
+                            PermissionProfileMenu(
+                                profiles = permissionProfiles,
+                                selected = permissionProfile,
+                                onSelect = onPermissionProfile,
                             )
                             Spacer(Modifier.weight(1f))
                             tokenUsage?.let { ContextUsageButton(it) }
@@ -997,6 +1266,112 @@ private fun PromptComposer(
             }
         }
     }
+}
+
+@Composable
+private fun SlashCommandPreview(
+    commands: List<SlashCommand>,
+    onSelect: (SlashCommand) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(vertical = 4.dp)) {
+            commands.forEach { command ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(command) }
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        command.value,
+                        style = MonoTextStyle,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.width(82.dp),
+                    )
+                    Text(
+                        command.description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PermissionProfileMenu(
+    profiles: List<PermissionProfile>,
+    selected: String?,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val options = remember(profiles, selected) {
+        if (selected.isNullOrBlank() || profiles.any { it.id == selected }) {
+            profiles
+        } else {
+            listOf(PermissionProfile(selected, null, true)) + profiles
+        }
+    }
+    Box {
+        IconButton(
+            onClick = { expanded = true },
+            enabled = options.isNotEmpty(),
+            modifier = Modifier.size(36.dp),
+        ) {
+            Icon(
+                Icons.Outlined.Shield,
+                contentDescription = selected?.let { "权限：${permissionProfileLabel(it)}" } ?: "选择权限",
+                tint = if (selected == null) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.tertiary
+                },
+                modifier = Modifier.size(19.dp),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { profile ->
+                DropdownMenuItem(
+                    text = {
+                        Column(Modifier.widthIn(max = 280.dp)) {
+                            Text(permissionProfileLabel(profile.id))
+                            profile.description?.let { description ->
+                                Text(
+                                    description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    },
+                    leadingIcon = if (profile.id == selected) {
+                        { Icon(Icons.Outlined.Check, contentDescription = null) }
+                    } else null,
+                    onClick = {
+                        expanded = false
+                        onSelect(profile.id)
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun permissionProfileLabel(id: String): String = when (id) {
+    ":read-only" -> "只读"
+    ":workspace" -> "工作区"
+    ":full-access", ":danger-full-access" -> "完全访问"
+    else -> id.removePrefix(":")
 }
 
 @Composable
@@ -1203,128 +1578,6 @@ private fun RenameSessionDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
-}
-
-@Composable
-private fun NewSessionDialog(
-    state: AppState,
-    viewModel: MainViewModel,
-    onDismiss: () -> Unit,
-    onCreate: (NewSessionOptions) -> Unit,
-) {
-    val initialModel = state.models.firstOrNull { it.isDefault } ?: state.models.firstOrNull()
-    var cwd by remember { mutableStateOf(state.remotePath) }
-    var model by remember(state.models) { mutableStateOf(initialModel?.id) }
-    var effort by remember(model, state.models) {
-        val selected = state.models.firstOrNull { it.id == model }
-        mutableStateOf(selected?.defaultEffort ?: selected?.efforts?.firstOrNull())
-    }
-    var approval by remember { mutableStateOf("on-request") }
-    var sandbox by remember { mutableStateOf("workspace-write") }
-    var network by remember { mutableStateOf(true) }
-    var directoryPicker by remember { mutableStateOf(false) }
-    val selectedModel = state.models.firstOrNull { it.id == model }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建会话") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = cwd,
-                    onValueChange = { cwd = it },
-                    label = { Text("工作目录") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    trailingIcon = {
-                        IconButton(onClick = { viewModel.browse(cwd.takeIf { it.startsWith('/') }); directoryPicker = true }) {
-                            Icon(Icons.Outlined.FolderOpen, contentDescription = "浏览目录")
-                        }
-                    },
-                )
-                OptionMenu("模型", model, state.models.map { it.id to it.displayName }, onSelect = { model = it })
-                OptionMenu("推理强度", effort, selectedModel?.efforts?.map { it to effortLabel(it) }.orEmpty(), onSelect = { effort = it })
-                OptionMenu(
-                    "审批策略",
-                    approval,
-                    listOf("on-request" to "按需询问", "untrusted" to "仅不可信命令", "never" to "不询问"),
-                    onSelect = { approval = it },
-                )
-                OptionMenu(
-                    "文件权限",
-                    sandbox,
-                    listOf("workspace-write" to "工作区可写", "read-only" to "只读", "danger-full-access" to "完全访问"),
-                    onSelect = { sandbox = it },
-                )
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("允许网络", Modifier.weight(1f))
-                    Switch(checked = network, onCheckedChange = { network = it })
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = cwd.startsWith('/') && !state.loading,
-                onClick = { onCreate(NewSessionOptions(cwd, model, effort, approval, sandbox, network)) },
-            ) { Text("创建") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
-
-    if (directoryPicker) {
-        DirectoryPickerDialog(
-            state = state,
-            viewModel = viewModel,
-            onDismiss = { directoryPicker = false },
-            onSelect = { cwd = it; directoryPicker = false },
-        )
-    }
-}
-
-@Composable
-fun DirectoryPickerDialog(
-    state: AppState,
-    viewModel: MainViewModel,
-    onDismiss: () -> Unit,
-    onSelect: (String) -> Unit,
-) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(
-            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f).padding(20.dp).widthIn(max = 620.dp),
-            shape = RoundedCornerShape(8.dp),
-        ) {
-            Column {
-                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("选择工作目录", style = MaterialTheme.typography.titleMedium)
-                        Text(state.remotePath, style = MonoTextStyle, maxLines = 2)
-                    }
-                    TextButton(onClick = { onSelect(state.remotePath) }, enabled = state.remotePath.isNotBlank()) {
-                        Text("选择")
-                    }
-                }
-                HorizontalDivider()
-                LazyColumn(Modifier.weight(1f)) {
-                    if (state.remotePath != "/" && state.remotePath.isNotBlank()) {
-                        item(key = "parent") {
-                            ContextFileRow(
-                                name = "..",
-                                subtitle = "上级目录",
-                                icon = Icons.Outlined.FolderOpen,
-                                onClick = { viewModel.browse(state.remotePath.substringBeforeLast('/').ifBlank { "/" }) },
-                            )
-                        }
-                    }
-                    items(state.remoteFiles.filter { it.type == RemoteFileType.DIRECTORY }, key = RemoteFile::path) { file ->
-                        ContextFileRow(file.name, "目录", Icons.Outlined.FolderOpen) { viewModel.browse(file.path) }
-                    }
-                }
-                Row(Modifier.fillMaxWidth().padding(10.dp), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) { Text("取消") }
-                }
-            }
-        }
-    }
 }
 
 private fun SessionSummary.target(): SessionTarget =

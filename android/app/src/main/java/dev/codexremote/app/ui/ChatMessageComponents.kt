@@ -42,7 +42,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,7 +69,7 @@ fun ChatMessageRow(message: ChatMessage, modifier: Modifier = Modifier) {
     when (message.role) {
         MessageRole.USER -> UserMessage(message, modifier)
         MessageRole.ASSISTANT -> AssistantMessage(message, modifier)
-        MessageRole.SYSTEM, MessageRole.TOOL -> ActivityMessage(message, modifier)
+        MessageRole.SYSTEM, MessageRole.TOOL -> RememberedActivityMessage(message, modifier)
     }
 }
 
@@ -129,20 +128,15 @@ fun ActivityGroup(
     messages: List<ChatMessage>,
     turn: TurnSummary?,
     isActiveTurn: Boolean,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    itemExpanded: (ChatMessage) -> Boolean,
+    onItemExpandedChange: (ChatMessage, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (messages.isEmpty()) return
     val running = isActiveTurn && messages.any { it.status.isRunningStatus() }
     val failed = turn?.status == "failed" || messages.any { it.status == "failed" }
-    val groupKey = messages.joinToString(":") { it.id }
-    var expanded by remember(groupKey) { mutableStateOf(failed) }
-    LaunchedEffect(running, failed) {
-        when {
-            running -> expanded = true
-            failed -> expanded = true
-            else -> expanded = false
-        }
-    }
 
     Column(modifier.animateContentSize()) {
         if (!running) {
@@ -150,7 +144,7 @@ fun ActivityGroup(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 42.dp)
-                    .clickable { expanded = !expanded }
+                    .clickable { onExpandedChange(!expanded) }
                     .padding(vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
@@ -196,7 +190,12 @@ fun ActivityGroup(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 messages.forEach { message ->
-                    ActivityMessage(message, Modifier.fillMaxWidth())
+                    ActivityMessage(
+                        message = message,
+                        expanded = itemExpanded(message),
+                        onExpandedChange = { onItemExpandedChange(message, it) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
             }
         }
@@ -245,9 +244,23 @@ private fun ThinkingShimmer(
 }
 
 @Composable
-private fun ActivityMessage(message: ChatMessage, modifier: Modifier) {
-    val initiallyExpanded = message.status == "failed" || message.status == "declined"
-    var expanded by remember(message.id) { mutableStateOf(initiallyExpanded) }
+private fun RememberedActivityMessage(message: ChatMessage, modifier: Modifier) {
+    var expanded by remember(message.id) { mutableStateOf(message.status.isRunningStatus()) }
+    ActivityMessage(
+        message = message,
+        expanded = expanded,
+        onExpandedChange = { expanded = it },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun ActivityMessage(
+    message: ChatMessage,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    modifier: Modifier,
+) {
     val icon = activityIcon(message.kind)
     val tint = statusTint(message.status)
     val running = message.status.isRunningStatus()
@@ -259,7 +272,7 @@ private fun ActivityMessage(message: ChatMessage, modifier: Modifier) {
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 38.dp)
-                .clickable(enabled = expandable) { expanded = !expanded }
+                .clickable(enabled = expandable) { onExpandedChange(!expanded) }
                 .padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(9.dp),
