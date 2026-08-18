@@ -5,11 +5,12 @@ import { AgentService } from "./agent-service.js";
 import { loadAgentConfig, toAgentWebSocketUrl } from "./config.js";
 import { ProtocolClient } from "./protocol-client.js";
 import { AgentSetupCancelledError } from "./setup-tui.js";
+import { errorMessage } from "./error-message.js";
 
 const config = await loadAgentConfig().catch((error: unknown) => {
   if (error instanceof AgentSetupCancelledError) process.exit(0);
   process.stderr.write(
-    `Agent 启动失败: ${error instanceof Error ? error.message : String(error)}\n`,
+    `Agent 启动失败: ${errorMessage(error)}\n`,
   );
   process.exit(1);
 });
@@ -42,7 +43,7 @@ while (!stopping) {
     retryDelay = 1_000;
   } catch (error) {
     process.stderr.write(
-      `连接 Gateway 失败: ${error instanceof Error ? error.message : String(error)}\n`,
+      `连接 Gateway 失败: ${errorMessage(error)}\n`,
     );
   } finally {
     service.setTransport(undefined);

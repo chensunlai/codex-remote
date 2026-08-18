@@ -1,6 +1,7 @@
 import type { Readable } from "node:stream";
 import WebSocket, { type RawData } from "ws";
 import { JsonRpcError } from "./codex/json-rpc-peer.js";
+import { errorMessage } from "./error-message.js";
 
 interface GatewayRequest {
   type: "request";
@@ -42,7 +43,7 @@ export class ProtocolClient {
 
   run(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.url, {
+      const socket = new WebSocket(this.url.toString(), {
         headers: { Authorization: `Bearer ${this.token}` },
         maxPayload: 2 * 1024 * 1024,
         handshakeTimeout: 20_000,
@@ -59,7 +60,7 @@ export class ProtocolClient {
         this.handleMessage(raw);
       });
       socket.on("error", (error) => {
-        if (!opened) reject(error);
+        if (!opened) reject(new Error(errorMessage(error), { cause: error }));
       });
       socket.on("close", (code, reason) => {
         this.closed = true;
@@ -125,14 +126,14 @@ export class ProtocolClient {
       ).catch((error: unknown) => {
         void this.event("agent.error", {
           method: message.method,
-          message: error instanceof Error ? error.message : String(error),
+          message: errorMessage(error),
         });
       });
     } else {
       void Promise.resolve(this.handlers.stream(message)).catch((error: unknown) => {
         void this.event("agent.error", {
           streamId: message.id,
-          message: error instanceof Error ? error.message : String(error),
+          message: errorMessage(error),
         });
       });
     }
@@ -155,7 +156,7 @@ export class ProtocolClient {
         ok: false,
         error: {
           code: error instanceof JsonRpcError ? "CODEX_RPC_ERROR" : "AGENT_OPERATION_FAILED",
-          message: error instanceof Error ? error.message : String(error),
+          message: errorMessage(error),
           ...(rpcDetails ? { details: rpcDetails } : {}),
         },
       }).catch(() => {});
