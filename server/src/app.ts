@@ -96,7 +96,7 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
     }
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const ownerId = token ? tokens.verify(token) : undefined;
+    const ownerId = token ? await tokens.verify(token) : undefined;
     if (!ownerId) {
       throw new AppError(401, "UNAUTHORIZED", "访问令牌无效");
     }

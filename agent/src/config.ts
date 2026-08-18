@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
+import { promptAgentSetup } from "./setup-tui.js";
 
 export interface AgentConfig {
   gatewayUrl: string;
@@ -40,27 +40,31 @@ export async function loadAgentConfig(
   let gatewayUrl = args.gatewayUrl ?? env.CODEX_REMOTE_GATEWAY ?? stored?.gatewayUrl;
   let token = args.token ?? env.CODEX_REMOTE_TOKEN ?? stored?.token;
   let name = args.name ?? env.CODEX_REMOTE_SERVICE_NAME ?? stored?.name;
-  const codexExecutable =
+  let codexExecutable =
     args.codexExecutable
     ?? env.CODEX_REMOTE_CODEX
-    ?? stored?.codexExecutable
-    ?? "codex";
+    ?? stored?.codexExecutable;
 
-  if ((!gatewayUrl || !token || !name) && !process.stdin.isTTY) {
+  if ((!gatewayUrl || !token || !name) && (!process.stdin.isTTY || !process.stdout.isTTY)) {
     throw new Error(
       "缺少配置；请传入 --gateway、--token、--name，或设置对应环境变量",
     );
   }
-  const reader = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    if (!gatewayUrl) gatewayUrl = await reader.question("Gateway 地址: ");
-    if (!name) name = await reader.question("服务名: ");
-    if (!token) {
-      reader.close();
-      token = await readSecret("访问令牌: ");
-    }
-  } finally {
-    reader.close();
+  if (!gatewayUrl || !token || !name) {
+    const setup = await promptAgentSetup(
+      {
+        ...(gatewayUrl !== undefined ? { gatewayUrl } : {}),
+        ...(token !== undefined ? { token } : {}),
+        ...(name !== undefined ? { name } : {}),
+        ...(codexExecutable !== undefined ? { codexExecutable } : {}),
+        configPath: args.configPath,
+      },
+      normalizeGatewayUrl,
+    );
+    gatewayUrl = setup.gatewayUrl;
+    token = setup.token;
+    name = setup.name;
+    codexExecutable = setup.codexExecutable;
   }
 
   const config: AgentConfig = {
@@ -68,7 +72,7 @@ export async function loadAgentConfig(
     token: token.trim(),
     name: name.trim(),
     serviceId: existing?.serviceId ?? randomUUID(),
-    codexExecutable: codexExecutable.trim() || "codex",
+    codexExecutable: codexExecutable?.trim() || "codex",
     configPath: args.configPath,
   };
   if (!config.token || !config.name) throw new Error("访问令牌和服务名不能为空");
@@ -181,47 +185,6 @@ async function saveConfig(config: AgentConfig): Promise<void> {
     mode: 0o600,
   });
   await chmod(config.configPath, 0o600);
-}
-
-async function readSecret(prompt: string): Promise<string> {
-  if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
-    const reader = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return await reader.question(prompt);
-    } finally {
-      reader.close();
-    }
-  }
-  process.stdout.write(prompt);
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  return new Promise<string>((resolve, reject) => {
-    let value = "";
-    const cleanup = () => {
-      process.stdin.off("data", onData);
-      process.stdin.setRawMode?.(false);
-      process.stdin.pause();
-    };
-    const onData = (chunk: Buffer) => {
-      for (const byte of chunk) {
-        if (byte === 3) {
-          cleanup();
-          process.stdout.write("\n");
-          reject(new Error("输入已取消"));
-          return;
-        }
-        if (byte === 13 || byte === 10) {
-          cleanup();
-          process.stdout.write("\n");
-          resolve(value);
-          return;
-        }
-        if (byte === 127 || byte === 8) value = value.slice(0, -1);
-        else value += String.fromCharCode(byte);
-      }
-    };
-    process.stdin.on("data", onData);
-  });
 }
 
 function printUsage(): void {

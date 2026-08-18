@@ -268,6 +268,17 @@ export class AgentRegistry extends EventEmitter {
 
   async list(ownerId: string): Promise<ServiceView[]> {
     const records = await this.services.list(ownerId);
+    const knownIds = new Set(records.map((record) => record.id));
+    for (const peer of this.peers.values()) {
+      if (peer.ownerId !== ownerId || knownIds.has(peer.serviceId)) continue;
+      records.push({
+        id: peer.serviceId,
+        ownerId,
+        name: peer.name,
+        createdAt: peer.connectedAt,
+        lastConnectedAt: peer.connectedAt,
+      });
+    }
     return records.map((record) => {
       const peer = this.peers.get(this.key(ownerId, record.id));
       return {

@@ -1,22 +1,38 @@
 #!/usr/bin/env node
 
 import { resolve } from "node:path";
+import { runGatewayAdminTui } from "./admin-tui.js";
 import { buildGateway } from "./app.js";
 import { loadConfig, resolveDataDirectory } from "./config.js";
+import { errorMessage } from "./errors.js";
 import { ServiceStore } from "./service-store.js";
 import { TokenStore } from "./token-store.js";
 
-const [group = "help", command, ...args] = process.argv.slice(2);
+await dispatch().catch((error: unknown) => {
+  process.stderr.write(`Gateway 命令失败: ${errorMessage(error)}\n`);
+  process.exitCode = 1;
+});
 
-if (group === "start") {
-  await start();
-} else if (group === "token") {
-  await tokenCommand(command, args);
-} else if (group === "service") {
-  await serviceCommand(command, args);
-} else {
-  printUsage();
-  if (group !== "help" && group !== "--help" && group !== "-h") process.exitCode = 1;
+async function dispatch(): Promise<void> {
+  const [group, command, ...args] = process.argv.slice(2);
+
+  if (!group || group === "admin") {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      printUsage();
+      process.exitCode = 1;
+    } else {
+      await runGatewayAdminTui(await loadConfig());
+    }
+  } else if (group === "start") {
+    await start();
+  } else if (group === "token") {
+    await tokenCommand(command, args);
+  } else if (group === "service") {
+    await serviceCommand(command, args);
+  } else {
+    printUsage();
+    if (group !== "help" && group !== "--help" && group !== "-h") process.exitCode = 1;
+  }
 }
 
 async function start(): Promise<void> {
@@ -46,20 +62,24 @@ async function tokenCommand(command: string | undefined, args: string[]): Promis
   const store = await TokenStore.open(resolve(config.dataDirectory, "tokens.json"));
   await store.import(config.apiTokens);
   if (command === "create") {
-    const label = args.join(" ").trim() || "user";
+    const label = args.join(" ").trim();
+    if (!label) throw new Error("用法: codex-remote-gateway token create <tag>");
     const result = await store.create(label);
     process.stdout.write(
-      `Token ID: ${result.id}\nToken: ${result.token}\n请立即保存；之后只能撤销，不能再次查看。\n`,
+      `Tag: ${label}\nToken ID: ${result.id}\nToken: ${result.token}\n请立即保存；之后只能撤销，不能再次查看。\n`,
     );
   } else if (command === "list") {
-    console.table(store.list());
+    console.table((await store.list()).map(({ label, ...record }) => ({
+      tag: label,
+      ...record,
+    })));
   } else if (command === "revoke") {
     const id = args[0];
     if (!id) throw new Error("用法: codex-remote-gateway token revoke <token-id>");
     await store.revoke(id);
     process.stdout.write(`已撤销 Token: ${id}\n`);
   } else {
-    throw new Error("用法: token create [label] | token list | token revoke <token-id>");
+    throw new Error("用法: token create <tag> | token list | token revoke <token-id>");
   }
 }
 
@@ -95,8 +115,9 @@ function printUsage(): void {
     [
       "codex-remote-gateway <command>",
       "",
+      "  admin                              打开交互式管理控制台（默认）",
       "  start                              前台启动 Gateway",
-      "  token create [label]               创建用户令牌",
+      "  token create <tag>                 创建带 tag 的用户令牌",
       "  token list                         列出令牌元数据",
       "  token revoke <token-id>            撤销令牌",
       "  service list                       列出已注册服务",

@@ -4,8 +4,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AgentService } from "./agent-service.js";
 import { loadAgentConfig, toAgentWebSocketUrl } from "./config.js";
 import { ProtocolClient } from "./protocol-client.js";
+import { AgentSetupCancelledError } from "./setup-tui.js";
 
-const config = await loadAgentConfig();
+const config = await loadAgentConfig().catch((error: unknown) => {
+  if (error instanceof AgentSetupCancelledError) process.exit(0);
+  process.stderr.write(
+    `Agent 启动失败: ${error instanceof Error ? error.message : String(error)}\n`,
+  );
+  process.exit(1);
+});
 const service = new AgentService(config.codexExecutable);
 let client: ProtocolClient | undefined;
 let stopping = false;

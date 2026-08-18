@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface ServerConfig {
@@ -16,9 +16,21 @@ export interface ServerConfig {
 
 const DEFAULT_DATA_DIRECTORY = fileURLToPath(new URL("../../.data", import.meta.url));
 
-export function resolveDataDirectory(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveDataDirectory(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback = defaultDataDirectory(),
+): string {
   return env.CODEX_REMOTE_DATA_DIR
     ? resolve(env.CODEX_REMOTE_DATA_DIR)
+    : fallback;
+}
+
+export function defaultDataDirectory(
+  executable = process.execPath,
+  standalone = Boolean(process.versions.bun),
+): string {
+  return standalone
+    ? resolve(dirname(executable), "data")
     : DEFAULT_DATA_DIRECTORY;
 }
 

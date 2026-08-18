@@ -6,6 +6,7 @@ import WebSocket, { type RawData } from "ws";
 import { buildGateway, type BuiltGateway } from "./app.js";
 import type { ServerConfig } from "./config.js";
 import { APP_VERSION } from "./version.js";
+import { TokenStore } from "./token-store.js";
 
 const TOKEN_A = "test-token-a-with-enough-entropy";
 const TOKEN_B = "test-token-b-with-enough-entropy";
@@ -150,6 +151,15 @@ describe("Gateway Agent relay", () => {
         params: { threadId },
       },
     ]);
+  });
+
+  it("applies token changes from the admin process without restarting", async () => {
+    const admin = await TokenStore.open(join(directory, "tokens.json"));
+    const created = await admin.create("tablet");
+
+    expect((await api("/api/v1/meta", created.token)).status).toBe(200);
+    await admin.revoke(created.id);
+    expect((await api("/api/v1/meta", created.token)).status).toBe(401);
   });
 
   it("maps rich client operations to Codex App Server RPCs", async () => {

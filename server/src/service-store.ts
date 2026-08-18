@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { AgentDescription, ServiceRecord } from "./domain.js";
 import { NotFoundError } from "./errors.js";
@@ -11,6 +11,7 @@ interface StoreFile {
 export class ServiceStore {
   private records: ServiceRecord[] | undefined;
   private writeQueue = Promise.resolve();
+  private fileStamp = "missing";
 
   constructor(private readonly path: string) {}
 
@@ -74,16 +75,21 @@ export class ServiceStore {
   }
 
   private async ensureLoaded(): Promise<void> {
-    if (this.records) return;
+    await this.writeQueue;
     try {
+      const metadata = await stat(this.path, { bigint: true });
+      const stamp = `${metadata.mtimeNs}:${metadata.size}`;
+      if (this.records && stamp === this.fileStamp) return;
       const parsed = JSON.parse(await readFile(this.path, "utf8")) as StoreFile;
       if (parsed.version !== 1 || !Array.isArray(parsed.services)) {
         throw new Error("Unsupported service store format");
       }
       this.records = parsed.services;
+      this.fileStamp = stamp;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       this.records = [];
+      this.fileStamp = "missing";
     }
   }
 
@@ -94,6 +100,8 @@ export class ServiceStore {
       const temporary = `${this.path}.${process.pid}.tmp`;
       await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.path);
+      const metadata = await stat(this.path, { bigint: true });
+      this.fileStamp = `${metadata.mtimeNs}:${metadata.size}`;
     });
     await this.writeQueue;
   }
