@@ -248,6 +248,31 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
     };
   });
 
+  app.get("/api/v1/services/:serviceId/rate-limits", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    return {
+      data: await codexRpc(services, request, serviceId, "account/rateLimits/read", {}),
+    };
+  });
+
+  app.get("/api/v1/services/:serviceId/file-search", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const query = parse(
+      z.object({
+        cwd: filePath,
+        query: z.string().trim().max(255).default(""),
+      }),
+      request.query,
+    );
+    return {
+      data: await codexRpc(services, request, serviceId, "fuzzyFileSearch", {
+        query: query.query,
+        roots: [query.cwd],
+        cancellationToken: null,
+      }),
+    };
+  });
+
   app.get("/api/v1/services/:serviceId/sessions", async (request) => {
     const { serviceId } = parse(serviceParams, request.params);
     const query = parse(

@@ -204,6 +204,38 @@ describe("Gateway Agent relay", () => {
       },
     });
 
+    const rateLimits = await api(
+      `/api/v1/services/${SERVICE_ID}/rate-limits`,
+      TOKEN_A,
+    );
+    expect(rateLimits.status).toBe(200);
+    expect(await rateLimits.json()).toEqual({
+      data: {
+        rateLimits: {
+          primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 10 },
+          secondary: null,
+        },
+      },
+    });
+
+    const fileSearch = await api(
+      `/api/v1/services/${SERVICE_ID}/file-search?cwd=%2Fhome%2Ffixture%2Fproject&query=app`,
+      TOKEN_A,
+    );
+    expect(fileSearch.status).toBe(200);
+    expect(await fileSearch.json()).toEqual({
+      data: {
+        files: [{
+          root: "/home/fixture/project",
+          path: "src/app.ts",
+          match_type: "file",
+          file_name: "app.ts",
+          score: 42,
+          indices: [4, 5, 6],
+        }],
+      },
+    });
+
     const permissionProfiles = await api(
       `/api/v1/services/${SERVICE_ID}/permission-profiles?cwd=%2Fhome%2Ffixture%2Fproject`,
       TOKEN_A,
@@ -328,6 +360,18 @@ describe("Gateway Agent relay", () => {
       {
         method: "collaborationMode/list",
         params: {},
+      },
+      {
+        method: "account/rateLimits/read",
+        params: {},
+      },
+      {
+        method: "fuzzyFileSearch",
+        params: {
+          query: "app",
+          roots: ["/home/fixture/project"],
+          cancellationToken: null,
+        },
       },
       {
         method: "permissionProfile/list",
@@ -509,6 +553,24 @@ class MockAgent {
             { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
             { name: "Default", mode: "default", model: null, reasoning_effort: null },
           ],
+        });
+      } else if (method === "account/rateLimits/read") {
+        this.respond(message.id!, {
+          rateLimits: {
+            primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 10 },
+            secondary: null,
+          },
+        });
+      } else if (method === "fuzzyFileSearch") {
+        this.respond(message.id!, {
+          files: [{
+            root: "/home/fixture/project",
+            path: "src/app.ts",
+            match_type: "file",
+            file_name: "app.ts",
+            score: 42,
+            indices: [4, 5, 6],
+          }],
         });
       } else if (method === "permissionProfile/list") {
         this.respond(message.id!, {
