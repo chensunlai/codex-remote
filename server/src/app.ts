@@ -64,6 +64,14 @@ const reviewTarget = z.discriminatedUnion("type", [
 ]);
 const approvalPolicy = z.enum(["untrusted", "on-request", "never"]);
 const sandboxMode = z.enum(["read-only", "workspace-write", "danger-full-access"]);
+const collaborationMode = z.object({
+  mode: z.enum(["plan", "default"]),
+  settings: z.object({
+    model: z.string().trim().min(1).max(255),
+    reasoning_effort: z.string().trim().min(1).max(32).nullable(),
+    developer_instructions: z.string().max(64 * 1024).nullable(),
+  }),
+});
 const goalStatus = z.enum([
   "active",
   "paused",
@@ -233,6 +241,13 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
     };
   });
 
+  app.get("/api/v1/services/:serviceId/collaboration-modes", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    return {
+      data: await codexRpc(services, request, serviceId, "collaborationMode/list", {}),
+    };
+  });
+
   app.get("/api/v1/services/:serviceId/sessions", async (request) => {
     const { serviceId } = parse(serviceParams, request.params);
     const query = parse(
@@ -354,6 +369,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         permissions: z.string().trim().min(1).max(255).optional(),
         sandbox: sandboxMode.optional(),
         networkAccess: z.boolean().optional(),
+        collaborationMode: collaborationMode.optional(),
       }).refine((value) => Object.values(value).some((item) => item !== undefined), {
         message: "至少提供一项会话设置",
       }),
@@ -383,6 +399,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
           approvalPolicy: body.approvalPolicy,
           permissions: body.permissions,
           sandboxPolicy,
+          collaborationMode: body.collaborationMode,
         }),
       ),
     };

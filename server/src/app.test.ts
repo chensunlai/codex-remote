@@ -190,6 +190,20 @@ describe("Gateway Agent relay", () => {
     );
     expect(skills.status).toBe(200);
 
+    const collaborationModes = await api(
+      `/api/v1/services/${SERVICE_ID}/collaboration-modes`,
+      TOKEN_A,
+    );
+    expect(collaborationModes.status).toBe(200);
+    expect(await collaborationModes.json()).toEqual({
+      data: {
+        data: [
+          { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+          { name: "Default", mode: "default", model: null, reasoning_effort: null },
+        ],
+      },
+    });
+
     const permissionProfiles = await api(
       `/api/v1/services/${SERVICE_ID}/permission-profiles?cwd=%2Fhome%2Ffixture%2Fproject`,
       TOKEN_A,
@@ -208,6 +222,21 @@ describe("Gateway Agent relay", () => {
       jsonBody({ model: "fixture-model", effort: "max", permissions: ":workspace" }, "PUT"),
     );
     expect(namedSettings.status).toBe(200);
+
+    const planMode = {
+      mode: "plan",
+      settings: {
+        model: "fixture-model",
+        reasoning_effort: "medium",
+        developer_instructions: null,
+      },
+    };
+    const collaborationSettings = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/settings`,
+      TOKEN_A,
+      jsonBody({ collaborationMode: planMode }, "PUT"),
+    );
+    expect(collaborationSettings.status).toBe(200);
 
     const sandboxSettings = await api(
       `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/settings`,
@@ -297,6 +326,10 @@ describe("Gateway Agent relay", () => {
         params: { cwds: ["/home/fixture/project"], forceReload: false },
       },
       {
+        method: "collaborationMode/list",
+        params: {},
+      },
+      {
         method: "permissionProfile/list",
         params: { cwd: "/home/fixture/project" },
       },
@@ -307,6 +340,13 @@ describe("Gateway Agent relay", () => {
           model: "fixture-model",
           effort: "max",
           permissions: ":workspace",
+        },
+      },
+      {
+        method: "thread/settings/update",
+        params: {
+          threadId,
+          collaborationMode: planMode,
         },
       },
       {
@@ -463,6 +503,13 @@ class MockAgent {
         });
       } else if (method === "thread/list" || method === "skills/list") {
         this.respond(message.id!, { data: [] });
+      } else if (method === "collaborationMode/list") {
+        this.respond(message.id!, {
+          data: [
+            { name: "Plan", mode: "plan", model: null, reasoning_effort: "medium" },
+            { name: "Default", mode: "default", model: null, reasoning_effort: null },
+          ],
+        });
       } else if (method === "permissionProfile/list") {
         this.respond(message.id!, {
           data: [{ id: ":workspace", description: "Workspace access", allowed: true }],
