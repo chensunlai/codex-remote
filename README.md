@@ -40,14 +40,19 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
   | sudo bash -s -- gateway
 ```
 
-Gateway 默认安装到 `/opt/codex-remote`。直接启动：
+Gateway 默认安装到 `/opt/codex-remote`。打开管理 TUI：
 
 ```bash
-sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
-  /opt/codex-remote/codex-remote-gateway start
+sudo /opt/codex-remote/codex-remote-gateway
 ```
 
-首次启动会生成访问令牌，保存在 `/opt/codex-remote/data/api-token`。
+首次打开会自动创建 tag 为 `admin` 的访问令牌。后续令牌在 TUI 中输入 tag 后创建。
+
+启动 Gateway：
+
+```bash
+sudo /opt/codex-remote/codex-remote-gateway start
+```
 
 ### 2. 安装 Agent
 
@@ -61,7 +66,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 ./codex-remote-agent
 ```
 
-首次启动时输入 Gateway 地址、服务名称和访问令牌。配置保存在程序旁的 `agent.json`。
+首次启动会进入配置 TUI，依次输入 Gateway 地址、服务名称、访问令牌和 Codex 路径。配置保存在程序旁的 `agent.json`。
 
 重新配置：
 
@@ -96,23 +101,9 @@ Release APK 仅连接 HTTPS Gateway。
 
 运行 `./codex-remote-agent --help` 查看连接地址、Token、服务名、Codex 路径和配置文件参数。
 
-## Token 管理
+## Gateway 管理
 
-```bash
-sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
-  /opt/codex-remote/codex-remote-gateway token create my-phone
-
-sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
-  /opt/codex-remote/codex-remote-gateway token list
-
-sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
-  /opt/codex-remote/codex-remote-gateway token revoke TOKEN_ID
-
-sudo env CODEX_REMOTE_DATA_DIR=/opt/codex-remote/data \
-  /opt/codex-remote/codex-remote-gateway service list
-```
-
-新 Token 的明文只在创建时显示一次。
+直接运行 `codex-remote-gateway` 打开管理 TUI，可以查看 Gateway 状态、创建或撤销带 tag 的 Token，以及查看或删除离线服务记录。新 Token 的明文只显示一次。
 
 ## 更新
 

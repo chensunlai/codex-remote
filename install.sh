@@ -260,9 +260,17 @@ print_completion() {
       "Codex CLI 不包含在安装包中，Agent 会调用系统中的 codex 或 --codex 指定路径。"
   else
     install -d -m 0700 "$DATA_DIRECTORY"
-    printf '%s\n' \
-      "运行: CODEX_REMOTE_DATA_DIR=$DATA_DIRECTORY $DESTINATION start" \
-      "默认监听: 0.0.0.0:6767"
+    if [[ "$DATA_DIRECTORY" == "$INSTALL_DIRECTORY/data" ]]; then
+      printf '%s\n' \
+        "管理: $DESTINATION" \
+        "运行: $DESTINATION start" \
+        "默认监听: 0.0.0.0:6767"
+    else
+      printf '%s\n' \
+        "管理: CODEX_REMOTE_DATA_DIR=$DATA_DIRECTORY $DESTINATION" \
+        "运行: CODEX_REMOTE_DATA_DIR=$DATA_DIRECTORY $DESTINATION start" \
+        "默认监听: 0.0.0.0:6767"
+    fi
   fi
 }
 
