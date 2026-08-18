@@ -17,8 +17,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            CodexRemoteTheme {
-                val state by mainViewModel.state.collectAsStateWithLifecycle()
+            val state by mainViewModel.state.collectAsStateWithLifecycle()
+            CodexRemoteTheme(fontScale = state.fontScale) {
                 CodexRemoteApp(state = state, viewModel = mainViewModel)
             }
         }

@@ -8,12 +8,16 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.codexremote.app.data.UiPreferences
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF242424),
@@ -112,19 +116,54 @@ private val AppTypography = Typography(
     labelMedium = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
 )
 
-val MonoTextStyle = TextStyle(
+private val BaseMonoTextStyle = TextStyle(
     fontFamily = FontFamily.Monospace,
     fontSize = 13.sp,
     lineHeight = 19.sp,
     letterSpacing = 0.sp,
 )
 
+private val LocalAppFontScale = staticCompositionLocalOf { 1f }
+
+val MonoTextStyle: TextStyle
+    @Composable get() = BaseMonoTextStyle.scaled(LocalAppFontScale.current)
+
 @Composable
-fun CodexRemoteTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        typography = AppTypography,
-        shapes = AppShapes,
-        content = content,
-    )
+fun CodexRemoteTheme(fontScale: Float = 1f, content: @Composable () -> Unit) {
+    val scale = fontScale.coerceIn(UiPreferences.MIN_FONT_SCALE, UiPreferences.MAX_FONT_SCALE)
+    CompositionLocalProvider(LocalAppFontScale provides scale) {
+        MaterialTheme(
+            colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+            typography = AppTypography.scaled(scale),
+            shapes = AppShapes,
+            content = content,
+        )
+    }
 }
+
+private fun Typography.scaled(factor: Float): Typography = copy(
+    displayLarge = displayLarge.scaled(factor),
+    displayMedium = displayMedium.scaled(factor),
+    displaySmall = displaySmall.scaled(factor),
+    headlineLarge = headlineLarge.scaled(factor),
+    headlineMedium = headlineMedium.scaled(factor),
+    headlineSmall = headlineSmall.scaled(factor),
+    titleLarge = titleLarge.scaled(factor),
+    titleMedium = titleMedium.scaled(factor),
+    titleSmall = titleSmall.scaled(factor),
+    bodyLarge = bodyLarge.scaled(factor),
+    bodyMedium = bodyMedium.scaled(factor),
+    bodySmall = bodySmall.scaled(factor),
+    labelLarge = labelLarge.scaled(factor),
+    labelMedium = labelMedium.scaled(factor),
+    labelSmall = labelSmall.scaled(factor),
+)
+
+private fun TextStyle.scaled(factor: Float): TextStyle = copy(
+    fontSize = fontSize.scaled(factor),
+    lineHeight = lineHeight.scaled(factor),
+    letterSpacing = 0.sp,
+)
+
+private fun TextUnit.scaled(factor: Float): TextUnit =
+    if (this == TextUnit.Unspecified) this else (value * factor).sp

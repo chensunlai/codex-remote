@@ -260,6 +260,7 @@ data class PendingOption(
 data class AppState(
     val configured: Boolean = false,
     val gatewayConfig: GatewayConfig? = null,
+    val fontScale: Float = 1f,
     val section: MainSection = MainSection.SESSIONS,
     val loading: Boolean = false,
     val error: String? = null,

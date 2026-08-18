@@ -13,6 +13,7 @@ import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.GatewayException
 import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.SessionPreferences
+import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.data.objects
 import dev.codexremote.app.data.parseChatItem
 import dev.codexremote.app.data.parseCollaborationModes
@@ -67,9 +68,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val secretStore = SecretStore(application)
     private val chatCache = ChatCache(application)
     private val sessionPreferences = SessionPreferences(application)
+    private val uiPreferences = UiPreferences(application)
     private val eventPreferences = application.getSharedPreferences("event_offsets", 0)
     private val api = GatewayApi()
-    private val _state = MutableStateFlow(AppState())
+    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
     private var events: WebSocket? = null
@@ -130,7 +132,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         newEmptyThreads.clear()
         pendingMessageSubmissions.clear()
         pendingThreadResumes.clear()
-        _state.value = AppState()
+        _state.value = AppState(fontScale = uiPreferences.fontScale)
     }
 
     fun setSection(section: MainSection) {
@@ -150,6 +152,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearError() {
         _state.update { it.copy(error = null) }
+    }
+
+    fun updateFontScale(value: Float) {
+        val normalized = uiPreferences.setFontScale(value)
+        _state.update { it.copy(fontScale = normalized) }
     }
 
     fun searchContextFiles(query: String) {

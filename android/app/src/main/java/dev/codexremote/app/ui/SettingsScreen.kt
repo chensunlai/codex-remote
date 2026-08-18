@@ -15,14 +15,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
+import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.MainSection
+import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
@@ -52,6 +55,24 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     onSave = viewModel::configureGateway,
                 )
                 Spacer(Modifier.height(28.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(20.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("字体大小")
+                    Text("${(state.fontScale * 100).roundToInt()}%")
+                }
+                Slider(
+                    value = state.fontScale,
+                    onValueChange = viewModel::updateFontScale,
+                    valueRange = UiPreferences.MIN_FONT_SCALE..UiPreferences.MAX_FONT_SCALE,
+                    steps = UiPreferences.FONT_SCALE_SLIDER_STEPS,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Codex Remote", style = androidx.compose.material3.MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(20.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(20.dp))
                 OutlinedButton(onClick = viewModel::clearGateway, modifier = Modifier.fillMaxWidth()) {

@@ -19,11 +19,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.codexremote.app.MainViewModel
+import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.RuntimeState
 import okhttp3.Response
@@ -44,6 +46,9 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
             }
             DisposableEffect(controller) {
                 onDispose(controller::dispose)
+            }
+            LaunchedEffect(controller, state.fontScale) {
+                controller.setFontScale(state.fontScale)
             }
             Scaffold(
                 topBar = {
@@ -140,6 +145,7 @@ private class RemoteTerminalController(
     private var pageReady = false
     private var disposed = false
     private var terminalExited = false
+    private var fontScale = 1f
 
     val bridge = Bridge(this)
 
@@ -153,6 +159,13 @@ private class RemoteTerminalController(
             terminalExited = false
             evaluate("window.remoteTerminal.reset()")
             connect()
+        }
+    }
+
+    fun setFontScale(value: Float) {
+        main.post {
+            fontScale = value.coerceIn(UiPreferences.MIN_FONT_SCALE, UiPreferences.MAX_FONT_SCALE)
+            if (pageReady) evaluate("window.remoteTerminal.setFontScale($fontScale)")
         }
     }
 
@@ -177,6 +190,7 @@ private class RemoteTerminalController(
             cols = newCols.coerceIn(2, 500)
             rows = newRows.coerceIn(1, 300)
             pageReady = true
+            evaluate("window.remoteTerminal.setFontScale($fontScale)")
             connect()
         }
     }

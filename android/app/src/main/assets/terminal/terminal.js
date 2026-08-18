@@ -61,6 +61,11 @@
       status.textContent = message || '';
       status.classList.toggle('error', Boolean(isError));
     },
+    setFontScale(scale) {
+      const normalized = Math.min(1.3, Math.max(0.85, Number(scale) || 1));
+      terminal.options.fontSize = 14 * normalized;
+      notifySize();
+    },
     focus() {
       terminal.focus();
     },
