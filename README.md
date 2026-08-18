@@ -37,10 +37,10 @@ Agent 安装包不包含 Codex CLI。
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
-  | sudo bash -s -- gateway
+  | sudo bash -s -- gateway --systemd
 ```
 
-Gateway 默认安装到 `/opt/codex-remote`。打开管理 TUI：
+上述命令会将 Gateway 安装到 `/opt/codex-remote`，并创建、启用和启动 systemd 服务。打开管理 TUI：
 
 ```bash
 sudo /opt/codex-remote/codex-remote-gateway
@@ -48,10 +48,10 @@ sudo /opt/codex-remote/codex-remote-gateway
 
 首次打开会自动创建 tag 为 `admin` 的访问令牌。后续令牌在 TUI 中输入 tag 后创建。
 
-启动 Gateway：
+查看运行状态：
 
 ```bash
-sudo /opt/codex-remote/codex-remote-gateway start
+sudo systemctl status codex-remote-gateway
 ```
 
 ### 2. 安装 Agent
@@ -113,7 +113,7 @@ Gateway：
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
-  | sudo bash -s -- gateway
+  | sudo bash -s -- gateway --systemd
 ```
 
 Agent：
