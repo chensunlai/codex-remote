@@ -1,4 +1,4 @@
-name: Release standalone binaries
+name: Release
 
 on:
   push:
@@ -18,10 +18,62 @@ jobs:
           node-version: 24
           cache: npm
           package-manager-cache: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle*
+            android/gradle/wrapper/gradle-wrapper.properties
       - run: npm ci
       - run: npm test
       - run: npm run typecheck
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(node --print "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "v$package_version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $package_version" >&2
+            exit 1
+          fi
       - run: npm run package:binaries -- --targets linux-x64,linux-arm64
+      - name: Restore Android signing key
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" ]]; then
+            echo "ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD are required" >&2
+            exit 1
+          fi
+          mkdir -p signing
+          chmod 700 signing
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" \
+            | base64 --decode > signing/codex-remote-release.p12
+          chmod 600 signing/codex-remote-release.p12
+          {
+            printf '%s\n' 'storeFile=codex-remote-release.p12'
+            printf '%s\n' "storePassword=$ANDROID_KEYSTORE_PASSWORD"
+            printf '%s\n' 'keyAlias=codex-remote'
+            printf '%s\n' "keyPassword=$ANDROID_KEYSTORE_PASSWORD"
+            printf '%s\n' 'storeType=PKCS12'
+          } > signing/keystore.properties
+          chmod 600 signing/keystore.properties
+      - name: Build signed Android APK
+        working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleRelease
+      - name: Verify and stage signed Android APK
+        run: |
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk" \
+            | tee "$RUNNER_TEMP/apk-signature.txt"
+          grep -Fx 'Number of signers: 1' "$RUNNER_TEMP/apk-signature.txt"
+          grep -Fx 'Signer #1 certificate DN: CN=chensunlai' "$RUNNER_TEMP/apk-signature.txt"
+          cp "$apk" release/codex-remote-android.apk
+          (cd release && sha256sum codex-remote-android.apk >> SHA256SUMS)
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -33,5 +85,6 @@ jobs:
             release/codex-remote-agent-linux-arm64 \
             release/codex-remote-gateway-linux-x64 \
             release/codex-remote-gateway-linux-arm64 \
+            release/codex-remote-android.apk \
             release/SHA256SUMS \
             --clobber
