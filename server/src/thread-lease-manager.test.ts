@@ -50,6 +50,24 @@ describe("ThreadLeaseManager", () => {
     expect(releases).toBe(0);
     manager.close();
   });
+
+  it("schedules a release when leave arrives after gateway state was lost", async () => {
+    let releases = 0;
+    const changes: boolean[] = [];
+    const manager = new ThreadLeaseManager(
+      {
+        status: async () => "idle",
+        release: async () => { releases += 1; },
+        changed: (_target, locked) => changes.push(locked),
+      },
+      { releaseDelayMs: 10, viewerTtlMs: 100, retryDelayMs: 10 },
+    );
+
+    manager.leave(TARGET, "019fff0d-1c52-7042-9de0-9cc0eecf4095");
+    await eventually(() => releases === 1);
+    expect(changes).toEqual([true, false]);
+    manager.close();
+  });
 });
 
 async function eventually(predicate: () => boolean, timeoutMs = 250): Promise<void> {

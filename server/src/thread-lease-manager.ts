@@ -60,8 +60,13 @@ export class ThreadLeaseManager {
   }
 
   leave(target: ThreadLeaseTarget, clientId: string): number | undefined {
-    const lease = this.leases.get(this.key(target));
-    if (!lease) return undefined;
+    const key = this.key(target);
+    let lease = this.leases.get(key);
+    if (!lease) {
+      lease = { ...target, viewers: new Map() };
+      this.leases.set(key, lease);
+      this.callbacks.changed(target, true);
+    }
     lease.viewers.delete(clientId);
     if (lease.viewers.size > 0) {
       this.scheduleStaleCheck(lease);
