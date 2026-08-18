@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,7 +38,6 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.AttachFile
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Compress
@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.RateReview
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Wifi
@@ -75,6 +76,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +99,7 @@ import androidx.compose.ui.window.DialogProperties
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.ChatMessage
+import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.ModelOption
 import dev.codexremote.app.model.NewSessionOptions
 import dev.codexremote.app.model.PromptContext
@@ -469,11 +472,17 @@ private fun ChatPane(
 
     Scaffold(
         modifier = modifier,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text(thread.name ?: "未命名会话", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            thread.name ?: "未命名会话",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         thread.cwd?.let {
                             Text(
                                 it,
@@ -516,6 +525,10 @@ private fun ChatPane(
                         )
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.background,
+                ),
             )
         },
         bottomBar = {
@@ -534,6 +547,7 @@ private fun ChatPane(
                     effort = effort,
                     onEffort = { effort = it },
                     active = thread.activeTurnId != null,
+                    hasMessages = thread.messages.isNotEmpty(),
                     skills = state.skills,
                     onBrowseFile = {
                         viewModel.browse(thread.cwd)
@@ -557,28 +571,44 @@ private fun ChatPane(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (thread.activeFlags.isNotEmpty()) {
-                item(key = "active-flags") { ActiveFlags(thread.activeFlags) }
+                item(key = "active-flags") {
+                    ChatTimelineItem { itemModifier -> ActiveFlags(thread.activeFlags, itemModifier) }
+                }
             }
             if (thread.plan.isNotEmpty()) {
-                item(key = "current-plan") { PlanPanel(thread.planExplanation, thread.plan) }
+                item(key = "current-plan") {
+                    ChatTimelineItem { itemModifier ->
+                        PlanPanel(thread.planExplanation, thread.plan, itemModifier)
+                    }
+                }
             }
-            items(thread.messages, key = ChatMessage::id) { message -> ChatMessageRow(message) }
+            items(thread.messages, key = ChatMessage::id) { message ->
+                ChatTimelineItem { itemModifier -> ChatMessageRow(message, itemModifier) }
+            }
             if (thread.latestDiff.isNotBlank()) {
-                item(key = "latest-diff") { UnifiedDiffPanel(thread.latestDiff) }
+                item(key = "latest-diff") {
+                    ChatTimelineItem { itemModifier -> UnifiedDiffPanel(thread.latestDiff, itemModifier) }
+                }
             }
             if (thread.activeTurnId != null) {
                 item(key = "active-indicator") {
-                    Row(
-                        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Text("Codex 正在工作", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    ChatTimelineItem { itemModifier ->
+                        Row(
+                            itemModifier.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(9.dp),
+                        ) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.8.dp)
+                            Text(
+                                "Codex 正在工作",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -597,6 +627,13 @@ private fun ChatPane(
                 showFilePicker = false
             },
         )
+    }
+}
+
+@Composable
+private fun ChatTimelineItem(content: @Composable (Modifier) -> Unit) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        content(Modifier.widthIn(max = 760.dp).fillMaxWidth())
     }
 }
 
@@ -650,18 +687,30 @@ private fun ThreadMenu(
 }
 
 @Composable
-private fun ActiveFlags(flags: Set<String>) {
+private fun ActiveFlags(flags: Set<String>, modifier: Modifier = Modifier) {
     val label = when {
         "waitingOnApproval" in flags -> "等待审批"
         "waitingOnUserInput" in flags -> "等待输入"
         else -> "会话正在运行"
     }
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth().widthIn(max = 820.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier,
     ) {
-        Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(10.dp))
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Outlined.Shield,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.size(18.dp),
+            )
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
     }
 }
 
@@ -677,6 +726,7 @@ private fun PromptComposer(
     effort: String?,
     onEffort: (String) -> Unit,
     active: Boolean,
+    hasMessages: Boolean,
     skills: List<dev.codexremote.app.model.SkillOption>,
     onBrowseFile: () -> Unit,
     onAddSkill: (dev.codexremote.app.model.SkillOption) -> Unit,
@@ -686,127 +736,167 @@ private fun PromptComposer(
     val selected = models.firstOrNull { it.id == model }
     var contextMenu by remember { mutableStateOf(false) }
     Surface(color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 10.dp, vertical = 8.dp)) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shadowElevation = 1.dp,
+        Box(
+            modifier = Modifier.fillMaxWidth().imePadding(),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = 784.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
-                Column {
-                    if (contexts.isNotEmpty()) {
-                        Row(
-                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 10.dp, top = 8.dp, end = 10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            contexts.forEach { context ->
-                                InputChip(
-                                    selected = true,
-                                    onClick = { onRemoveContext(context) },
-                                    label = { Text(context.name, maxLines = 1) },
-                                    leadingIcon = {
-                                        Icon(
-                                            when (context.type) {
-                                                PromptContextType.FILE -> Icons.Outlined.Code
-                                                PromptContextType.IMAGE -> Icons.Outlined.Image
-                                                PromptContextType.SKILL -> Icons.Outlined.Psychology
-                                            },
-                                            contentDescription = null,
-                                            modifier = Modifier.size(17.dp),
-                                        )
-                                    },
-                                    trailingIcon = { Icon(Icons.Outlined.Close, contentDescription = "移除", modifier = Modifier.size(16.dp)) },
-                                )
-                            }
-                        }
-                    }
-                    BasicTextField(
-                        value = input,
-                        onValueChange = onInput,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp, max = 180.dp).padding(horizontal = 13.dp, vertical = 12.dp),
-                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        maxLines = 7,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
-                        keyboardActions = KeyboardActions(),
-                        decorationBox = { inner ->
-                            Box {
-                                if (input.isEmpty()) {
-                                    Text(
-                                        if (active) "补充指令" else "发送消息",
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.outline,
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Column {
+                        if (contexts.isNotEmpty()) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(start = 14.dp, top = 10.dp, end = 14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                contexts.forEach { context ->
+                                    InputChip(
+                                        selected = true,
+                                        onClick = { onRemoveContext(context) },
+                                        label = { Text(context.name, maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(
+                                                when (context.type) {
+                                                    PromptContextType.FILE -> Icons.Outlined.Code
+                                                    PromptContextType.IMAGE -> Icons.Outlined.Image
+                                                    PromptContextType.SKILL -> Icons.Outlined.Psychology
+                                                },
+                                                contentDescription = null,
+                                                modifier = Modifier.size(17.dp),
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Close,
+                                                contentDescription = "移除",
+                                                modifier = Modifier.size(16.dp),
+                                            )
+                                        },
                                     )
                                 }
-                                inner()
                             }
-                        },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Box {
-                            IconButton(onClick = { contextMenu = true }, modifier = Modifier.size(38.dp)) {
-                                Icon(Icons.Outlined.AttachFile, contentDescription = "添加上下文")
-                            }
-                            DropdownMenu(
-                                expanded = contextMenu,
-                                onDismissRequest = { contextMenu = false },
-                                modifier = Modifier.heightIn(max = 420.dp),
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("引用远端文件") },
-                                    leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
-                                    onClick = { contextMenu = false; onBrowseFile() },
-                                )
-                                if (skills.isNotEmpty()) {
-                                    HorizontalDivider()
-                                    skills.forEach { skill ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Column {
-                                                    Text(skill.displayName, maxLines = 1)
-                                                    Text(
-                                                        skill.description,
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        maxLines = 2,
-                                                    )
-                                                }
+                        }
+                        BasicTextField(
+                            value = input,
+                            onValueChange = onInput,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 70.dp, max = 180.dp)
+                                .padding(horizontal = 18.dp, vertical = 16.dp),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            maxLines = 7,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                            keyboardActions = KeyboardActions(),
+                            decorationBox = { inner ->
+                                Box {
+                                    if (input.isEmpty()) {
+                                        Text(
+                                            if (active || hasMessages) {
+                                                "提出后续变更要求"
+                                            } else {
+                                                "描述你想完成的任务"
                                             },
-                                            leadingIcon = { Icon(Icons.Outlined.Psychology, contentDescription = null) },
-                                            onClick = { contextMenu = false; onAddSkill(skill) },
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.outline,
                                         )
+                                    }
+                                    inner()
+                                }
+                            },
+                        )
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(start = 9.dp, top = 2.dp, end = 10.dp, bottom = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box {
+                                IconButton(onClick = { contextMenu = true }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Outlined.Add, contentDescription = "添加上下文")
+                                }
+                                DropdownMenu(
+                                    expanded = contextMenu,
+                                    onDismissRequest = { contextMenu = false },
+                                    modifier = Modifier.heightIn(max = 420.dp),
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("引用远端文件") },
+                                        leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
+                                        onClick = { contextMenu = false; onBrowseFile() },
+                                    )
+                                    if (skills.isNotEmpty()) {
+                                        HorizontalDivider()
+                                        skills.forEach { skill ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Column {
+                                                        Text(skill.displayName, maxLines = 1)
+                                                        Text(
+                                                            skill.description,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                            maxLines = 2,
+                                                        )
+                                                    }
+                                                },
+                                                leadingIcon = {
+                                                    Icon(Icons.Outlined.Psychology, contentDescription = null)
+                                                },
+                                                onClick = { contextMenu = false; onAddSkill(skill) },
+                                            )
+                                        }
                                     }
                                 }
                             }
-                        }
-                        CompactOptionMenu(
-                            value = model,
-                            options = models.map { it.id to it.displayName },
-                            onSelect = onModel,
-                            fallback = "模型",
-                            modifier = Modifier.widthIn(max = 150.dp),
-                        )
-                        CompactOptionMenu(
-                            value = effort,
-                            options = selected?.efforts?.map { it to effortLabel(it) }.orEmpty(),
-                            onSelect = onEffort,
-                            fallback = "推理",
-                            modifier = Modifier.widthIn(max = 104.dp),
-                        )
-                        Spacer(Modifier.weight(1f))
-                        FilledIconButton(
-                            onClick = if (active && input.isBlank()) onStop else onSend,
-                            enabled = active || input.isNotBlank(),
-                            modifier = Modifier.size(38.dp),
-                        ) {
                             Icon(
-                                if (active && input.isBlank()) Icons.Outlined.Stop else Icons.Outlined.ArrowUpward,
-                                contentDescription = if (active && input.isBlank()) "停止" else "发送",
+                                Icons.Outlined.Shield,
+                                contentDescription = "审批保护已启用",
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.padding(horizontal = 7.dp).size(19.dp),
                             )
+                            Spacer(Modifier.weight(1f))
+                            CompactOptionMenu(
+                                value = model,
+                                options = models.map { it.id to it.displayName },
+                                onSelect = onModel,
+                                fallback = "模型",
+                                modifier = Modifier.widthIn(max = 128.dp),
+                            )
+                            CompactOptionMenu(
+                                value = effort,
+                                options = selected?.efforts?.map { it to effortLabel(it) }.orEmpty(),
+                                onSelect = onEffort,
+                                fallback = "推理",
+                                modifier = Modifier.widthIn(max = 76.dp),
+                            )
+                            FilledIconButton(
+                                onClick = if (active && input.isBlank()) onStop else onSend,
+                                enabled = active || input.isNotBlank(),
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(
+                                    if (active && input.isBlank()) {
+                                        Icons.Outlined.Stop
+                                    } else {
+                                        Icons.Outlined.ArrowUpward
+                                    },
+                                    contentDescription = if (active && input.isBlank()) "停止" else "发送",
+                                )
+                            }
                         }
                     }
                 }
@@ -829,7 +919,7 @@ private fun CompactOptionMenu(
         TextButton(
             onClick = { expanded = true },
             enabled = options.isNotEmpty(),
-            contentPadding = PaddingValues(horizontal = 7.dp),
+            contentPadding = PaddingValues(horizontal = 4.dp),
         ) {
             Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))

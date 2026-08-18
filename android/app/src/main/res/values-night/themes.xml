@@ -3,8 +3,8 @@
     <style name="Theme.CodexRemote" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
-        <item name="android:statusBarColor">#111412</item>
-        <item name="android:navigationBarColor">#111412</item>
+        <item name="android:statusBarColor">#1E1E1E</item>
+        <item name="android:navigationBarColor">#1E1E1E</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>
 </resources>

@@ -1,7 +1,6 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -34,7 +33,6 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -71,10 +69,10 @@ fun ChatMessageRow(message: ChatMessage, modifier: Modifier = Modifier) {
 private fun UserMessage(message: ChatMessage, modifier: Modifier) {
     Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         Surface(
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(0.88f),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = RoundedCornerShape(22.dp),
+            modifier = Modifier.widthIn(max = 620.dp),
         ) {
             SelectionContainer {
                 Text(
@@ -89,12 +87,12 @@ private fun UserMessage(message: ChatMessage, modifier: Modifier) {
 
 @Composable
 private fun AssistantMessage(message: ChatMessage, modifier: Modifier) {
-    Column(modifier.fillMaxWidth().widthIn(max = 820.dp)) {
+    Column(modifier) {
         if (message.phase == "commentary") {
             Text(
                 text = "进度更新",
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 4.dp),
             )
         }
@@ -126,54 +124,53 @@ private fun ActivityMessage(message: ChatMessage, modifier: Modifier) {
     val expandable = message.detail?.isNotBlank() == true || message.changes.isNotEmpty() ||
         (message.cwd?.isNotBlank() == true && message.kind == "commandExecution")
 
-    Surface(
-        modifier = modifier.fillMaxWidth().widthIn(max = 820.dp).animateContentSize(),
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 46.dp)
-                    .clickable(enabled = expandable) { expanded = !expanded }
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(19.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = message.title ?: activityTitle(message.kind),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = activitySummary(message),
-                        style = if (message.kind == "commandExecution") MonoTextStyle else MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = if (expanded) 3 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                message.durationMs?.takeIf { it > 0 }?.let {
-                    Text(
-                        formatDuration(it),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.outline,
-                    )
-                }
-                if (expandable) {
-                    Icon(
-                        if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                        contentDescription = if (expanded) "收起详情" else "展开详情",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+    Column(modifier.animateContentSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 38.dp)
+                .clickable(enabled = expandable) { expanded = !expanded }
+                .padding(vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = message.title ?: activityTitle(message.kind),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = activitySummary(message),
+                    style = if (message.kind == "commandExecution") MonoTextStyle else MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = if (expanded) 3 else 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
-            if (expanded) {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            message.durationMs?.takeIf { it > 0 }?.let {
+                Text(
+                    formatDuration(it),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.outline,
+                )
+            }
+            if (expandable) {
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "收起详情" else "展开详情",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        if (expanded) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+            ) {
                 ActivityDetails(message)
             }
         }
@@ -237,10 +234,9 @@ fun PlanPanel(
 ) {
     if (steps.isEmpty()) return
     Surface(
-        modifier = modifier.fillMaxWidth().widthIn(max = 820.dp),
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier,
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("执行计划", style = MaterialTheme.typography.titleMedium)
@@ -270,27 +266,26 @@ fun PlanPanel(
 fun UnifiedDiffPanel(diff: String, modifier: Modifier = Modifier) {
     if (diff.isBlank()) return
     var expanded by remember(diff) { mutableStateOf(false) }
-    Surface(
-        modifier = modifier.fillMaxWidth().widthIn(max = 820.dp).animateContentSize(),
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column {
-            Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+    Column(modifier.animateContentSize()) {
+        Row(
+            Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Icon(Icons.Outlined.Difference, contentDescription = null, modifier = Modifier.size(17.dp))
+            Text("本轮差异", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起差异" else "展开差异",
+                modifier = Modifier.size(20.dp),
+            )
+        }
+        if (expanded) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
-                Icon(Icons.Outlined.Difference, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Text("本轮差异", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "收起差异" else "展开差异",
-                )
-            }
-            if (expanded) {
-                HorizontalDivider()
                 Box(Modifier.padding(10.dp)) { DiffBlock(diff) }
             }
         }
@@ -303,7 +298,7 @@ private fun CodeBlock(content: String) {
     Box(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp))
             .horizontalScroll(rememberScrollState())
             .padding(10.dp),
     ) {
@@ -317,7 +312,7 @@ private fun DiffBlock(diff: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp))
             .horizontalScroll(rememberScrollState())
             .padding(vertical = 6.dp),
     ) {
