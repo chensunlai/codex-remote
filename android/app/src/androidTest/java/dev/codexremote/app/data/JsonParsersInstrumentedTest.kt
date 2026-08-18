@@ -2,6 +2,7 @@ package dev.codexremote.app.data
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,6 +11,84 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class JsonParsersInstrumentedTest {
+    @Test
+    fun threadRetainsTurnLifecycleAndParsedCommandActions() {
+        val detail = parseThread(
+            JSONObject(
+                """
+                {
+                  "thread": {
+                    "id": "thread-1",
+                    "name": "Fixture",
+                    "cwd": "/workspace",
+                    "status": {"type": "idle"},
+                    "turns": [{
+                      "id": "turn-1",
+                      "status": "completed",
+                      "startedAt": 100,
+                      "completedAt": 103,
+                      "durationMs": 3200,
+                      "error": null,
+                      "items": [{
+                        "type": "commandExecution",
+                        "id": "command-1",
+                        "command": "rg TODO src",
+                        "status": "completed",
+                        "commandActions": [{
+                          "type": "search",
+                          "command": "rg TODO src",
+                          "query": "TODO",
+                          "path": "src"
+                        }],
+                        "aggregatedOutput": "src/App.kt:1: TODO",
+                        "exitCode": 0,
+                        "durationMs": 250
+                      }]
+                    }]
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals("turn-1", detail.messages.single().turnId)
+        assertEquals("search", detail.messages.single().commandActions.single().type)
+        assertEquals("TODO", detail.messages.single().commandActions.single().query)
+        assertEquals(100_000L, detail.turns.single().startedAtMs)
+        assertEquals(103_000L, detail.turns.single().completedAtMs)
+        assertEquals(3_200L, detail.turns.single().durationMs)
+    }
+
+    @Test
+    fun tokenUsageRequiresRealContextWindowNotification() {
+        val parsed = parseThreadTokenUsage(
+            JSONObject(
+                """
+                {
+                  "threadId": "thread-1",
+                  "turnId": "turn-1",
+                  "tokenUsage": {
+                    "total": {"totalTokens": 90000},
+                    "last": {"totalTokens": 24000},
+                    "modelContextWindow": 128000
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+        val unavailable = parseThreadTokenUsage(
+            JSONObject(
+                """
+                {"tokenUsage": {"last": {"totalTokens": 24000}, "modelContextWindow": null}}
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals(24_000L, parsed?.usedTokens)
+        assertEquals(128_000L, parsed?.contextWindow)
+        assertEquals(null, unavailable)
+    }
+
     @Test
     fun pendingRequestsRetainInteractiveProtocolFields() {
         val pending = parsePending(

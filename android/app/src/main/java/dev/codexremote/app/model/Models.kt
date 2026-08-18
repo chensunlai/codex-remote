@@ -79,6 +79,15 @@ data class ChatMessage(
     val durationMs: Long? = null,
     val changes: List<FileChangeSummary> = emptyList(),
     val phase: String? = null,
+    val turnId: String? = null,
+    val commandActions: List<CommandActionSummary> = emptyList(),
+)
+
+data class CommandActionSummary(
+    val type: String,
+    val path: String? = null,
+    val name: String? = null,
+    val query: String? = null,
 )
 
 data class FileChangeSummary(
@@ -92,6 +101,19 @@ data class PlanStep(
     val status: String,
 )
 
+data class TurnSummary(
+    val id: String,
+    val status: String,
+    val startedAtMs: Long? = null,
+    val completedAtMs: Long? = null,
+    val durationMs: Long? = null,
+)
+
+data class ThreadTokenUsage(
+    val usedTokens: Long,
+    val contextWindow: Long,
+)
+
 data class ThreadDetail(
     val id: String,
     val name: String?,
@@ -103,6 +125,8 @@ data class ThreadDetail(
     val latestDiff: String = "",
     val planExplanation: String? = null,
     val plan: List<PlanStep> = emptyList(),
+    val turns: List<TurnSummary> = emptyList(),
+    val tokenUsage: ThreadTokenUsage? = null,
 )
 
 enum class RemoteFileType { DIRECTORY, FILE, SYMLINK, OTHER }

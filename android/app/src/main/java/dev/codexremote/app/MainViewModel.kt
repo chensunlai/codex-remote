@@ -22,6 +22,8 @@ import dev.codexremote.app.data.parseSession
 import dev.codexremote.app.data.parseSessions
 import dev.codexremote.app.data.parseSkills
 import dev.codexremote.app.data.parseThread
+import dev.codexremote.app.data.parseThreadTokenUsage
+import dev.codexremote.app.data.parseTurnSummary
 import dev.codexremote.app.data.strings
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.ChatMessage
@@ -34,6 +36,7 @@ import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
+import dev.codexremote.app.model.TurnSummary
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -253,7 +256,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val resumed = api.resume(serviceId, threadId)
                 val summary = _state.value.sessions.firstOrNull { it.id == threadId }
                 chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, resumed)
-                _state.update { it.copy(thread = parseThread(resumed)) }
+                val parsed = parseThread(resumed)
+                _state.update { state ->
+                    state.copy(
+                        thread = parsed.copy(
+                            tokenUsage = state.thread?.takeIf { it.id == parsed.id }?.tokenUsage,
+                        ),
+                    )
+                }
                 subscribedThreads.add(threadKey(serviceId, threadId))
             }
             val activeTurnId = _state.value.thread?.activeTurnId
@@ -261,18 +271,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 api.steer(serviceId, threadId, activeTurnId, text, context)
             } else {
                 val result = api.sendTurn(serviceId, threadId, text, model, effort, context)
-                val turnId = result.optJSONObject("turn")?.optString("id")
+                val turnJson = result.optJSONObject("turn")
+                val turnId = turnJson?.optString("id")
+                val turn = turnJson?.let(::parseTurnSummary)
                 val optimistic = ChatMessage(
                     id = "local-" + System.nanoTime(),
                     role = MessageRole.USER,
                     text = text,
                     status = "inProgress",
+                    turnId = turnId,
                 )
                 _state.update { state ->
                     state.copy(
                         thread = state.thread?.copy(
                             messages = state.thread.messages + optimistic,
                             activeTurnId = turnId,
+                            turns = turn?.let { state.thread.turns.upsert(it) }
+                                ?: state.thread.turns,
                         ),
                     )
                 }
@@ -635,7 +650,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value.selectedServiceId != serviceId ||
             _state.value.selectedThreadId != threadId
         ) return
-        _state.update { it.copy(thread = detail) }
+        _state.update { state ->
+            state.copy(
+                thread = detail.copy(
+                    tokenUsage = state.thread?.takeIf { it.id == detail.id }?.tokenUsage,
+                ),
+            )
+        }
         detail.cwd?.let { cwd -> runCatching { loadSkills(serviceId, cwd) } }
     }
 
@@ -730,6 +751,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "",
                         "inProgress",
                         "agentMessage",
+                        turnId = payload.optString("turnId"),
                     ),
                 ) { it.copy(text = it.text + payload.optString("delta")) }
             }
@@ -747,6 +769,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "inProgress",
                         "plan",
                         title = "计划",
+                        turnId = payload.optString("turnId"),
                     ),
                 ) { it.copy(text = it.text + payload.optString("delta")) }
             }
@@ -774,6 +797,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "inProgress",
                         "commandExecution",
                         title = "命令",
+                        turnId = payload.optString("turnId"),
                     ),
                 ) { message ->
                     message.copy(detail = message.detail.orEmpty() + payload.optString("delta"))
@@ -835,18 +859,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
+            "codex.thread/tokenUsage/updated" -> {
+                val threadId = payload.optString("threadId")
+                if (threadId != selectedThread) return
+                parseThreadTokenUsage(payload)?.let { tokenUsage ->
+                    updateThread(threadId) { it.copy(tokenUsage = tokenUsage) }
+                }
+            }
             "codex.turn/started" -> {
                 if (payload.optString("threadId") != selectedThread) return
-                val turnId = payload.optJSONObject("turn")?.optString("id")
-                    ?: payload.optString("turnId")
+                val turnJson = payload.optJSONObject("turn")
+                val turnId = turnJson?.optString("id") ?: payload.optString("turnId")
                 _state.update { state ->
-                    state.copy(thread = state.thread?.copy(activeTurnId = turnId))
+                    state.copy(
+                        thread = state.thread?.copy(
+                            activeTurnId = turnId,
+                            turns = turnJson?.let(::parseTurnSummary)?.let(state.thread.turns::upsert)
+                                ?: state.thread.turns,
+                        ),
+                    )
                 }
             }
             "codex.turn/completed", "codex.error" -> {
                 val serviceId = _state.value.selectedServiceId ?: return
                 val threadId = selectedThread
                 if (threadId != null && payload.optString("threadId") == threadId) {
+                    val completedTurn = payload.optJSONObject("turn")?.let(::parseTurnSummary)
                     if (type == "codex.error") {
                         val error = payload.optJSONObject("error")?.optString("message")
                             ?: payload.optString("message", "Codex 执行失败")
@@ -860,11 +898,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 status = "failed",
                                 kind = "error",
                                 title = "执行失败",
+                                turnId = payload.optString("turnId"),
                             ),
                             markActive = false,
                         )
                     }
-                    updateThread(threadId) { it.copy(activeTurnId = null) }
+                    updateThread(threadId) { thread ->
+                        val turns = when {
+                            completedTurn != null -> thread.turns.upsert(completedTurn)
+                            type == "codex.error" -> thread.turns.map { turn ->
+                                if (turn.id == payload.optString("turnId")) {
+                                    turn.copy(status = "failed")
+                                } else turn
+                            }
+                            else -> thread.turns
+                        }
+                        thread.copy(activeTurnId = null, turns = turns)
+                    }
                 }
                 viewModelScope.launch {
                     runCatching { loadSessions(serviceId) }
@@ -912,12 +962,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 status = "inProgress",
                 kind = "reasoning",
                 title = "分析",
+                turnId = payload.optString("turnId"),
             ),
         ) { message ->
             if (detail) {
                 message.copy(detail = message.detail.orEmpty() + payload.optString("delta"))
             } else {
-                message.copy(text = message.text + payload.optString("delta"))
+                val existing = message.text.takeUnless { it == "正在分析" }.orEmpty()
+                message.copy(text = existing + payload.optString("delta"))
             }
         }
     }
@@ -937,7 +989,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     list[index] = transform(list[index])
                 }
             } else {
-                thread.messages + transform(fallback)
+                thread.messages + transform(
+                    fallback.copy(turnId = fallback.turnId ?: turnId.takeIf(String::isNotBlank)),
+                )
             }
             state.copy(
                 thread = thread.copy(
@@ -956,17 +1010,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         _state.update { state ->
             val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
+            val attributedMessage = message.copy(
+                turnId = message.turnId ?: turnId.takeIf(String::isNotBlank),
+            )
             var current = thread.messages
-            if (message.role == MessageRole.USER) {
+            if (attributedMessage.role == MessageRole.USER) {
                 current = current.filterNot {
-                    it.id.startsWith("local-") && it.role == MessageRole.USER && it.text == message.text
+                    it.id.startsWith("local-") &&
+                        it.role == MessageRole.USER &&
+                        it.text == attributedMessage.text
                 }
             }
-            val index = current.indexOfLast { it.id == message.id }
+            val index = current.indexOfLast { it.id == attributedMessage.id }
             val messages = if (index >= 0) {
-                current.toMutableList().also { it[index] = message }
+                current.toMutableList().also { it[index] = attributedMessage }
             } else {
-                current + message
+                current + attributedMessage
             }
             state.copy(
                 thread = thread.copy(
@@ -1034,6 +1093,12 @@ private fun joinRemote(parent: String, name: String): String =
     if (parent == "/") "/" + name.trim('/') else parent.trimEnd('/') + "/" + name.trim('/')
 
 private fun threadKey(serviceId: String, threadId: String): String = "$serviceId:$threadId"
+
+private fun List<TurnSummary>.upsert(turn: TurnSummary): List<TurnSummary> {
+    val index = indexOfLast { it.id == turn.id }
+    if (index < 0) return this + turn
+    return toMutableList().also { it[index] = turn }
+}
 
 private fun eventOffsetKey(scope: String, serviceId: String): String = "$scope:$serviceId"
 

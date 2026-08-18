@@ -1,6 +1,10 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -38,6 +42,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,7 +50,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -54,6 +62,7 @@ import dev.codexremote.app.model.ChatMessage
 import dev.codexremote.app.model.FileChangeSummary
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.PlanStep
+import dev.codexremote.app.model.TurnSummary
 import java.util.Locale
 
 @Composable
@@ -116,11 +125,132 @@ private fun AssistantMessage(message: ChatMessage, modifier: Modifier) {
 }
 
 @Composable
+fun ActivityGroup(
+    messages: List<ChatMessage>,
+    turn: TurnSummary?,
+    isActiveTurn: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (messages.isEmpty()) return
+    val running = isActiveTurn && messages.any { it.status.isRunningStatus() }
+    val failed = turn?.status == "failed" || messages.any { it.status == "failed" }
+    val groupKey = messages.joinToString(":") { it.id }
+    var expanded by remember(groupKey) { mutableStateOf(failed) }
+    LaunchedEffect(running, failed) {
+        when {
+            running -> expanded = true
+            failed -> expanded = true
+            else -> expanded = false
+        }
+    }
+
+    Column(modifier.animateContentSize()) {
+        if (!running) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 42.dp)
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                Icon(
+                    if (failed) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,
+                    contentDescription = null,
+                    tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = if (failed) {
+                            "执行失败"
+                        } else {
+                            turn?.durationMs?.takeIf { it > 0 }?.let { "已处理 ${formatDuration(it)}" }
+                                ?: "已完成"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    activityGroupSummary(messages).takeIf { it != "已完成" }?.let { summary ->
+                        Text(
+                            text = summary,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Icon(
+                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        if (running || expanded) {
+            Column(
+                modifier = Modifier.padding(start = if (running) 0.dp else 18.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                messages.forEach { message ->
+                    ActivityMessage(message, Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ThinkingIndicator(modifier: Modifier = Modifier) {
+    ThinkingShimmer(
+        text = "正在思考",
+        modifier = modifier.padding(vertical = 7.dp),
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+@Composable
+private fun ThinkingShimmer(
+    text: String,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.bodyMedium,
+) {
+    val transition = rememberInfiniteTransition(label = "thinking-shimmer")
+    val position by transition.animateFloat(
+        initialValue = -1f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes {
+                durationMillis = 4_000
+                -1f at 0
+                -1f at 600
+                2f at 1_600
+                2f at 4_000
+            },
+        ),
+        label = "thinking-shimmer-position",
+    )
+    val base = MaterialTheme.colorScheme.onSurfaceVariant
+    val highlight = MaterialTheme.colorScheme.onSurface
+    val offset = position * 180f
+    val brush = Brush.linearGradient(
+        colors = listOf(base, base, highlight, base, base),
+        start = Offset(offset, 0f),
+        end = Offset(offset + 180f, 0f),
+    )
+    Text(text = text, modifier = modifier, style = style.merge(TextStyle(brush = brush)))
+}
+
+@Composable
 private fun ActivityMessage(message: ChatMessage, modifier: Modifier) {
     val initiallyExpanded = message.status == "failed" || message.status == "declined"
     var expanded by remember(message.id) { mutableStateOf(initiallyExpanded) }
     val icon = activityIcon(message.kind)
     val tint = statusTint(message.status)
+    val running = message.status.isRunningStatus()
     val expandable = message.detail?.isNotBlank() == true || message.changes.isNotEmpty() ||
         (message.cwd?.isNotBlank() == true && message.kind == "commandExecution")
 
@@ -135,19 +265,26 @@ private fun ActivityMessage(message: ChatMessage, modifier: Modifier) {
             horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
             Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(17.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = message.title ?: activityTitle(message.kind),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    text = activitySummary(message),
-                    style = if (message.kind == "commandExecution") MonoTextStyle else MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = if (expanded) 3 else 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            Box(Modifier.weight(1f)) {
+                val label = activityLabel(message)
+                if (running) {
+                    ThinkingShimmer(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                } else {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (message.status == "failed" || message.status == "declined") {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        maxLines = if (expanded) 3 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             message.durationMs?.takeIf { it > 0 }?.let {
                 Text(
@@ -358,21 +495,101 @@ private fun activityIcon(kind: String?): ImageVector = when (kind) {
     else -> Icons.Outlined.Build
 }
 
-private fun activityTitle(kind: String?): String = when (kind) {
-    "commandExecution" -> "命令"
-    "fileChange" -> "文件变更"
-    "reasoning" -> "分析"
-    "plan" -> "计划"
-    "webSearch" -> "网页搜索"
-    "error" -> "执行失败"
-    else -> "Codex 活动"
+private fun activityLabel(message: ChatMessage): String {
+    val running = message.status.isRunningStatus()
+    return when (message.kind) {
+        "commandExecution" -> commandActivityLabel(message, running)
+        "fileChange" -> when {
+            running -> "正在编辑文件"
+            message.status == "failed" -> "文件编辑失败"
+            message.status == "declined" -> "未编辑文件"
+            message.changes.size == 1 -> "已编辑 ${message.changes.single().path.substringAfterLast('/')}"
+            message.changes.isNotEmpty() -> "已编辑 ${message.changes.size} 个文件"
+            else -> "已编辑文件"
+        }
+        "webSearch" -> when {
+            running && message.text.isNotBlank() -> "正在网络上搜索 ${message.text}"
+            running -> "正在搜索网页"
+            message.text.isNotBlank() -> "已搜索网页：${message.text}"
+            else -> "已搜索网页"
+        }
+        "reasoning" -> when {
+            running && message.text.isBlank() -> "正在思考"
+            running && message.text == "正在分析" -> "正在思考"
+            message.text.isNotBlank() -> message.text
+            else -> if (running) "正在思考" else "已完成分析"
+        }
+        "plan" -> message.text.ifBlank { if (running) "正在规划" else "已完成计划" }
+        "contextCompaction" -> if (running) "正在压缩上下文" else "上下文已压缩"
+        "imageView" -> if (running) "正在查看 ${message.text}" else "已查看 ${message.text}"
+        "imageGeneration" -> if (running) "正在生成图片" else "已生成图片"
+        "sleep" -> if (running) "正在等待" else "等待结束"
+        "error" -> message.text.ifBlank { "执行失败" }
+        "agentMessage" -> message.text.ifBlank { if (running) "正在处理" else "已完成" }
+        else -> when {
+            message.status == "failed" -> message.text.ifBlank { "工具调用失败" }
+            running -> message.text.ifBlank { "正在调用工具" }
+            else -> message.text.ifBlank { message.title ?: "已调用工具" }
+        }
+    }
 }
 
-private fun activitySummary(message: ChatMessage): String = when {
-    message.kind == "commandExecution" -> message.text.ifBlank { statusLabel(message.status) }
-    message.changes.isNotEmpty() -> message.changes.joinToString(" · ") { it.path.substringAfterLast('/') }
-    message.text.isNotBlank() -> message.text
-    else -> statusLabel(message.status)
+private fun commandActivityLabel(message: ChatMessage, running: Boolean): String {
+    if (message.status == "failed") {
+        return "命令失败${message.commandSuffix()}"
+    }
+    if (message.status == "declined") {
+        return "未运行${message.commandSuffix()}"
+    }
+    val action = message.commandActions.firstOrNull { it.type != "unknown" }
+    if (action != null) {
+        val target = action.path?.takeIf(String::isNotBlank)
+            ?: action.name?.takeIf(String::isNotBlank)
+            ?: action.query?.takeIf(String::isNotBlank)
+        return when (action.type) {
+            "read" -> listOf(if (running) "正在读取" else "已读取", target).filterNotNull().joinToString(" ")
+            "listFiles" -> if (target == null) {
+                if (running) "正在列出文件" else "已列出文件"
+            } else {
+                "${if (running) "正在列出" else "已列出"} $target 中的文件"
+            }
+            "search" -> when {
+                action.query?.isNotBlank() == true ->
+                    "${if (running) "正在搜索" else "已搜索"} ${action.query}"
+                target != null -> "${if (running) "正在搜索" else "已搜索"} $target 中的文件"
+                else -> if (running) "正在搜索文件" else "已搜索文件"
+            }
+            else -> "${if (running) "正在运行" else "已运行"}${message.commandSuffix()}"
+        }
+    }
+    return "${if (running) "正在运行" else "已运行"}${message.commandSuffix()}"
+}
+
+private fun ChatMessage.commandSuffix(): String {
+    val command = text.lineSequence().firstOrNull()?.trim().orEmpty()
+    return command.takeIf(String::isNotBlank)?.let { " ${it.take(180)}" }.orEmpty()
+}
+
+private fun activityGroupSummary(messages: List<ChatMessage>): String {
+    if (messages.any { it.status == "failed" }) return "执行过程包含失败项"
+    val summaries = buildList {
+        if (messages.any { it.kind == "commandExecution" }) add("运行了命令")
+        val editedFiles = messages
+            .filter { it.kind == "fileChange" }
+            .flatMap(ChatMessage::changes)
+            .map { it.path }
+            .distinct()
+            .size
+        if (editedFiles == 1) add("编辑了一个文件")
+        if (editedFiles > 1) add("编辑了多个文件")
+        if (messages.any { it.kind == "webSearch" }) add("已搜索网页")
+        if (messages.any { it.kind == "contextCompaction" }) add("已压缩上下文")
+        val tools = messages.count {
+            it.kind in setOf("mcpToolCall", "dynamicToolCall", "collabAgentToolCall", "subAgentActivity")
+        }
+        if (tools > 0) add("调用了工具")
+    }
+    return summaries.joinToString(" · ").ifBlank { "已完成" }
 }
 
 private fun statusLabel(status: String?): String = when (status) {
@@ -383,6 +600,8 @@ private fun statusLabel(status: String?): String = when (status) {
     else -> status.orEmpty()
 }
 
+private fun String?.isRunningStatus(): Boolean = this in setOf("inProgress", "in_progress", "active")
+
 @Composable
 private fun statusTint(status: String?): Color = when (status) {
     "failed", "declined" -> MaterialTheme.colorScheme.error
@@ -392,9 +611,21 @@ private fun statusTint(status: String?): Color = when (status) {
 }
 
 private fun formatDuration(durationMs: Long): String = when {
-    durationMs < 1_000 -> "${durationMs}ms"
-    durationMs < 60_000 -> String.format(Locale.US, "%.1fs", durationMs / 1_000.0)
-    else -> String.format(Locale.US, "%dm %02ds", durationMs / 60_000, durationMs / 1_000 % 60)
+    durationMs < 1_000 -> "${durationMs} 毫秒"
+    durationMs < 60_000 -> String.format(Locale.US, "%.1f 秒", durationMs / 1_000.0)
+    durationMs < 3_600_000 -> String.format(
+        Locale.US,
+        "%d 分 %02d 秒",
+        durationMs / 60_000,
+        durationMs / 1_000 % 60,
+    )
+    else -> String.format(
+        Locale.US,
+        "%d 小时 %02d 分 %02d 秒",
+        durationMs / 3_600_000,
+        durationMs / 60_000 % 60,
+        durationMs / 1_000 % 60,
+    )
 }
 
 private fun changeKindLabel(kind: String): String = when (kind.lowercase()) {

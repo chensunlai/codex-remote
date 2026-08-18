@@ -1,6 +1,7 @@
 package dev.codexremote.app.data
 
 import dev.codexremote.app.model.ChatMessage
+import dev.codexremote.app.model.CommandActionSummary
 import dev.codexremote.app.model.FileChangeSummary
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.ModelOption
@@ -15,6 +16,8 @@ import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.SkillOption
 import dev.codexremote.app.model.ThreadDetail
+import dev.codexremote.app.model.ThreadTokenUsage
+import dev.codexremote.app.model.TurnSummary
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -87,11 +90,26 @@ fun parseThread(root: JSONObject): ThreadDetail {
         turns.forEach { turn ->
             val turnId = turn.optString("id")
             val status = turn.optString("status")
-            turn.optJSONArray("items")?.objects()?.forEachIndexed { index, item ->
-                parseChatItem(turnId, status, index, item)?.let(::add)
+            val items = turn.optJSONArray("items")?.objects().orEmpty()
+            items.forEachIndexed { index, item ->
+                val itemStatus = if (status == "inProgress" && index < items.lastIndex) {
+                    "completed"
+                } else {
+                    status
+                }
+                parseChatItem(turnId, itemStatus, index, item)?.let(::add)
             }
             turn.optJSONObject("error")?.nullableString("message")?.let { error ->
-                add(ChatMessage("$turnId-error", MessageRole.SYSTEM, error, "failed", "error"))
+                add(
+                    ChatMessage(
+                        "$turnId-error",
+                        MessageRole.SYSTEM,
+                        error,
+                        "failed",
+                        "error",
+                        turnId = turnId,
+                    ),
+                )
             }
         }
     }
@@ -107,7 +125,24 @@ fun parseThread(root: JSONObject): ThreadDetail {
         messages = messages,
         activeTurnId = activeTurn,
         activeFlags = status.optJSONArray("activeFlags")?.strings()?.toSet().orEmpty(),
+        turns = turns.map(::parseTurnSummary),
     )
+}
+
+fun parseTurnSummary(turn: JSONObject): TurnSummary = TurnSummary(
+    id = turn.optString("id"),
+    status = turn.optString("status"),
+    startedAtMs = turn.nullableLong("startedAt")?.times(1_000),
+    completedAtMs = turn.nullableLong("completedAt")?.times(1_000),
+    durationMs = turn.nullableLong("durationMs"),
+)
+
+fun parseThreadTokenUsage(payload: JSONObject): ThreadTokenUsage? {
+    val usage = payload.optJSONObject("tokenUsage") ?: return null
+    val usedTokens = usage.optJSONObject("last")?.nullableLong("totalTokens") ?: return null
+    val contextWindow = usage.nullableLong("modelContextWindow") ?: return null
+    if (usedTokens < 0 || contextWindow <= 0) return null
+    return ThreadTokenUsage(usedTokens = usedTokens, contextWindow = contextWindow)
 }
 
 fun parseChatItem(
@@ -118,7 +153,7 @@ fun parseChatItem(
 ): ChatMessage? {
     val type = item.optString("type")
     val id = item.optString("id", "$turnId-$index")
-    return when (type) {
+    val message = when (type) {
         "userMessage" -> {
             val text = item.optJSONArray("content")?.objects()?.joinToString("\n") { content ->
                 when (content.optString("type")) {
@@ -175,6 +210,14 @@ fun parseChatItem(
                 cwd = item.nullableString("cwd"),
                 exitCode = item.nullableInt("exitCode"),
                 durationMs = item.nullableLong("durationMs"),
+                commandActions = item.optJSONArray("commandActions")?.objects()?.map { action ->
+                    CommandActionSummary(
+                        type = action.optString("type"),
+                        path = action.nullableString("path"),
+                        name = action.nullableString("name"),
+                        query = action.nullableString("query"),
+                    )
+                }.orEmpty(),
             )
         }
         "fileChange" -> {
@@ -276,13 +319,14 @@ fun parseChatItem(
         "contextCompaction" -> ChatMessage(
             id,
             MessageRole.SYSTEM,
-            "上下文已压缩",
+            if (turnStatus == "inProgress") "正在压缩上下文" else "上下文已压缩",
             turnStatus,
             type,
             title = "上下文",
         )
         else -> null
     }
+    return message?.copy(turnId = turnId)
 }
 
 fun parsePlanSteps(array: JSONArray?): List<PlanStep> =

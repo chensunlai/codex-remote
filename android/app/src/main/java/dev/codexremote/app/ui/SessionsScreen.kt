@@ -3,6 +3,7 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -59,7 +60,6 @@ import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
@@ -89,10 +89,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -100,6 +104,7 @@ import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.ChatMessage
 import dev.codexremote.app.model.MainSection
+import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.ModelOption
 import dev.codexremote.app.model.NewSessionOptions
 import dev.codexremote.app.model.PromptContext
@@ -107,13 +112,32 @@ import dev.codexremote.app.model.PromptContextType
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.SessionSummary
+import dev.codexremote.app.model.ThreadDetail
+import dev.codexremote.app.model.ThreadTokenUsage
+import dev.codexremote.app.model.TurnSummary
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private data class SessionTarget(val id: String, val title: String)
+
+private sealed interface ChatTimelineEntry {
+    val key: String
+
+    data class Message(val message: ChatMessage) : ChatTimelineEntry {
+        override val key: String = "message:${message.id}"
+    }
+
+    data class Activity(
+        val turnId: String?,
+        val messages: List<ChatMessage>,
+        val turn: TurnSummary?,
+        override val key: String,
+    ) : ChatTimelineEntry
+}
 
 @Composable
 fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
@@ -464,6 +488,16 @@ private fun ChatPane(
     }
     val lastLength = thread.messages.lastOrNull()?.text?.length.orZero() +
         thread.messages.lastOrNull()?.detail?.length.orZero()
+    val timeline = remember(thread.messages, thread.turns) {
+        buildChatTimeline(thread.messages, thread.turns)
+    }
+    val showThinking = remember(
+        thread.activeTurnId,
+        thread.activeFlags,
+        thread.messages,
+    ) {
+        shouldShowThinking(thread)
+    }
     LaunchedEffect(thread.messages.size, lastLength, thread.plan, thread.latestDiff) {
         if (thread.messages.isNotEmpty() && (following || listState.layoutInfo.totalItemsCount == 0)) {
             listState.scrollToItem(maxOf(0, listState.layoutInfo.totalItemsCount - 1))
@@ -548,6 +582,7 @@ private fun ChatPane(
                     onEffort = { effort = it },
                     active = thread.activeTurnId != null,
                     hasMessages = thread.messages.isNotEmpty(),
+                    tokenUsage = thread.tokenUsage,
                     skills = state.skills,
                     onBrowseFile = {
                         viewModel.browse(thread.cwd)
@@ -574,11 +609,6 @@ private fun ChatPane(
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            if (thread.activeFlags.isNotEmpty()) {
-                item(key = "active-flags") {
-                    ChatTimelineItem { itemModifier -> ActiveFlags(thread.activeFlags, itemModifier) }
-                }
-            }
             if (thread.plan.isNotEmpty()) {
                 item(key = "current-plan") {
                     ChatTimelineItem { itemModifier ->
@@ -586,30 +616,32 @@ private fun ChatPane(
                     }
                 }
             }
-            items(thread.messages, key = ChatMessage::id) { message ->
-                ChatTimelineItem { itemModifier -> ChatMessageRow(message, itemModifier) }
+            items(timeline, key = ChatTimelineEntry::key) { entry ->
+                ChatTimelineItem { itemModifier ->
+                    when (entry) {
+                        is ChatTimelineEntry.Message -> ChatMessageRow(entry.message, itemModifier)
+                        is ChatTimelineEntry.Activity -> ActivityGroup(
+                            messages = entry.messages,
+                            turn = entry.turn,
+                            isActiveTurn = entry.turnId == thread.activeTurnId,
+                            modifier = itemModifier,
+                        )
+                    }
+                }
             }
             if (thread.latestDiff.isNotBlank()) {
                 item(key = "latest-diff") {
                     ChatTimelineItem { itemModifier -> UnifiedDiffPanel(thread.latestDiff, itemModifier) }
                 }
             }
-            if (thread.activeTurnId != null) {
-                item(key = "active-indicator") {
-                    ChatTimelineItem { itemModifier ->
-                        Row(
-                            itemModifier.padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(9.dp),
-                        ) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 1.8.dp)
-                            Text(
-                                "Codex 正在工作",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
+            if (thread.activeFlags.isNotEmpty()) {
+                item(key = "active-flags") {
+                    ChatTimelineItem { itemModifier -> ActiveFlags(thread.activeFlags, itemModifier) }
+                }
+            }
+            if (showThinking) {
+                item(key = "thinking-indicator") {
+                    ChatTimelineItem { itemModifier -> ThinkingIndicator(itemModifier) }
                 }
             }
         }
@@ -636,6 +668,66 @@ private fun ChatTimelineItem(content: @Composable (Modifier) -> Unit) {
         content(Modifier.widthIn(max = 760.dp).fillMaxWidth())
     }
 }
+
+private fun buildChatTimeline(
+    messages: List<ChatMessage>,
+    turns: List<TurnSummary>,
+): List<ChatTimelineEntry> {
+    val turnsById = turns.associateBy(TurnSummary::id)
+    val result = mutableListOf<ChatTimelineEntry>()
+    val activity = mutableListOf<ChatMessage>()
+    var activityTurnId: String? = null
+    var activityIndex = 0
+
+    fun flushActivity() {
+        if (activity.isEmpty()) return
+        val firstId = activity.first().id
+        result += ChatTimelineEntry.Activity(
+            turnId = activityTurnId,
+            messages = activity.toList(),
+            turn = activityTurnId?.let(turnsById::get),
+            key = "activity:${activityTurnId.orEmpty()}:$activityIndex:$firstId",
+        )
+        activity.clear()
+        activityTurnId = null
+        activityIndex += 1
+    }
+
+    messages.forEach { message ->
+        val isFinalAssistant = message.role == MessageRole.ASSISTANT && message.phase != "commentary"
+        val isStandalone = message.role == MessageRole.USER || isFinalAssistant
+        if (isStandalone) {
+            flushActivity()
+            result += ChatTimelineEntry.Message(message)
+        } else {
+            if (activity.isNotEmpty() && activityTurnId != message.turnId) flushActivity()
+            activityTurnId = message.turnId
+            activity += message
+        }
+    }
+    flushActivity()
+    return result
+}
+
+private fun shouldShowThinking(thread: ThreadDetail): Boolean {
+    val activeTurnId = thread.activeTurnId ?: return false
+    if (thread.activeFlags.any { it == "waitingOnApproval" || it == "waitingOnUserInput" }) {
+        return false
+    }
+    val activeMessages = thread.messages.filter { it.turnId == activeTurnId }
+    val activeActivity = activeMessages.any { message ->
+        message.phase == "commentary" && message.status.isRunningStatus() ||
+            message.role in setOf(MessageRole.SYSTEM, MessageRole.TOOL) && message.status.isRunningStatus()
+    }
+    val assistantStreaming = activeMessages.any { message ->
+        message.role == MessageRole.ASSISTANT &&
+            message.phase != "commentary" &&
+            message.status.isRunningStatus()
+    }
+    return !activeActivity && !assistantStreaming
+}
+
+private fun String?.isRunningStatus(): Boolean = this in setOf("inProgress", "in_progress", "active")
 
 @Composable
 private fun ThreadMenu(
@@ -727,6 +819,7 @@ private fun PromptComposer(
     onEffort: (String) -> Unit,
     active: Boolean,
     hasMessages: Boolean,
+    tokenUsage: ThreadTokenUsage?,
     skills: List<dev.codexremote.app.model.SkillOption>,
     onBrowseFile: () -> Unit,
     onAddSkill: (dev.codexremote.app.model.SkillOption) -> Unit,
@@ -869,6 +962,7 @@ private fun PromptComposer(
                                 modifier = Modifier.padding(horizontal = 7.dp).size(19.dp),
                             )
                             Spacer(Modifier.weight(1f))
+                            tokenUsage?.let { ContextUsageButton(it) }
                             CompactOptionMenu(
                                 value = model,
                                 options = models.map { it.id to it.displayName },
@@ -903,6 +997,73 @@ private fun PromptComposer(
             }
         }
     }
+}
+
+@Composable
+private fun ContextUsageButton(usage: ThreadTokenUsage) {
+    val contextWindow = usage.contextWindow.coerceAtLeast(1)
+    val usedTokens = usage.usedTokens.coerceIn(0, contextWindow)
+    val usedFraction = usedTokens.toFloat() / contextWindow.toFloat()
+    val usedPercent = (usedFraction * 100).roundToInt()
+    val remainingPercent = 100 - usedPercent
+    var expanded by remember(usage) { mutableStateOf(false) }
+    val trackColor = MaterialTheme.colorScheme.outlineVariant
+    val progressColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Box {
+        IconButton(
+            onClick = { expanded = true },
+            modifier = Modifier.size(36.dp),
+        ) {
+            Canvas(
+                Modifier
+                    .size(18.dp)
+                    .semantics {
+                        contentDescription = "上下文已使用 $usedPercent%，剩余 $remainingPercent%"
+                    },
+            ) {
+                val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+                drawArc(
+                    color = trackColor,
+                    startAngle = -90f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = stroke,
+                )
+                drawArc(
+                    color = progressColor,
+                    startAngle = -90f,
+                    sweepAngle = usedFraction * 360f,
+                    useCenter = false,
+                    style = stroke,
+                )
+            }
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Column(
+                Modifier.widthIn(min = 220.dp, max = 300.dp).padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Text("上下文窗口", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    "$remainingPercent% 剩余",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    "${formatTokenCount(usedTokens)} / ${formatTokenCount(contextWindow)} tokens 已使用",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+private fun formatTokenCount(value: Long): String = when {
+    value < 1_000 -> value.toString()
+    value < 1_000_000 -> String.format(Locale.US, "%.1fk", value / 1_000.0)
+    else -> String.format(Locale.US, "%.1fM", value / 1_000_000.0)
 }
 
 @Composable
