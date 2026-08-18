@@ -167,7 +167,7 @@ download() {
 }
 
 install_gateway_service() {
-  for command in systemctl useradd groupadd getent id ln; do
+  for command in systemctl useradd groupadd getent id ln chown; do
     command -v "$command" >/dev/null 2>&1 || fail "缺少 systemd 安装命令: $command"
   done
   [[ "$DESTINATION" =~ ^/[A-Za-z0-9._/-]+$ ]] || \
@@ -193,6 +193,7 @@ install_gateway_service() {
       --no-create-home --shell "$nologin" "$service_user"
   fi
   install -d -m 0700 -o "$service_user" -g "$service_group" "$DATA_DIRECTORY"
+  chown -R "$service_user:$service_group" "$DATA_DIRECTORY"
 
   if [[ ! -e "$config_file" ]]; then
     cat >"$config_file" <<EOF
@@ -231,7 +232,7 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
 ReadWritePaths=$DATA_DIRECTORY
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
@@ -242,14 +243,36 @@ EOF
   systemctl daemon-reload
   systemctl enable codex-remote-gateway.service >/dev/null
   systemctl restart codex-remote-gateway.service
-  systemctl is-active --quiet codex-remote-gateway.service || \
-    fail "Gateway service 启动失败，请运行 systemctl status codex-remote-gateway"
+  if ! gateway_service_is_stable; then
+    systemctl --no-pager --full status codex-remote-gateway.service >&2 || true
+    if command -v journalctl >/dev/null 2>&1; then
+      journalctl --no-pager -u codex-remote-gateway.service -n 20 >&2 || true
+    fi
+    fail "Gateway service 启动失败，错误信息见上方日志"
+  fi
 
   printf '%s\n' \
     "Gateway 已安装并启动: $DESTINATION" \
     "配置文件: $config_file" \
     "首次 Token: sudo cat $DATA_DIRECTORY/api-token" \
     "状态检查: sudo systemctl status codex-remote-gateway"
+}
+
+gateway_service_is_stable() {
+  local consecutive_active_checks=0
+  local check
+  for check in 1 2 3 4 5; do
+    sleep 1
+    if systemctl is-active --quiet codex-remote-gateway.service; then
+      consecutive_active_checks=$((consecutive_active_checks + 1))
+      if ((consecutive_active_checks >= 2)); then
+        return 0
+      fi
+    else
+      consecutive_active_checks=0
+    fi
+  done
+  return 1
 }
 
 print_completion() {
