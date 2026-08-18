@@ -1,8 +1,9 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CodexRuntime } from "./codex-runtime.js";
+import { CodexRuntime, stopThreadLockOwner } from "./codex-runtime.js";
 
 describe("CodexRuntime takeover", () => {
   it("unsubscribes without requiring the managed daemon before resuming", async () => {
@@ -53,4 +54,70 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "stops the process holding the requested thread lock",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "codex-lock-owner-test-"));
+      const lockDirectory = join(directory, "thread-writer-locks");
+      const threadId = "019fff0d-1c52-7042-9de0-9cc0eecf4095";
+      const lockPath = join(lockDirectory, `${threadId}.lock`);
+      const readyPath = join(directory, "ready");
+      const previousCodexHome = process.env.CODEX_HOME;
+      await mkdir(lockDirectory, { recursive: true });
+      const holder = spawn(
+        process.execPath,
+        [
+          "-e",
+          `const fs = require("node:fs");
+const descriptor = fs.openSync(process.argv[1], "w");
+fs.writeFileSync(process.argv[2], String(process.pid));
+setInterval(() => fs.fstatSync(descriptor), 1_000);`,
+          lockPath,
+          readyPath,
+          "codex",
+        ],
+        { stdio: "ignore" },
+      );
+      process.env.CODEX_HOME = directory;
+
+      try {
+        await eventually(async () => {
+          try {
+            return (await readFile(readyPath, "utf8")).trim() === String(holder.pid);
+          } catch {
+            return false;
+          }
+        });
+        await stopThreadLockOwner(threadId);
+        await eventually(async () => !processExists(holder.pid));
+      } finally {
+        if (holder.pid && processExists(holder.pid)) holder.kill("SIGKILL");
+        if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = previousCodexHome;
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });
+
+async function eventually(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 5_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error("condition was not met");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+function processExists(pid: number | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}

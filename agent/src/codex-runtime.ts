@@ -179,7 +179,7 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function stopThreadLockOwner(threadId: string): Promise<void> {
+export async function stopThreadLockOwner(threadId: string): Promise<void> {
   const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
   const lockPath = join(codexHome, "thread-writer-locks", `${threadId}.lock`);
   const owners = await threadLockOwners(lockPath);
@@ -196,7 +196,8 @@ async function stopThreadLockOwner(threadId: string): Promise<void> {
   let remaining = owners;
   while (remaining.length > 0 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    remaining = await threadLockOwners(lockPath);
+    const currentOwners = new Set(await threadLockOwners(lockPath));
+    remaining = owners.filter((pid) => currentOwners.has(pid));
   }
   for (const pid of remaining) {
     if (pid === process.pid || !(await isCodexProcess(pid))) continue;
