@@ -1,7 +1,9 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -10,6 +12,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 private val LightColors = lightColorScheme(
@@ -26,6 +29,9 @@ private val LightColors = lightColorScheme(
     tertiaryContainer = Color(0xFFFFE9A6),
     onTertiaryContainer = Color(0xFF3F2F00),
     error = Color(0xFFBA1A1A),
+    onError = Color.White,
+    errorContainer = Color(0xFFFFDAD6),
+    onErrorContainer = Color(0xFF410002),
     background = Color(0xFFFAFAFA),
     onBackground = Color(0xFF202020),
     surface = Color(0xFFFFFFFF),
@@ -37,8 +43,15 @@ private val LightColors = lightColorScheme(
     surfaceContainerHighest = Color(0xFFE4E4E4),
     surfaceVariant = Color(0xFFE7E7E7),
     onSurfaceVariant = Color(0xFF494949),
+    surfaceTint = Color.Transparent,
+    surfaceBright = Color.White,
+    surfaceDim = Color(0xFFDEDEDE),
+    inverseSurface = Color(0xFF303030),
+    inverseOnSurface = Color(0xFFF4F4F4),
+    inversePrimary = Color(0xFFF4F4F4),
     outline = Color(0xFF747474),
     outlineVariant = Color(0xFFC9C9C9),
+    scrim = Color.Black,
 )
 
 private val DarkColors = darkColorScheme(
@@ -55,6 +68,9 @@ private val DarkColors = darkColorScheme(
     tertiaryContainer = Color(0xFF584900),
     onTertiaryContainer = Color(0xFFFFE990),
     error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF93000A),
+    onErrorContainer = Color(0xFFFFDAD6),
     background = Color(0xFF1E1E1E),
     onBackground = Color(0xFFE8E8E8),
     surface = Color(0xFF1E1E1E),
@@ -66,8 +82,23 @@ private val DarkColors = darkColorScheme(
     surfaceContainerHighest = Color(0xFF3C3C3C),
     surfaceVariant = Color(0xFF3B3B3B),
     onSurfaceVariant = Color(0xFFC8C8C8),
+    surfaceTint = Color.Transparent,
+    surfaceBright = Color(0xFF3B3B3B),
+    surfaceDim = Color(0xFF141414),
+    inverseSurface = Color(0xFFE8E8E8),
+    inverseOnSurface = Color(0xFF242424),
+    inversePrimary = Color(0xFF242424),
     outline = Color(0xFF969696),
     outlineVariant = Color(0xFF505050),
+    scrim = Color.Black,
+)
+
+private val AppShapes = Shapes(
+    extraSmall = RoundedCornerShape(6.dp),
+    small = RoundedCornerShape(8.dp),
+    medium = RoundedCornerShape(12.dp),
+    large = RoundedCornerShape(16.dp),
+    extraLarge = RoundedCornerShape(22.dp),
 )
 
 private val AppTypography = Typography(
@@ -93,6 +124,7 @@ fun CodexRemoteTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
         typography = AppTypography,
+        shapes = AppShapes,
         content = content,
     )
 }

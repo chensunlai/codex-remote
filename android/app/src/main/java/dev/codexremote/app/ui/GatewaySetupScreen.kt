@@ -14,10 +14,6 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -85,7 +81,7 @@ fun GatewayForm(
         if (showBrand) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    Icons.Outlined.Terminal,
+                    CodexIcons.Terminal,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                 )
@@ -115,7 +111,7 @@ fun GatewayForm(
             trailingIcon = {
                 IconButton(onClick = { revealToken = !revealToken }) {
                     Icon(
-                        if (revealToken) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                        if (revealToken) CodexIcons.VisibilityOff else CodexIcons.Visibility,
                         contentDescription = if (revealToken) "隐藏令牌" else "显示令牌",
                     )
                 }

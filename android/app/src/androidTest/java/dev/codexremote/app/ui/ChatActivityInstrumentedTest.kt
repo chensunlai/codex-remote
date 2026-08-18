@@ -200,6 +200,8 @@ class ChatActivityInstrumentedTest {
         }
 
         compose.onNodeWithText("权限").assertIsDisplayed()
+        compose.onNodeWithText("Reasoning").assertIsDisplayed()
+        compose.onAllNodesWithText("推理").assertCountEquals(0)
         compose.onNodeWithText("状态").assertIsDisplayed()
         compose.onNodeWithText("Image Gen").assertIsDisplayed()
         compose.onNodeWithText("模型").performClick()

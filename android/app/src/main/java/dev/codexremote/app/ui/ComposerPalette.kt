@@ -16,24 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.AddComment
-import androidx.compose.material.icons.outlined.AttachFile
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Compress
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Lightbulb
-import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.RateReview
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.Speed
-import androidx.compose.material.icons.outlined.TrackChanges
-import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -113,8 +96,8 @@ internal fun ComposerPalette(
             .fillMaxWidth()
             .heightIn(max = 320.dp)
             .testTag("composer-palette"),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         tonalElevation = 3.dp,
     ) {
@@ -182,14 +165,14 @@ private fun AddPalette(
         item { PaletteSection("添加") }
         item {
             PaletteRow(
-                icon = Icons.Outlined.AttachFile,
+                icon = CodexIcons.Attach,
                 title = "文件和文件夹",
                 onClick = onBrowseFiles,
             )
         }
         item {
             PaletteRow(
-                icon = Icons.Outlined.TrackChanges,
+                icon = CodexIcons.Goal,
                 title = "目标",
                 description = "设置要持续追求的目标",
                 onClick = onGoal,
@@ -198,7 +181,7 @@ private fun AddPalette(
         if (planAvailable) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Lightbulb,
+                    icon = CodexIcons.Lightbulb,
                     title = "计划模式",
                     description = if (planEnabled) "退出计划模式" else "开启计划模式",
                     selected = planEnabled,
@@ -217,7 +200,7 @@ private fun AddPalette(
         }
         items(results, key = RemoteFileMatch::path) { file ->
             PaletteRow(
-                icon = if (file.type == RemoteFileType.DIRECTORY) Icons.Outlined.Folder else Icons.Outlined.Code,
+                icon = if (file.type == RemoteFileType.DIRECTORY) CodexIcons.Folder else CodexIcons.Code,
                 title = file.name,
                 description = file.path,
                 onClick = { onFile(file) },
@@ -256,7 +239,7 @@ private fun CommandPalette(
         if (matches("权限", "permission", "access")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Shield,
+                    icon = CodexIcons.Shield,
                     title = "权限",
                     value = selectedPermission?.let(::permissionProfileLabel) ?: "选择权限",
                     onClick = { onOpenPanel(ComposerPanel.PERMISSIONS) },
@@ -266,8 +249,8 @@ private fun CommandPalette(
         if (matches("推理", "reasoning", "effort", selectedEffort.orEmpty())) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Psychology,
-                    title = "推理",
+                    icon = CodexIcons.Brain,
+                    title = "Reasoning",
                     value = selectedEffort ?: "medium",
                     onClick = { onOpenPanel(ComposerPanel.EFFORTS) },
                 )
@@ -276,7 +259,7 @@ private fun CommandPalette(
         if (matches("模型", "model", selectedModelLabel)) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.ViewInAr,
+                    icon = CodexIcons.ViewModel,
                     title = "模型",
                     value = selectedModelLabel,
                     onClick = { onOpenPanel(ComposerPanel.MODELS) },
@@ -286,7 +269,7 @@ private fun CommandPalette(
         if (matches("状态", "status", "usage", "limit")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Speed,
+                    icon = CodexIcons.Status,
                     title = "状态",
                     description = "显示聊天 ID、上下文用量和速率限制",
                     onClick = { onOpenPanel(ComposerPanel.STATUS) },
@@ -296,7 +279,7 @@ private fun CommandPalette(
         if (matches("目标", "goal")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.TrackChanges,
+                    icon = CodexIcons.Goal,
                     title = "目标",
                     description = "设置要持续追求的目标",
                     onClick = onGoal,
@@ -306,7 +289,7 @@ private fun CommandPalette(
         if (planAvailable && matches("计划模式", "plan")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Lightbulb,
+                    icon = CodexIcons.Lightbulb,
                     title = "计划模式",
                     description = if (planEnabled) "退出计划模式" else "开启计划模式",
                     selected = planEnabled,
@@ -320,7 +303,7 @@ private fun CommandPalette(
         if (matches("新建", "new")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.AddComment,
+                    icon = CodexIcons.MessageAdd,
                     title = "新建会话",
                     onClick = onNew,
                 )
@@ -329,7 +312,7 @@ private fun CommandPalette(
         if (!turnActive && matches("压缩", "compact")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Compress,
+                    icon = CodexIcons.Compact,
                     title = "压缩上下文",
                     onClick = onCompact,
                 )
@@ -338,7 +321,7 @@ private fun CommandPalette(
         if (!turnActive && matches("审阅", "review")) {
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.RateReview,
+                    icon = CodexIcons.Review,
                     title = "审阅未提交更改",
                     onClick = onReview,
                 )
@@ -351,7 +334,7 @@ private fun CommandPalette(
         if (matchingSkills.isNotEmpty()) item { PaletteSection("技能") }
         items(matchingSkills, key = SkillOption::path) { skill ->
             PaletteRow(
-                icon = Icons.Outlined.ViewInAr,
+                icon = CodexIcons.ViewModel,
                 title = skill.displayName,
                 description = skill.description,
                 value = "系统",
@@ -382,7 +365,7 @@ private fun ModelPalette(
         }
         items(filtered, key = ModelOption::id) { model ->
             PaletteRow(
-                icon = Icons.Outlined.ViewInAr,
+                icon = CodexIcons.ViewModel,
                 title = model.displayName,
                 description = model.id.takeUnless { it == model.displayName },
                 selected = model.id == selected,
@@ -403,7 +386,7 @@ private fun EffortPalette(
         item { PaletteHeader("Reasoning effort", onBack) }
         items(efforts, key = { it }) { effort ->
             PaletteRow(
-                icon = Icons.Outlined.Psychology,
+                icon = CodexIcons.Brain,
                 title = effort,
                 selected = effort == selected,
                 onClick = { onSelect(effort) },
@@ -430,7 +413,7 @@ private fun PermissionPalette(
         item { PaletteHeader("权限", onBack) }
         items(options, key = PermissionProfile::id) { profile ->
             PaletteRow(
-                icon = Icons.Outlined.Shield,
+                icon = CodexIcons.Shield,
                 title = permissionProfileLabel(profile.id),
                 description = profile.description,
                 selected = profile.id == selected,
@@ -451,7 +434,7 @@ private fun StatusPalette(
         item { PaletteHeader("状态", onBack) }
         item {
             PaletteRow(
-                icon = Icons.Outlined.Code,
+                icon = CodexIcons.Code,
                 title = "聊天 ID",
                 description = threadId,
                 onClick = null,
@@ -465,7 +448,7 @@ private fun StatusPalette(
                 "$remaining% 剩余 · ${formatTokenCount(it.usedTokens)} / ${formatTokenCount(it.contextWindow)} tokens"
             } ?: "等待 Codex 返回上下文用量"
             PaletteRow(
-                icon = Icons.Outlined.Speed,
+                icon = CodexIcons.Status,
                 title = "上下文",
                 description = context,
                 onClick = null,
@@ -474,7 +457,7 @@ private fun StatusPalette(
         limits?.primary?.let { window ->
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Speed,
+                    icon = CodexIcons.Status,
                     title = "短期限制",
                     description = rateLimitDescription(window.usedPercent, window.windowDurationMins, window.resetsAt),
                     onClick = null,
@@ -484,7 +467,7 @@ private fun StatusPalette(
         limits?.secondary?.let { window ->
             item {
                 PaletteRow(
-                    icon = Icons.Outlined.Speed,
+                    icon = CodexIcons.Status,
                     title = "长期限制",
                     description = rateLimitDescription(window.usedPercent, window.windowDurationMins, window.resetsAt),
                     onClick = null,
@@ -501,7 +484,7 @@ private fun PaletteHeader(title: String, onBack: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
-            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回")
+            Icon(CodexIcons.ArrowBack, contentDescription = "返回")
         }
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
     }
@@ -525,7 +508,7 @@ private fun PaletteSearch(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(6.dp),
+        shape = MaterialTheme.shapes.small,
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
     ) {
         Row(
@@ -534,7 +517,7 @@ private fun PaletteSearch(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(
-                Icons.Outlined.Search,
+                CodexIcons.Search,
                 contentDescription = null,
                 modifier = Modifier.size(19.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -622,7 +605,7 @@ private fun PaletteRow(
         }
         if (selected) {
             Icon(
-                Icons.Outlined.Check,
+                CodexIcons.Check,
                 contentDescription = "已选择",
                 modifier = Modifier.size(18.dp),
                 tint = MaterialTheme.colorScheme.primary,

@@ -100,7 +100,8 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation("com.composables:icons-lucide-cmp:2.2.1")
+    implementation("dev.chrisbanes.haze:haze:1.7.2")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     // 0.39.2 is the last release aligned with this project's Kotlin 2.3 and Compose 1.10 toolchain.
     //noinspection NewerVersionAvailable

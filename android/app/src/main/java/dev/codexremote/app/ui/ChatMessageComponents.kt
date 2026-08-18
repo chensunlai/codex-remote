@@ -22,21 +22,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.Build
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Difference
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
-import androidx.compose.material.icons.outlined.HourglassEmpty
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.Public
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -150,7 +135,7 @@ fun ActivityGroup(
                 horizontalArrangement = Arrangement.spacedBy(9.dp),
             ) {
                 Icon(
-                    if (failed) Icons.Outlined.ErrorOutline else Icons.Outlined.CheckCircle,
+                    if (failed) CodexIcons.Error else CodexIcons.CheckCircle,
                     contentDescription = null,
                     tint = if (failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
@@ -177,7 +162,7 @@ fun ActivityGroup(
                     }
                 }
                 Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (expanded) CodexIcons.ChevronUp else CodexIcons.ChevronDown,
                     contentDescription = if (expanded) "收起执行过程" else "展开执行过程",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
@@ -308,7 +293,7 @@ private fun ActivityMessage(
             }
             if (expandable) {
                 Icon(
-                    if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    if (expanded) CodexIcons.ChevronUp else CodexIcons.ChevronDown,
                     contentDescription = if (expanded) "收起详情" else "展开详情",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp),
@@ -318,7 +303,7 @@ private fun ActivityMessage(
         if (expanded) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                shape = RoundedCornerShape(10.dp),
+                shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
                 ActivityDetails(message)
@@ -385,7 +370,7 @@ fun PlanPanel(
     if (steps.isEmpty()) return
     Surface(
         modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -397,9 +382,9 @@ fun PlanPanel(
                 Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                     Icon(
                         imageVector = when (step.status) {
-                            "completed" -> Icons.Outlined.CheckCircle
-                            "inProgress", "in_progress" -> Icons.Outlined.HourglassEmpty
-                            else -> Icons.Outlined.Info
+                            "completed" -> CodexIcons.CheckCircle
+                            "inProgress", "in_progress" -> CodexIcons.Hourglass
+                            else -> CodexIcons.Info
                         },
                         contentDescription = null,
                         tint = statusTint(step.status),
@@ -422,10 +407,10 @@ fun UnifiedDiffPanel(diff: String, modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            Icon(Icons.Outlined.Difference, contentDescription = null, modifier = Modifier.size(17.dp))
+            Icon(CodexIcons.FileDiff, contentDescription = null, modifier = Modifier.size(17.dp))
             Text("本轮差异", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
             Icon(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                if (expanded) CodexIcons.ChevronUp else CodexIcons.ChevronDown,
                 contentDescription = if (expanded) "收起差异" else "展开差异",
                 modifier = Modifier.size(20.dp),
             )
@@ -433,7 +418,7 @@ fun UnifiedDiffPanel(diff: String, modifier: Modifier = Modifier) {
         if (expanded) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                shape = RoundedCornerShape(10.dp),
+                shape = MaterialTheme.shapes.medium,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
             ) {
                 Box(Modifier.padding(10.dp)) { DiffBlock(diff) }
@@ -448,7 +433,7 @@ private fun CodeBlock(content: String) {
     Box(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, MaterialTheme.shapes.small)
             .horizontalScroll(rememberScrollState())
             .padding(10.dp),
     ) {
@@ -462,7 +447,7 @@ private fun DiffBlock(diff: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceContainerHighest, RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHighest, MaterialTheme.shapes.small)
             .horizontalScroll(rememberScrollState())
             .padding(vertical = 6.dp),
     ) {
@@ -496,16 +481,16 @@ private fun DiffBlock(diff: String) {
 }
 
 private fun activityIcon(kind: String?): ImageVector = when (kind) {
-    "commandExecution" -> Icons.Outlined.Terminal
-    "fileChange" -> Icons.Outlined.Difference
-    "reasoning", "plan" -> Icons.Outlined.Psychology
-    "webSearch" -> Icons.Outlined.Public
-    "collabAgentToolCall", "subAgentActivity" -> Icons.Outlined.AccountTree
-    "imageView", "imageGeneration" -> Icons.Outlined.Image
-    "sleep" -> Icons.Outlined.HourglassEmpty
-    "error" -> Icons.Outlined.ErrorOutline
-    "contextCompaction" -> Icons.Outlined.Code
-    else -> Icons.Outlined.Build
+    "commandExecution" -> CodexIcons.Terminal
+    "fileChange" -> CodexIcons.FileDiff
+    "reasoning", "plan" -> CodexIcons.Brain
+    "webSearch" -> CodexIcons.Globe
+    "collabAgentToolCall", "subAgentActivity" -> CodexIcons.Network
+    "imageView", "imageGeneration" -> CodexIcons.Image
+    "sleep" -> CodexIcons.Hourglass
+    "error" -> CodexIcons.Error
+    "contextCompaction" -> CodexIcons.Code
+    else -> CodexIcons.Wrench
 }
 
 private fun activityLabel(message: ChatMessage): String {

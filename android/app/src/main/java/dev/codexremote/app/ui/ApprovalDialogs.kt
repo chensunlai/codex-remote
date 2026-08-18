@@ -109,7 +109,7 @@ private fun UserInputDialog(
     ) {
         Surface(
             modifier = Modifier.widthIn(max = 640.dp).fillMaxWidth().padding(20.dp).heightIn(max = 720.dp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+            shape = MaterialTheme.shapes.large,
         ) {
             Column {
                 Text(

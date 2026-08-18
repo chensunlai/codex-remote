@@ -11,9 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -34,7 +31,7 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
             title = { Text("设置") },
             navigationIcon = {
                 IconButton(onClick = { viewModel.setSection(MainSection.SERVICES) }) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回服务器")
+                    Icon(CodexIcons.ArrowBack, contentDescription = "返回服务器")
                 }
             },
         )
@@ -58,7 +55,7 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                 HorizontalDivider()
                 Spacer(Modifier.height(20.dp))
                 OutlinedButton(onClick = viewModel::clearGateway, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.AutoMirrored.Outlined.Logout, contentDescription = null)
+                    Icon(CodexIcons.Logout, contentDescription = null)
                     Text("移除此网关", Modifier.padding(start = 8.dp))
                 }
             }

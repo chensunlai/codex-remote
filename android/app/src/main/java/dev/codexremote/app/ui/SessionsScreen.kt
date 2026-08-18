@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -33,35 +34,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.ArrowUpward
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.Compress
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileRenameOutline
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Flag
-import androidx.compose.material.icons.outlined.Image
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Psychology
-import androidx.compose.material.icons.outlined.Pause
-import androidx.compose.material.icons.outlined.PlayArrow
-import androidx.compose.material.icons.outlined.RateReview
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.Stop
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.Wifi
-import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -93,10 +65,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -128,6 +102,11 @@ import dev.codexremote.app.model.ThreadGoal
 import dev.codexremote.app.model.ThreadSettingsUpdate
 import dev.codexremote.app.model.ThreadTokenUsage
 import dev.codexremote.app.model.TurnSummary
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.rememberHazeState
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -183,7 +162,7 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
                     EmptyPane(
                         title = "选择一个会话",
                         modifier = Modifier.weight(1f).fillMaxHeight(),
-                        icon = Icons.Outlined.Forum,
+                        icon = CodexIcons.Messages,
                     )
                 }
             }
@@ -252,14 +231,14 @@ private fun SessionListPane(
                 },
                 actions = {
                     IconButton(onClick = viewModel::refreshSessions, enabled = state.selectedServiceId != null) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "刷新会话")
+                        Icon(CodexIcons.Refresh, contentDescription = "刷新会话")
                     }
                     FilledIconButton(
                         onClick = onCreate,
                         enabled = state.selectedServiceId != null && !state.showingArchivedSessions,
                         modifier = Modifier.padding(end = 8.dp).size(38.dp),
                     ) {
-                        Icon(Icons.Outlined.Add, contentDescription = "新建会话")
+                        Icon(CodexIcons.Add, contentDescription = "新建会话")
                     }
                 },
             )
@@ -274,7 +253,7 @@ private fun SessionListPane(
                     modifier = Modifier.fillMaxSize(),
                 )
                 state.sessions.isEmpty() -> EmptyPane(
-                    icon = if (state.showingArchivedSessions) Icons.Outlined.Archive else Icons.Outlined.Forum,
+                    icon = if (state.showingArchivedSessions) CodexIcons.Archive else CodexIcons.Messages,
                     title = if (state.sessionSearch.isNotBlank()) "没有匹配的会话" else if (state.showingArchivedSessions) "暂无归档" else "暂无会话",
                     action = if (state.showingArchivedSessions || state.sessionSearch.isNotBlank()) null else {
                         { Button(onClick = onCreate) { Text("新建会话") } }
@@ -303,11 +282,11 @@ private fun SessionFilters(state: AppState, viewModel: MainViewModel) {
             onValueChange = viewModel::setSessionSearch,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            leadingIcon = { Icon(CodexIcons.Search, contentDescription = null) },
             trailingIcon = if (state.sessionSearch.isNotBlank()) {
                 {
                     IconButton(onClick = { viewModel.setSessionSearch("") }) {
-                        Icon(Icons.Outlined.Close, contentDescription = "清除搜索")
+                        Icon(CodexIcons.Close, contentDescription = "清除搜索")
                     }
                 }
             } else null,
@@ -324,7 +303,7 @@ private fun SessionFilters(state: AppState, viewModel: MainViewModel) {
                 onClick = { viewModel.showArchivedSessions(true) },
                 label = { Text("已归档") },
                 leadingIcon = if (state.showingArchivedSessions) {
-                    { Icon(Icons.Outlined.Archive, contentDescription = null, modifier = Modifier.size(17.dp)) }
+                    { Icon(CodexIcons.Archive, contentDescription = null, modifier = Modifier.size(17.dp)) }
                 } else null,
             )
         }
@@ -338,7 +317,11 @@ private fun SessionList(
     onRename: (SessionSummary) -> Unit,
     onDelete: (SessionSummary) -> Unit,
 ) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 12.dp)) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         itemsIndexed(state.sessions, key = { _, session -> session.id }) { index, session ->
             val group = sessionGroup(session.updatedAt)
             val previous = state.sessions.getOrNull(index - 1)?.let { sessionGroup(it.updatedAt) }
@@ -378,7 +361,12 @@ private fun SessionRow(
     var menu by remember { mutableStateOf(false) }
     val title = session.name ?: session.preview.ifBlank { "未命名会话" }
     Surface(
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f) else Color.Transparent,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
@@ -387,7 +375,7 @@ private fun SessionRow(
         ) {
             Box(Modifier.padding(top = 2.dp)) {
                 Icon(
-                    imageVector = if (session.status == "active") Icons.Outlined.Sync else Icons.Outlined.Forum,
+                    imageVector = if (session.status == "active") CodexIcons.Loading else CodexIcons.Message,
                     contentDescription = null,
                     tint = if (session.status == "active") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(22.dp),
@@ -429,30 +417,30 @@ private fun SessionRow(
                 )
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "会话菜单")
+                        Icon(CodexIcons.More, contentDescription = "会话菜单")
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(
                             text = { Text("重命名") },
-                            leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
+                            leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
                             onClick = { menu = false; onRename() },
                         )
                         if (archived) {
                             DropdownMenuItem(
                                 text = { Text("恢复") },
-                                leadingIcon = { Icon(Icons.Outlined.Restore, contentDescription = null) },
+                                leadingIcon = { Icon(CodexIcons.ArchiveRestore, contentDescription = null) },
                                 onClick = { menu = false; onUnarchive() },
                             )
                         } else {
                             DropdownMenuItem(
                                 text = { Text("归档") },
-                                leadingIcon = { Icon(Icons.Outlined.Archive, contentDescription = null) },
+                                leadingIcon = { Icon(CodexIcons.Archive, contentDescription = null) },
                                 onClick = { menu = false; onArchive() },
                             )
                         }
                         DropdownMenuItem(
                             text = { Text("删除") },
-                            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                            leadingIcon = { Icon(CodexIcons.Delete, contentDescription = null) },
                             onClick = { menu = false; onDelete() },
                         )
                     }
@@ -503,6 +491,19 @@ private fun ChatPane(
     ) {
         shouldShowThinking(thread)
     }
+    val hazeState = rememberHazeState()
+    val glassBackground = MaterialTheme.colorScheme.background
+    val glassTint = MaterialTheme.colorScheme.surfaceContainerHigh
+    val glassStyle = remember(glassBackground, glassTint) {
+        val dark = glassBackground.luminance() < 0.5f
+        HazeStyle(
+            backgroundColor = glassBackground,
+            tint = HazeTint(glassTint.copy(alpha = if (dark) 0.78f else 0.7f)),
+            blurRadius = 24.dp,
+            noiseFactor = 0.025f,
+            fallbackTint = HazeTint(glassTint.copy(alpha = if (dark) 0.96f else 0.94f)),
+        )
+    }
     LaunchedEffect(thread.messages.size, lastLength, thread.plan, thread.latestDiff) {
         if (thread.messages.isNotEmpty() && (following || listState.layoutInfo.totalItemsCount == 0)) {
             listState.scrollToItem(maxOf(0, listState.layoutInfo.totalItemsCount - 1))
@@ -536,20 +537,20 @@ private fun ChatPane(
                 navigationIcon = {
                     if (showBack) {
                         IconButton(onClick = viewModel::closeSession) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回会话列表")
+                            Icon(CodexIcons.ArrowBack, contentDescription = "返回会话列表")
                         }
                     }
                 },
                 actions = {
                     Icon(
-                        if (state.eventConnected) Icons.Outlined.Wifi else Icons.Outlined.WifiOff,
+                        if (state.eventConnected) CodexIcons.Wifi else CodexIcons.WifiOff,
                         contentDescription = if (state.eventConnected) "实时连接正常" else "实时连接已断开",
                         tint = if (state.eventConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                         modifier = Modifier.size(20.dp),
                     )
                     Box {
                         IconButton(onClick = { menu = true }) {
-                            Icon(Icons.Outlined.MoreVert, contentDescription = "会话操作")
+                            Icon(CodexIcons.More, contentDescription = "会话操作")
                         }
                         ThreadMenu(
                             expanded = menu,
@@ -573,8 +574,26 @@ private fun ChatPane(
         bottomBar = {
             if (!state.showingArchivedSessions) {
                 Column(Modifier.fillMaxWidth()) {
-                    if (thread.goal != null || showGoalEditor) {
-                        GoalPanel(
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(18.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(
+                                        Color.Transparent,
+                                        glassBackground.copy(alpha = 0.72f),
+                                    ),
+                                ),
+                            ),
+                    )
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .hazeEffect(state = hazeState, style = glassStyle),
+                    ) {
+                        if (thread.goal != null || showGoalEditor) {
+                            GoalPanel(
                             goal = thread.goal,
                             editing = showGoalEditor,
                             draft = goalDraft,
@@ -596,9 +615,9 @@ private fun ChatPane(
                             onPause = { viewModel.setGoalStatus("paused") },
                             onResume = { viewModel.setGoalStatus("active") },
                             onClear = viewModel::clearGoal,
-                        )
-                    }
-                    PromptComposer(
+                            )
+                        }
+                        PromptComposer(
                         input = input,
                         onInput = { input = it },
                         contexts = contexts,
@@ -722,15 +741,24 @@ private fun ChatPane(
                             }
                         },
                         onStop = viewModel::interruptTurn,
-                    )
+                        )
+                    }
                 }
             }
         },
     ) { padding ->
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = padding.calculateTopPadding())
+                .hazeSource(state = hazeState),
+            contentPadding = PaddingValues(
+                start = 14.dp,
+                top = 12.dp,
+                end = 14.dp,
+                bottom = padding.calculateBottomPadding() + 12.dp,
+            ),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             if (thread.plan.isNotEmpty()) {
@@ -878,35 +906,35 @@ private fun ThreadMenu(
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         DropdownMenuItem(
             text = { Text("重命名") },
-            leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
+            leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
             onClick = onRename,
         )
         if (!archived) {
             DropdownMenuItem(
                 text = { Text("审阅未提交更改") },
-                leadingIcon = { Icon(Icons.Outlined.RateReview, contentDescription = null) },
+                leadingIcon = { Icon(CodexIcons.Review, contentDescription = null) },
                 onClick = onReview,
             )
             DropdownMenuItem(
                 text = { Text("压缩上下文") },
-                leadingIcon = { Icon(Icons.Outlined.Compress, contentDescription = null) },
+                leadingIcon = { Icon(CodexIcons.Compact, contentDescription = null) },
                 onClick = onCompact,
             )
             DropdownMenuItem(
                 text = { Text("归档") },
-                leadingIcon = { Icon(Icons.Outlined.Archive, contentDescription = null) },
+                leadingIcon = { Icon(CodexIcons.Archive, contentDescription = null) },
                 onClick = onArchive,
             )
         } else {
             DropdownMenuItem(
                 text = { Text("恢复") },
-                leadingIcon = { Icon(Icons.Outlined.Restore, contentDescription = null) },
+                leadingIcon = { Icon(CodexIcons.ArchiveRestore, contentDescription = null) },
                 onClick = onUnarchive,
             )
         }
         DropdownMenuItem(
             text = { Text("删除") },
-            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+            leadingIcon = { Icon(CodexIcons.Delete, contentDescription = null) },
             onClick = onDelete,
         )
     }
@@ -921,7 +949,7 @@ private fun ActiveFlags(flags: Set<String>, modifier: Modifier = Modifier) {
     }
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = RoundedCornerShape(10.dp),
+        shape = MaterialTheme.shapes.medium,
         modifier = modifier,
     ) {
         Row(
@@ -930,7 +958,7 @@ private fun ActiveFlags(flags: Set<String>, modifier: Modifier = Modifier) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Icon(
-                Icons.Outlined.Shield,
+                CodexIcons.Shield,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.tertiary,
                 modifier = Modifier.size(18.dp),
@@ -957,15 +985,15 @@ private fun GoalPanel(
     LaunchedEffect(editing) {
         if (editing) focusRequester.requestFocus()
     }
-    Surface(color = MaterialTheme.colorScheme.background) {
+    Surface(color = Color.Transparent) {
         Box(
             Modifier.fillMaxWidth().padding(start = 12.dp, top = 6.dp, end = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
             Surface(
                 modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.9f),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
                 if (editing) {
@@ -975,7 +1003,7 @@ private fun GoalPanel(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Flag,
+                            CodexIcons.Flag,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(18.dp),
@@ -1005,14 +1033,14 @@ private fun GoalPanel(
                             },
                         )
                         IconButton(onClick = onCancel, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Outlined.Close, contentDescription = "取消编辑 Goal")
+                            Icon(CodexIcons.Close, contentDescription = "取消编辑 Goal")
                         }
                         IconButton(
                             onClick = onSave,
                             enabled = draft.isNotBlank(),
                             modifier = Modifier.size(34.dp),
                         ) {
-                            Icon(Icons.Outlined.Check, contentDescription = "保存 Goal")
+                            Icon(CodexIcons.Check, contentDescription = "保存 Goal")
                         }
                     }
                 } else if (goal != null) {
@@ -1022,7 +1050,7 @@ private fun GoalPanel(
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Flag,
+                            CodexIcons.Flag,
                             contentDescription = null,
                             tint = if (goal.status == "active") {
                                 MaterialTheme.colorScheme.primary
@@ -1046,21 +1074,21 @@ private fun GoalPanel(
                             )
                         }
                         IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Outlined.Edit, contentDescription = "编辑 Goal")
+                            Icon(CodexIcons.Edit, contentDescription = "编辑 Goal")
                         }
                         when (goal.status) {
                             "active" -> IconButton(onClick = onPause, modifier = Modifier.size(34.dp)) {
-                                Icon(Icons.Outlined.Pause, contentDescription = "暂停 Goal")
+                                Icon(CodexIcons.Pause, contentDescription = "暂停 Goal")
                             }
                             "paused", "blocked", "usageLimited", "budgetLimited" -> IconButton(
                                 onClick = onResume,
                                 modifier = Modifier.size(34.dp),
                             ) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = "继续 Goal")
+                                Icon(CodexIcons.Play, contentDescription = "继续 Goal")
                             }
                         }
                         IconButton(onClick = onClear, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Outlined.Close, contentDescription = "清除 Goal")
+                            Icon(CodexIcons.Close, contentDescription = "清除 Goal")
                         }
                     }
                 }
@@ -1162,7 +1190,7 @@ private fun PromptComposer(
         panel = next
     }
 
-    Surface(color = MaterialTheme.colorScheme.background) {
+    Surface(color = Color.Transparent) {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter,
@@ -1245,7 +1273,7 @@ private fun PromptComposer(
                 }
                 Surface(
                     shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.86f),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 ) {
                     Column {
@@ -1265,9 +1293,9 @@ private fun PromptComposer(
                                         leadingIcon = {
                                             Icon(
                                                 when (context.type) {
-                                                    PromptContextType.FILE -> Icons.Outlined.Code
-                                                    PromptContextType.IMAGE -> Icons.Outlined.Image
-                                                    PromptContextType.SKILL -> Icons.Outlined.Psychology
+                                                    PromptContextType.FILE -> CodexIcons.Code
+                                                    PromptContextType.IMAGE -> CodexIcons.Image
+                                                    PromptContextType.SKILL -> CodexIcons.Brain
                                                 },
                                                 contentDescription = null,
                                                 modifier = Modifier.size(17.dp),
@@ -1275,7 +1303,7 @@ private fun PromptComposer(
                                         },
                                         trailingIcon = {
                                             Icon(
-                                                Icons.Outlined.Close,
+                                                CodexIcons.Close,
                                                 contentDescription = "移除",
                                                 modifier = Modifier.size(16.dp),
                                             )
@@ -1335,7 +1363,7 @@ private fun PromptComposer(
                                 modifier = Modifier.size(36.dp),
                             ) {
                                 Icon(
-                                    Icons.Outlined.Add,
+                                    CodexIcons.Add,
                                     contentDescription = "添加",
                                     tint = if (panel == ComposerPanel.ADD) {
                                         MaterialTheme.colorScheme.primary
@@ -1350,7 +1378,7 @@ private fun PromptComposer(
                                 modifier = Modifier.size(36.dp),
                             ) {
                                 Icon(
-                                    Icons.Outlined.Shield,
+                                    CodexIcons.Shield,
                                     contentDescription = permissionProfile
                                         ?.let { "权限：${permissionProfileLabel(it)}" }
                                         ?: "选择权限",
@@ -1395,9 +1423,9 @@ private fun PromptComposer(
                             ) {
                                 Icon(
                                     if (active && input.isBlank()) {
-                                        Icons.Outlined.Stop
+                                        CodexIcons.Stop
                                     } else {
-                                        Icons.Outlined.ArrowUpward
+                                        CodexIcons.ArrowUp
                                     },
                                     contentDescription = if (active && input.isBlank()) "停止" else "发送",
                                 )
@@ -1487,7 +1515,7 @@ private fun RemoteContextPickerDialog(
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             modifier = Modifier.fillMaxWidth().fillMaxHeight(0.84f).padding(18.dp).widthIn(max = 680.dp),
-            shape = RoundedCornerShape(8.dp),
+            shape = MaterialTheme.shapes.large,
         ) {
             Column {
                 Row(
@@ -1504,7 +1532,7 @@ private fun RemoteContextPickerDialog(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = "关闭") }
+                    IconButton(onClick = onDismiss) { Icon(CodexIcons.Close, contentDescription = "关闭") }
                 }
                 HorizontalDivider()
                 LazyColumn(Modifier.weight(1f)) {
@@ -1513,7 +1541,7 @@ private fun RemoteContextPickerDialog(
                             ContextFileRow(
                                 name = "..",
                                 subtitle = "上级目录",
-                                icon = Icons.Outlined.FolderOpen,
+                                icon = CodexIcons.FolderOpen,
                                 onClick = {
                                     viewModel.browse(state.remotePath.substringBeforeLast('/').ifBlank { "/" })
                                 },
@@ -1525,9 +1553,9 @@ private fun RemoteContextPickerDialog(
                             name = file.name,
                             subtitle = if (file.type == RemoteFileType.DIRECTORY) "目录" else formatFileSize(file.size),
                             icon = when {
-                                file.type == RemoteFileType.DIRECTORY -> Icons.Outlined.FolderOpen
-                                file.isImage() -> Icons.Outlined.Image
-                                else -> Icons.Outlined.Code
+                                file.type == RemoteFileType.DIRECTORY -> CodexIcons.FolderOpen
+                                file.isImage() -> CodexIcons.Image
+                                else -> CodexIcons.Code
                             },
                             onClick = {
                                 if (file.type == RemoteFileType.DIRECTORY) viewModel.browse(file.path) else onSelect(file)
@@ -1565,7 +1593,7 @@ private fun ContextFileRow(
         }
         onAdd?.let {
             IconButton(onClick = it, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Outlined.Add, contentDescription = "添加文件夹")
+                Icon(CodexIcons.Add, contentDescription = "添加文件夹")
             }
         }
     }

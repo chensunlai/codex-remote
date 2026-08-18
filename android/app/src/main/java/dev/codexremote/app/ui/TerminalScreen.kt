@@ -12,9 +12,6 @@ import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,7 +57,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
                         },
                         actions = {
                             IconButton(onClick = controller::reconnect) {
-                                Icon(Icons.Outlined.Refresh, contentDescription = "重新连接终端")
+                                Icon(CodexIcons.Refresh, contentDescription = "重新连接终端")
                             }
                         },
                     )
@@ -87,7 +84,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
     ) { padding ->
         EmptyPane(
             title = if (serviceId == null) "选择服务" else "服务未连接",
-            icon = Icons.Outlined.Terminal,
+            icon = CodexIcons.Terminal,
             modifier = Modifier.fillMaxSize().padding(padding),
         )
     }

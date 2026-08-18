@@ -4,20 +4,14 @@ package dev.codexremote.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Science
-import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -49,10 +43,10 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
                 title = { Text("服务器") },
                 actions = {
                     IconButton(onClick = { viewModel.setSection(MainSection.SETTINGS) }) {
-                        Icon(Icons.Outlined.Settings, contentDescription = "设置")
+                        Icon(CodexIcons.Settings, contentDescription = "设置")
                     }
                     IconButton(onClick = viewModel::refreshServices) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "刷新服务")
+                        Icon(CodexIcons.Refresh, contentDescription = "刷新服务")
                     }
                 },
             )
@@ -61,13 +55,14 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
         if (state.services.isEmpty()) {
             EmptyPane(
                 title = "暂无已连接服务",
-                icon = Icons.Outlined.Dns,
+                icon = CodexIcons.Server,
                 modifier = Modifier.fillMaxSize().padding(padding),
             )
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 items(state.services, key = RemoteService::id) { service ->
                     ServiceRow(
@@ -80,7 +75,6 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
                         onTest = { viewModel.testService(service.id) },
                         onDelete = { deleteTarget = service },
                     )
-                    HorizontalDivider(Modifier.padding(start = 48.dp))
                 }
             }
         }
@@ -120,7 +114,12 @@ private fun ServiceRow(
     Surface(
         onClick = onSelect,
         enabled = connected,
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f) else MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        },
     ) {
         Row(
             Modifier.fillMaxWidth().padding(14.dp),
@@ -147,11 +146,11 @@ private fun ServiceRow(
                 )
             }
             TextButton(onClick = onTest, enabled = connected) {
-                Icon(Icons.Outlined.Science, contentDescription = null)
+                Icon(CodexIcons.Flask, contentDescription = null)
                 Text("测试", Modifier.padding(start = 4.dp))
             }
             IconButton(onClick = onDelete, enabled = !connected) {
-                Icon(Icons.Outlined.Delete, contentDescription = "删除服务")
+                Icon(CodexIcons.Delete, contentDescription = "删除服务")
             }
         }
     }

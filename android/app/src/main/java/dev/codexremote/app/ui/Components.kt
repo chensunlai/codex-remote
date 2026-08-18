@@ -10,9 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowDropDown
-import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -55,7 +52,7 @@ fun ServiceSelector(
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 maxLines = 1,
             )
-            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+            Icon(CodexIcons.ChevronDown, contentDescription = null)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             services.forEach { service ->
@@ -97,7 +94,7 @@ fun OptionMenu(
                 Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(display, maxLines = 1)
             }
-            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null)
+            Icon(CodexIcons.ChevronDown, contentDescription = null)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { (key, text) ->
@@ -114,7 +111,7 @@ fun OptionMenu(
 fun EmptyPane(
     title: String,
     modifier: Modifier = Modifier,
-    icon: ImageVector = Icons.Outlined.CloudOff,
+    icon: ImageVector = CodexIcons.CloudOff,
     action: (@Composable () -> Unit)? = null,
 ) {
     Column(

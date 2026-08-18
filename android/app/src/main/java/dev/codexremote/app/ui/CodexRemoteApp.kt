@@ -14,12 +14,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Dns
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.NavigationBar
@@ -50,10 +44,10 @@ private data class NavigationDestination(
 )
 
 private val destinations = listOf(
-    NavigationDestination(MainSection.SESSIONS, R.string.sessions, Icons.Outlined.Forum),
-    NavigationDestination(MainSection.TERMINAL, R.string.terminal, Icons.Outlined.Terminal),
-    NavigationDestination(MainSection.FILES, R.string.files, Icons.Outlined.Folder),
-    NavigationDestination(MainSection.SERVICES, R.string.services, Icons.Outlined.Dns),
+    NavigationDestination(MainSection.SESSIONS, R.string.sessions, CodexIcons.Messages),
+    NavigationDestination(MainSection.TERMINAL, R.string.terminal, CodexIcons.Terminal),
+    NavigationDestination(MainSection.FILES, R.string.files, CodexIcons.Folder),
+    NavigationDestination(MainSection.SERVICES, R.string.services, CodexIcons.Server),
 )
 
 @Composable
@@ -94,7 +88,7 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                     NavigationRailItem(
                         selected = state.section == MainSection.SETTINGS,
                         onClick = { viewModel.setSection(MainSection.SETTINGS) },
-                        icon = { Icon(Icons.Outlined.Settings, contentDescription = stringResource(R.string.settings)) },
+                        icon = { Icon(CodexIcons.Settings, contentDescription = stringResource(R.string.settings)) },
                         label = { Text(stringResource(R.string.settings)) },
                     )
                 }

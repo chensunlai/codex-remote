@@ -12,6 +12,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,17 +20,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Download
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.FolderOpen
-import androidx.compose.material.icons.outlined.Link
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -40,6 +30,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -93,16 +84,16 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
                     IconButton(
                         onClick = { upload.launch(arrayOf("*/*")) },
                         enabled = state.selectedServiceId != null && state.remotePath.isNotBlank(),
-                    ) { Icon(Icons.Outlined.Upload, contentDescription = "上传文件") }
+                    ) { Icon(CodexIcons.Upload, contentDescription = "上传文件") }
                     IconButton(
                         onClick = { createDirectory = true },
                         enabled = state.selectedServiceId != null && state.remotePath.isNotBlank(),
-                    ) { Icon(Icons.Outlined.Add, contentDescription = "新建目录") }
+                    ) { Icon(CodexIcons.Add, contentDescription = "新建目录") }
                     IconButton(
                         onClick = { viewModel.browse(state.remotePath.takeIf(String::isNotBlank)) },
                         enabled = state.selectedServiceId != null,
                     ) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "刷新目录")
+                        Icon(CodexIcons.Refresh, contentDescription = "刷新目录")
                     }
                 },
             )
@@ -116,11 +107,15 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
             when {
                 state.selectedServiceId == null -> EmptyPane(title = "选择服务", modifier = Modifier.fillMaxSize())
                 state.remoteFiles.isEmpty() -> EmptyPane(
-                    icon = Icons.Outlined.FolderOpen,
+                    icon = CodexIcons.FolderOpen,
                     title = "目录为空",
                     modifier = Modifier.fillMaxSize(),
                 )
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     items(state.remoteFiles, key = RemoteFile::path) { file ->
                         val downloadable = file.size < 0 || file.size <= state.maxDownloadBytes
                         FileRow(
@@ -139,7 +134,6 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
                             },
                             onDelete = { deleteTarget = file },
                         )
-                        HorizontalDivider(Modifier.padding(start = 52.dp))
                     }
                 }
             }
@@ -240,64 +234,72 @@ private fun FileRow(
     onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 14.dp, top = 9.dp, bottom = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
-        Icon(
-            when (file.type) {
-                RemoteFileType.DIRECTORY -> Icons.Outlined.Folder
-                RemoteFileType.SYMLINK -> Icons.Outlined.Link
-                else -> Icons.AutoMirrored.Outlined.InsertDriveFile
-            },
-            contentDescription = null,
-            tint = if (file.type == RemoteFileType.DIRECTORY) {
-                MaterialTheme.colorScheme.tertiary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-        )
-        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-            Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (file.type != RemoteFileType.DIRECTORY) {
-                    Text(formatBytes(file.size), style = MaterialTheme.typography.bodySmall)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpen)
+                .padding(start = 14.dp, top = 9.dp, bottom = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                when (file.type) {
+                    RemoteFileType.DIRECTORY -> CodexIcons.Folder
+                    RemoteFileType.SYMLINK -> CodexIcons.Link
+                    else -> CodexIcons.File
+                },
+                contentDescription = null,
+                tint = if (file.type == RemoteFileType.DIRECTORY) {
+                    MaterialTheme.colorScheme.tertiary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (file.type != RemoteFileType.DIRECTORY) {
+                        Text(formatBytes(file.size), style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (file.modifiedAt > 0) {
+                        Text(
+                            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                                .format(Date(file.modifiedAt * 1000)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
-                if (file.modifiedAt > 0) {
+                if (file.type != RemoteFileType.DIRECTORY && !downloadable) {
                     Text(
-                        DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-                            .format(Date(file.modifiedAt * 1000)),
+                        "超过 ${formatBytes(maxDownloadBytes)} 下载限制",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = MaterialTheme.colorScheme.error,
                     )
                 }
             }
-            if (file.type != RemoteFileType.DIRECTORY && !downloadable) {
-                Text(
-                    "超过 ${formatBytes(maxDownloadBytes)} 下载限制",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-        }
-        Box {
-            IconButton(onClick = { menu = true }) {
-                Icon(Icons.Outlined.MoreVert, contentDescription = "文件菜单")
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                if (file.type != RemoteFileType.DIRECTORY) {
+            Box {
+                IconButton(onClick = { menu = true }) {
+                    Icon(CodexIcons.More, contentDescription = "文件菜单")
+                }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (file.type != RemoteFileType.DIRECTORY) {
+                        DropdownMenuItem(
+                            text = { Text("下载") },
+                            leadingIcon = { Icon(CodexIcons.Download, contentDescription = null) },
+                            onClick = { menu = false; onDownload() },
+                            enabled = downloadable,
+                        )
+                    }
                     DropdownMenuItem(
-                        text = { Text("下载") },
-                        leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
-                        onClick = { menu = false; onDownload() },
-                        enabled = downloadable,
+                        text = { Text("删除") },
+                        leadingIcon = { Icon(CodexIcons.Delete, contentDescription = null) },
+                        onClick = { menu = false; onDelete() },
                     )
                 }
-                DropdownMenuItem(
-                    text = { Text("删除") },
-                    leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
-                    onClick = { menu = false; onDelete() },
-                )
             }
         }
     }
