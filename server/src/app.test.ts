@@ -153,6 +153,43 @@ describe("Gateway Agent relay", () => {
     ]);
   });
 
+  it("offers an explicit takeover when another Codex owns a thread", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+    const threadId = "thread-in-use";
+    await eventually(async () => {
+      const response = await api("/api/v1/services", TOKEN_A);
+      const body = await response.json() as { data: Array<{ runtime: { state: string } }> };
+      return body.data[0]?.runtime.state === "connected";
+    });
+
+    const resume = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/resume`,
+      TOKEN_A,
+      jsonBody({}),
+    );
+    expect(resume.status).toBe(409);
+    expect(await resume.json()).toEqual({
+      error: {
+        code: "THREAD_IN_USE",
+        message: "会话正在被另一个 Codex 使用",
+        details: { threadId },
+      },
+    });
+
+    const takeover = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/takeover`,
+      TOKEN_A,
+      jsonBody({}),
+    );
+    expect(takeover.status).toBe(200);
+    expect(await takeover.json()).toEqual({
+      data: {
+        thread: expect.objectContaining({ id: threadId }),
+      },
+    });
+    expect(agent.takeoverThreads).toEqual([threadId]);
+  });
+
   it("applies token changes from the admin process without restarting", async () => {
     const admin = await TokenStore.open(join(directory, "tokens.json"));
     const created = await admin.create("tablet");
@@ -450,6 +487,7 @@ describe("Gateway Agent relay", () => {
 class MockAgent {
   readonly downloadStarts: string[] = [];
   readonly codexRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  readonly takeoverThreads: string[] = [];
 
   private constructor(private readonly socket: WebSocket) {
     socket.on("message", (raw, binary) => {
@@ -525,7 +563,18 @@ class MockAgent {
       const method = String(params.method);
       const rpcParams = (params.params ?? {}) as Record<string, unknown>;
       this.codexRequests.push({ method, params: rpcParams });
-      if (method === "thread/read" && rpcParams.includeTurns === true) {
+      if (method === "thread/resume" && rpcParams.threadId === "thread-in-use") {
+        this.send({
+          type: "response",
+          id: message.id,
+          ok: false,
+          error: {
+            code: "CODEX_RPC_ERROR",
+            message: "Codex RPC -32000: thread is already loaded by another client",
+            details: { rpcCode: -32000, data: { kind: "threadInUse" } },
+          },
+        });
+      } else if (method === "thread/read" && rpcParams.includeTurns === true) {
         const legacy = rpcParams.threadId === "legacy-unmaterialized-thread";
         this.send({
           type: "response",
@@ -617,6 +666,17 @@ class MockAgent {
           error: { code: "CODEX_RPC_ERROR", message: `Unsupported Codex RPC: ${method}` },
         });
       }
+    } else if (message.method === "codex.takeover") {
+      const threadId = String(params.threadId);
+      this.takeoverThreads.push(threadId);
+      this.respond(message.id!, {
+        thread: {
+          id: threadId,
+          cwd: "/home/fixture",
+          status: { type: "idle" },
+          turns: [],
+        },
+      });
     } else {
       this.send({
         type: "response",

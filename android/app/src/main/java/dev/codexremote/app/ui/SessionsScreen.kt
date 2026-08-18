@@ -229,6 +229,25 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
         )
     }
+    state.threadTakeoverPrompt?.let { prompt ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissThreadTakeover,
+            title = { Text("会话正在使用") },
+            text = {
+                Text(
+                    "“${prompt.title}”正在被另一个 Codex 使用。停止服务器上的 Codex daemon 并接管此会话？这会断开该服务器上的其他 Codex 客户端。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::confirmThreadTakeover) {
+                    Text("停止并接管", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = viewModel::dismissThreadTakeover) { Text("取消") }
+            },
+        )
+    }
 }
 
 @Composable

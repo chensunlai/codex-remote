@@ -196,6 +196,13 @@ data class ThreadDetail(
     val goal: ThreadGoal? = null,
 )
 
+data class ThreadTakeoverPrompt(
+    val serviceId: String,
+    val threadId: String,
+    val title: String,
+    val clearSelectionOnDismiss: Boolean,
+)
+
 enum class RemoteFileType { DIRECTORY, FILE, SYMLINK, OTHER }
 
 data class RemoteFile(
@@ -266,6 +273,7 @@ data class AppState(
     val sessionSearch: String = "",
     val selectedThreadId: String? = null,
     val thread: ThreadDetail? = null,
+    val threadTakeoverPrompt: ThreadTakeoverPrompt? = null,
     val remotePath: String = "",
     val remoteFiles: List<RemoteFile> = emptyList(),
     val contextFileSearchQuery: String = "",

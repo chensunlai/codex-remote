@@ -130,6 +130,15 @@ class GatewayApi {
             ),
         ) as JSONObject
 
+    suspend fun takeover(serviceId: String, threadId: String): JSONObject =
+        data(
+            request(
+                "POST",
+                "api/v1/services/$serviceId/sessions/$threadId/takeover",
+                JSONObject(),
+            ),
+        ) as JSONObject
+
     suspend fun permissionProfiles(serviceId: String, cwd: String?): JSONObject =
         data(
             request(
@@ -435,10 +444,11 @@ class GatewayApi {
     private fun ensureSuccess(response: Response) {
         if (response.isSuccessful) return
         val text = response.body.string()
-        val message = runCatching {
-            JSONObject(text).getJSONObject("error").getString("message")
-        }.getOrElse { text.ifBlank { "HTTP " + response.code } }
-        throw GatewayException(response.code, message)
+        val error = runCatching { JSONObject(text).optJSONObject("error") }.getOrNull()
+        val code = error?.optString("code")?.takeIf(String::isNotBlank) ?: "HTTP_ERROR"
+        val message = error?.optString("message")?.takeIf(String::isNotBlank)
+            ?: text.ifBlank { "HTTP " + response.code }
+        throw GatewayException(response.code, code, message, error?.optJSONObject("details"))
     }
 
     private fun data(root: JSONObject): Any = root.opt("data") ?: JSONObject.NULL
@@ -487,7 +497,12 @@ class GatewayApi {
 
 data class PreviewPayload(val content: String, val truncated: Boolean)
 
-class GatewayException(val statusCode: Int, override val message: String) : Exception(message)
+class GatewayException(
+    val statusCode: Int,
+    val code: String,
+    override val message: String,
+    val details: JSONObject? = null,
+) : Exception(message)
 
 private fun JSONObject.putIfNotBlank(key: String, value: String?): JSONObject {
     if (!value.isNullOrBlank()) put(key, value)

@@ -33,7 +33,17 @@ export class CodexRuntime {
     peer.respond(rpcId, result);
   }
 
+  async takeoverThread<T = unknown>(threadId: string): Promise<T> {
+    this.disconnect();
+    await run(this.executable, ["app-server", "daemon", "restart"], 90_000);
+    return this.request<T>("thread/resume", { threadId });
+  }
+
   close(): void {
+    this.disconnect();
+  }
+
+  private disconnect(): void {
     const peer = this.peer;
     const child = this.process;
     this.peer = undefined;

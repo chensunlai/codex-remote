@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.codexremote.app.data.ChatCache
 import dev.codexremote.app.data.GatewayApi
+import dev.codexremote.app.data.GatewayException
 import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.SessionPreferences
 import dev.codexremote.app.data.objects
@@ -45,6 +46,7 @@ import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.model.ThreadSettings
 import dev.codexremote.app.model.ThreadSettingsUpdate
+import dev.codexremote.app.model.ThreadTakeoverPrompt
 import dev.codexremote.app.model.TurnSummary
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -309,9 +311,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.selectedThreadId == threadId && _state.value.thread != null) return
         discardSelectedEmptyThread()
         val resume = !_state.value.showingArchivedSessions
-        _state.update { it.copy(selectedThreadId = threadId, thread = null) }
+        _state.update {
+            it.copy(
+                selectedThreadId = threadId,
+                thread = null,
+                threadTakeoverPrompt = null,
+            )
+        }
         launchOperation("正在载入会话") {
-            loadThread(serviceId, threadId, resume = resume, allowCache = true)
+            try {
+                loadThread(serviceId, threadId, resume = resume, allowCache = true)
+            } catch (error: GatewayException) {
+                if (!showThreadTakeover(error, serviceId, threadId)) throw error
+            }
+        }
+    }
+
+    fun dismissThreadTakeover() {
+        _state.update { state ->
+            val clearSelection = state.threadTakeoverPrompt?.clearSelectionOnDismiss == true
+            state.copy(
+                selectedThreadId = if (clearSelection) null else state.selectedThreadId,
+                thread = if (clearSelection) null else state.thread,
+                threadTakeoverPrompt = null,
+            )
+        }
+    }
+
+    fun confirmThreadTakeover() {
+        val prompt = _state.value.threadTakeoverPrompt ?: return
+        _state.update { it.copy(threadTakeoverPrompt = null) }
+        launchOperation("正在接管会话") {
+            loadThread(
+                serviceId = prompt.serviceId,
+                threadId = prompt.threadId,
+                resume = true,
+                allowCache = false,
+                takeover = true,
+            )
         }
     }
 
@@ -332,7 +369,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val threadId = current.selectedThreadId ?: return
         launchOperation("正在发送") {
             if (!subscribedThreads.contains(threadKey(serviceId, threadId))) {
-                val resumed = api.resume(serviceId, threadId)
+                val resumed = try {
+                    api.resume(serviceId, threadId)
+                } catch (error: GatewayException) {
+                    if (!showThreadTakeover(error, serviceId, threadId)) throw error
+                    return@launchOperation
+                }
                 val summary = _state.value.sessions.firstOrNull { it.id == threadId }
                 chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, resumed)
                 val rawParsed = parseThread(resumed)
@@ -834,12 +876,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         threadId: String,
         resume: Boolean,
         allowCache: Boolean,
+        takeover: Boolean = false,
     ) {
         val summary = _state.value.sessions.firstOrNull { it.id == threadId }
         val cached = if (allowCache && summary?.status != "active") {
             chatCache.get(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0)
         } else null
-        val root = cached ?: (if (resume) api.resume(serviceId, threadId) else api.thread(serviceId, threadId)).also {
+        val root = cached ?: (when {
+            takeover -> api.takeover(serviceId, threadId)
+            resume -> api.resume(serviceId, threadId)
+            else -> api.thread(serviceId, threadId)
+        }).also {
             chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, it)
         }
         if (cached == null && resume) subscribedThreads.add(threadKey(serviceId, threadId))
@@ -1304,7 +1351,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun clearSelectedThread() {
-        _state.update { it.copy(selectedThreadId = null, thread = null) }
+        _state.update {
+            it.copy(
+                selectedThreadId = null,
+                thread = null,
+                threadTakeoverPrompt = null,
+            )
+        }
+    }
+
+    private fun showThreadTakeover(
+        error: GatewayException,
+        serviceId: String,
+        threadId: String,
+    ): Boolean {
+        if (error.code != "THREAD_IN_USE") return false
+        val current = _state.value
+        val summary = current.sessions.firstOrNull { it.id == threadId }
+        val title = summary?.name?.takeIf(String::isNotBlank)
+            ?: summary?.preview?.takeIf(String::isNotBlank)
+            ?: "此会话"
+        _state.update {
+            it.copy(
+                threadTakeoverPrompt = ThreadTakeoverPrompt(
+                    serviceId = serviceId,
+                    threadId = threadId,
+                    title = title,
+                    clearSelectionOnDismiss = current.thread?.id != threadId,
+                ),
+            )
+        }
+        return true
     }
 
     private fun discardSelectedEmptyThread(): Boolean {

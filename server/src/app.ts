@@ -357,8 +357,31 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
 
   app.post("/api/v1/services/:serviceId/sessions/:threadId/resume", async (request) => {
     const { serviceId, threadId } = parse(threadParams, request.params);
+    try {
+      return {
+        data: await codexRpc(services, request, serviceId, "thread/resume", { threadId }),
+      };
+    } catch (error) {
+      if (!isThreadInUseError(error)) throw error;
+      throw new AppError(
+        409,
+        "THREAD_IN_USE",
+        "会话正在被另一个 Codex 使用",
+        { threadId },
+      );
+    }
+  });
+
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/takeover", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
     return {
-      data: await codexRpc(services, request, serviceId, "thread/resume", { threadId }),
+      data: await services.agents.request(
+        request.ownerId,
+        serviceId,
+        "codex.takeover",
+        { threadId },
+        120_000,
+      ),
     };
   });
 
@@ -916,6 +939,22 @@ function codexRpcCode(error: unknown): number | undefined {
   }
   const match = errorMessage(error).match(/Codex RPC (-?\d+):/);
   return match?.[1] ? Number(match[1]) : undefined;
+}
+
+function isThreadInUseError(error: unknown): boolean {
+  if (!(error instanceof AppError)) return false;
+  const details = (() => {
+    try {
+      return JSON.stringify(error.details ?? "");
+    } catch {
+      return "";
+    }
+  })();
+  const text = `${error.message} ${details}`;
+  return /thread.?in.?use|thread.?occupied|thread.?locked|rollout.?locked/i.test(text)
+    || /(?:thread|conversation|session).*(?:already|currently).*(?:loaded|running|active|in use|owned)/i
+      .test(text)
+    || /(?:another|other) (?:codex|client|process)/i.test(text);
 }
 
 function withEmptyTurns(result: unknown): unknown {
