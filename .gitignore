@@ -16,3 +16,4 @@ android/.kotlin/
 android/.gradle/
 release/
 server/protocol/
+/signing/

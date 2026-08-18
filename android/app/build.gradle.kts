@@ -1,4 +1,5 @@
 import groovy.json.JsonSlurper
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -11,6 +12,22 @@ val productVersionParts = productVersion.substringBefore('-').split('.').map(Str
 require(productVersionParts.size == 3) { "Root package version must use major.minor.patch" }
 val productVersionCode =
     productVersionParts[0] * 1_000_000 + productVersionParts[1] * 1_000 + productVersionParts[2]
+val signingPropertiesFile = rootProject.file("../signing/keystore.properties")
+val releaseSigningProperties = if (signingPropertiesFile.isFile) {
+    Properties().apply {
+        signingPropertiesFile.inputStream().use { load(it) }
+    }.also { properties ->
+        listOf("storeFile", "storePassword", "keyAlias", "keyPassword", "storeType").forEach { key ->
+            require(!properties.getProperty(key).isNullOrBlank()) {
+                "Missing $key in ${signingPropertiesFile.path}"
+            }
+        }
+        val configuredStore = signingPropertiesFile.parentFile.resolve(properties.getProperty("storeFile"))
+        require(configuredStore.isFile) { "Android release keystore not found: ${configuredStore.path}" }
+    }
+} else {
+    null
+}
 
 android {
     namespace = "dev.codexremote.app"
@@ -27,11 +44,24 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        releaseSigningProperties?.let { properties ->
+            create("release") {
+                storeFile = signingPropertiesFile.parentFile.resolve(properties.getProperty("storeFile"))
+                storePassword = properties.getProperty("storePassword")
+                keyAlias = properties.getProperty("keyAlias")
+                keyPassword = properties.getProperty("keyPassword")
+                storeType = properties.getProperty("storeType")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles("proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
         }
         debug {
             applicationIdSuffix = ".debug"

@@ -7,6 +7,7 @@
     "agent"
   ],
   "scripts": {
+    "android:create-signing-key": "node scripts/create-android-signing-key.mjs",
     "build": "npm run build --workspaces",
     "dev": "npm run dev --workspace server",
     "start": "npm run start --workspace server",
