@@ -190,6 +190,47 @@ describe("Gateway Agent relay", () => {
     expect(agent.takeoverThreads).toEqual([threadId]);
   });
 
+  it("reports loaded thread locks and releases them explicitly", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+    const threadId = "thread-locked";
+    agent.sessionThreads.push({
+      id: threadId,
+      preview: "locked fixture",
+      cwd: "/home/fixture",
+      status: { type: "idle" },
+      updatedAt: 1,
+    });
+    agent.loadedThreads.add(threadId);
+
+    const before = await api(`/api/v1/services/${SERVICE_ID}/sessions`, TOKEN_A);
+    expect(await before.json()).toEqual({
+      data: {
+        data: [expect.objectContaining({ id: threadId, locked: true })],
+      },
+    });
+
+    const clientId = "019fff0d-1c52-7042-9de0-9cc0eecf4095";
+    expect((await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/lease`,
+      TOKEN_A,
+      jsonBody({ clientId }, "PUT"),
+    )).status).toBe(204);
+    const released = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/release`,
+      TOKEN_A,
+      jsonBody({}),
+    );
+    expect(await released.json()).toEqual({ data: { released: true } });
+    expect(agent.releasedThreads).toEqual([threadId]);
+
+    const after = await api(`/api/v1/services/${SERVICE_ID}/sessions`, TOKEN_A);
+    expect(await after.json()).toEqual({
+      data: {
+        data: [expect.objectContaining({ id: threadId, locked: false })],
+      },
+    });
+  });
+
   it("applies token changes from the admin process without restarting", async () => {
     const admin = await TokenStore.open(join(directory, "tokens.json"));
     const created = await admin.create("tablet");
@@ -391,6 +432,10 @@ describe("Gateway Agent relay", () => {
         params: expect.objectContaining({ archived: true, searchTerm: "review" }),
       },
       {
+        method: "thread/loaded/list",
+        params: { limit: 10_000 },
+      },
+      {
         method: "skills/list",
         params: { cwds: ["/home/fixture/project"], forceReload: false },
       },
@@ -488,6 +533,9 @@ class MockAgent {
   readonly downloadStarts: string[] = [];
   readonly codexRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
   readonly takeoverThreads: string[] = [];
+  readonly releasedThreads: string[] = [];
+  readonly loadedThreads = new Set<string>();
+  readonly sessionThreads: Array<Record<string, unknown>> = [];
 
   private constructor(private readonly socket: WebSocket) {
     socket.on("message", (raw, binary) => {
@@ -594,7 +642,16 @@ class MockAgent {
             status: { type: "notLoaded" },
           },
         });
-      } else if (method === "thread/list" || method === "skills/list") {
+      } else if (method === "thread/list") {
+        this.respond(message.id!, { data: this.sessionThreads });
+      } else if (method === "thread/loaded/list") {
+        this.respond(message.id!, { data: [...this.loadedThreads] });
+      } else if (method === "thread/unsubscribe") {
+        const threadId = String(rpcParams.threadId);
+        this.loadedThreads.delete(threadId);
+        this.releasedThreads.push(threadId);
+        this.respond(message.id!, { status: "unsubscribed" });
+      } else if (method === "skills/list") {
         this.respond(message.id!, { data: [] });
       } else if (method === "collaborationMode/list") {
         this.respond(message.id!, {

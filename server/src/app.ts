@@ -10,6 +10,7 @@ import type { GatewayEvent } from "./domain.js";
 import { AppError, ConflictError, errorMessage } from "./errors.js";
 import { EventJournal } from "./event-journal.js";
 import { ServiceStore } from "./service-store.js";
+import { ThreadLeaseManager } from "./thread-lease-manager.js";
 import { TokenStore } from "./token-store.js";
 import { APP_VERSION } from "./version.js";
 
@@ -22,6 +23,7 @@ declare module "fastify" {
 export interface GatewayServices {
   agents: AgentRegistry;
   events: EventJournal;
+  leases: ThreadLeaseManager;
   services: ServiceStore;
   tokens: TokenStore;
 }
@@ -87,7 +89,29 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   const tokens = await TokenStore.open(resolve(config.dataDirectory, "tokens.json"));
   await tokens.import(config.apiTokens);
   const agents = new AgentRegistry(services, events);
-  const builtServices = { agents, events, services, tokens };
+  const leases = new ThreadLeaseManager({
+    status: async ({ ownerId, serviceId, threadId }) => {
+      const result = await agents.request<Record<string, unknown>>(
+        ownerId,
+        serviceId,
+        "codex.rpc",
+        { method: "thread/read", params: { threadId } },
+      );
+      return threadStatus(result);
+    },
+    release: async ({ ownerId, serviceId, threadId }) => {
+      await agents.request(
+        ownerId,
+        serviceId,
+        "codex.rpc",
+        { method: "thread/unsubscribe", params: { threadId } },
+      );
+    },
+    changed: ({ ownerId, serviceId, threadId }, locked) => {
+      events.publish(ownerId, "session.occupancy/changed", { threadId, locked }, serviceId);
+    },
+  });
+  const builtServices = { agents, events, leases, services, tokens };
 
   const app = Fastify({
     logger: {
@@ -147,7 +171,10 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   registerTerminalRoute(app, builtServices);
   registerEventRoutes(app, builtServices);
 
-  app.addHook("onClose", async () => agents.close());
+  app.addHook("onClose", async () => {
+    leases.close();
+    await agents.close();
+  });
   return { app, services: builtServices };
 }
 
@@ -284,8 +311,8 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
       }),
       request.query,
     );
-    return {
-      data: await codexRpc(
+    const [threads, loaded] = await Promise.all([
+      codexRpc(
         services,
         request,
         serviceId,
@@ -300,7 +327,10 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
           sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
         }),
       ),
-    };
+      codexRpc(services, request, serviceId, "thread/loaded/list", { limit: 10_000 })
+        .catch(() => ({ data: [] })),
+    ]);
+    return { data: withLoadedState(threads, loaded) };
   });
 
   app.post("/api/v1/services/:serviceId/sessions", async (request, reply) => {
@@ -383,6 +413,29 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         120_000,
       ),
     };
+  });
+
+  app.put("/api/v1/services/:serviceId/sessions/:threadId/lease", async (request, reply) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const { clientId } = parse(z.object({ clientId: z.string().uuid() }), request.body);
+    services.leases.acquire({ ownerId: request.ownerId, serviceId, threadId }, clientId);
+    return reply.status(204).send();
+  });
+
+  app.delete("/api/v1/services/:serviceId/sessions/:threadId/lease", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const { clientId } = parse(z.object({ clientId: z.string().uuid() }), request.query);
+    const releaseAt = services.leases.leave(
+      { ownerId: request.ownerId, serviceId, threadId },
+      clientId,
+    );
+    return { data: { releaseAt: releaseAt ?? null } };
+  });
+
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/release", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    await services.leases.release({ ownerId: request.ownerId, serviceId, threadId });
+    return { data: { released: true } };
   });
 
   app.get("/api/v1/services/:serviceId/permission-profiles", async (request) => {
@@ -891,6 +944,39 @@ function codexRpc(
     { method, params },
     timeoutMs,
   );
+}
+
+function withLoadedState(threads: unknown, loaded: unknown): unknown {
+  if (!threads || typeof threads !== "object" || Array.isArray(threads)) return threads;
+  const result = threads as Record<string, unknown>;
+  const data = Array.isArray(result.data) ? result.data : [];
+  const loadedIds = new Set(
+    loaded && typeof loaded === "object" && !Array.isArray(loaded)
+      && Array.isArray((loaded as Record<string, unknown>).data)
+      ? (loaded as { data: unknown[] }).data.filter(
+        (value): value is string => typeof value === "string",
+      )
+      : [],
+  );
+  return {
+    ...result,
+    data: data.map((value) => value && typeof value === "object" && !Array.isArray(value)
+      ? {
+          ...value as Record<string, unknown>,
+          locked: loadedIds.has(String((value as Record<string, unknown>).id)),
+        }
+      : value),
+  };
+}
+
+function threadStatus(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "notLoaded";
+  const thread = (value as Record<string, unknown>).thread;
+  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return "notLoaded";
+  const status = (thread as Record<string, unknown>).status;
+  if (!status || typeof status !== "object" || Array.isArray(status)) return "notLoaded";
+  const type = (status as Record<string, unknown>).type;
+  return typeof type === "string" ? type : "notLoaded";
 }
 
 function toSandboxPolicy(
