@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +20,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.model.ChatMessage
 import dev.codexremote.app.model.MessageRole
+import dev.codexremote.app.model.ModelOption
+import dev.codexremote.app.model.PermissionProfile
+import dev.codexremote.app.model.RemoteFileMatch
+import dev.codexremote.app.model.RemoteFileType
+import dev.codexremote.app.model.SkillOption
 import dev.codexremote.app.model.TurnSummary
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 
@@ -145,4 +152,130 @@ class ChatActivityInstrumentedTest {
         compose.onNodeWithTag("activity-list").performScrollToIndex(0)
         compose.onAllNodesWithText("stable output").assertCountEquals(0)
     }
+
+    @Test
+    fun addPaletteMatchesCodexActionsAndSearchesFiles() {
+        var query = ""
+        var selectedPath = ""
+        compose.setContent {
+            CodexRemoteTheme {
+                TestComposerPalette(
+                    panel = ComposerPanel.ADD,
+                    fileQuery = query,
+                    fileResults = listOf(
+                        RemoteFileMatch("App.kt", "/workspace/src/App.kt", RemoteFileType.FILE),
+                    ),
+                    onFileQuery = { query = it },
+                    onFile = { selectedPath = it.path },
+                )
+            }
+        }
+
+        compose.onNodeWithText("文件和文件夹").assertIsDisplayed()
+        compose.onNodeWithText("目标").assertIsDisplayed()
+        compose.onNodeWithText("计划模式").assertIsDisplayed()
+        compose.onNodeWithText("输入内容搜索文件").performTextInput("app")
+        compose.runOnIdle { assertEquals("app", query) }
+        compose.onNodeWithText("App.kt").performClick()
+        compose.runOnIdle { assertEquals("/workspace/src/App.kt", selectedPath) }
+    }
+
+    @Test
+    fun slashPaletteNavigatesToSmoothModelAndEffortSelectors() {
+        var panel by mutableStateOf(ComposerPanel.COMMANDS)
+        var selectedModel = "gpt-fixture"
+        var selectedEffort = "medium"
+        compose.setContent {
+            CodexRemoteTheme {
+                TestComposerPalette(
+                    panel = panel,
+                    selectedModel = selectedModel,
+                    selectedEffort = selectedEffort,
+                    onOpenPanel = { panel = it },
+                    onBack = { panel = ComposerPanel.COMMANDS },
+                    onModel = { selectedModel = it },
+                    onEffort = { selectedEffort = it },
+                )
+            }
+        }
+
+        compose.onNodeWithText("权限").assertIsDisplayed()
+        compose.onNodeWithText("状态").assertIsDisplayed()
+        compose.onNodeWithText("Image Gen").assertIsDisplayed()
+        compose.onNodeWithText("模型").performClick()
+        compose.onNodeWithText("GPT Fixture Fast").assertIsDisplayed()
+        compose.onNodeWithText("GPT Fixture Fast").performClick()
+        compose.runOnIdle { assertEquals("gpt-fixture-fast", selectedModel) }
+
+        compose.runOnIdle { panel = ComposerPanel.EFFORTS }
+        compose.onNodeWithText("Reasoning effort").assertIsDisplayed()
+        compose.onNodeWithText("xhigh").assertIsDisplayed()
+        compose.onAllNodesWithText("极高").assertCountEquals(0)
+        compose.onNodeWithText("xhigh").performClick()
+        compose.runOnIdle { assertEquals("xhigh", selectedEffort) }
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun TestComposerPalette(
+    panel: ComposerPanel,
+    fileQuery: String = "",
+    fileResults: List<RemoteFileMatch> = emptyList(),
+    selectedModel: String = "gpt-fixture",
+    selectedEffort: String = "medium",
+    onBack: () -> Unit = {},
+    onFileQuery: (String) -> Unit = {},
+    onFile: (RemoteFileMatch) -> Unit = {},
+    onOpenPanel: (ComposerPanel) -> Unit = {},
+    onModel: (String) -> Unit = {},
+    onEffort: (String) -> Unit = {},
+) {
+    val models = listOf(
+        ModelOption(
+            id = "gpt-fixture",
+            displayName = "GPT Fixture",
+            efforts = listOf("low", "medium", "high", "xhigh", "max"),
+            defaultEffort = "medium",
+            isDefault = true,
+        ),
+        ModelOption(
+            id = "gpt-fixture-fast",
+            displayName = "GPT Fixture Fast",
+            efforts = listOf("low", "medium", "high", "xhigh"),
+            defaultEffort = "medium",
+            isDefault = false,
+        ),
+    )
+    ComposerPalette(
+        panel = panel,
+        slashQuery = "",
+        fileQuery = fileQuery,
+        fileResults = fileResults,
+        models = models,
+        selectedModel = selectedModel,
+        selectedEffort = selectedEffort,
+        permissionProfiles = listOf(PermissionProfile(":workspace", "Workspace access", true)),
+        selectedPermission = ":workspace",
+        skills = listOf(SkillOption("imagegen", "Image Gen", "Generate images", "/skills/imagegen", true)),
+        threadId = "thread-fixture",
+        tokenUsage = null,
+        rateLimits = null,
+        planAvailable = true,
+        planEnabled = false,
+        turnActive = false,
+        onBack = onBack,
+        onFileQuery = onFileQuery,
+        onBrowseFiles = {},
+        onFile = onFile,
+        onGoal = {},
+        onTogglePlan = {},
+        onModel = onModel,
+        onEffort = onEffort,
+        onPermission = {},
+        onSkill = {},
+        onNew = {},
+        onCompact = {},
+        onReview = {},
+        onOpenPanel = onOpenPanel,
+    )
 }

@@ -203,13 +203,15 @@ fun parseThreadSettings(value: JSONObject, fallbackCwd: String? = null): ThreadS
     }
     val permissionProfile = value.optJSONObject("activePermissionProfile")
         ?.nullableString("id")
-    val collaborationMode = value.optJSONObject("collaborationMode")
-        ?.nullableString("mode")
+    val collaboration = value.optJSONObject("collaborationMode")
+    val collaborationMode = collaboration?.nullableString("mode")
         ?: "default"
     return ThreadSettings(
         cwd = value.nullableString("cwd") ?: fallbackCwd,
         model = value.nullableString("model"),
-        effort = value.nullableString("reasoningEffort") ?: value.nullableString("effort"),
+        effort = value.nullableString("reasoningEffort")
+            ?: value.nullableString("effort")
+            ?: collaboration?.optJSONObject("settings")?.nullableString("reasoning_effort"),
         approvalPolicy = value.optString("approvalPolicy", "on-request"),
         sandbox = sandboxType,
         networkAccess = sandbox.optBoolean("networkAccess", true),

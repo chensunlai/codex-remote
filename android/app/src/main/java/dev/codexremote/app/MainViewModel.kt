@@ -1342,8 +1342,8 @@ private fun ThreadSettings.toOptions(): NewSessionOptions? {
 
 private fun ThreadSettings.apply(update: ThreadSettingsUpdate): ThreadSettings = copy(
     cwd = update.cwd ?: cwd,
-    model = update.model ?: model,
-    effort = update.effort ?: effort,
+    model = update.collaborationMode?.model ?: update.model ?: model,
+    effort = update.collaborationMode?.effort ?: update.effort ?: effort,
     approvalPolicy = update.approvalPolicy ?: approvalPolicy,
     sandbox = update.sandbox ?: sandbox,
     networkAccess = update.networkAccess ?: networkAccess,

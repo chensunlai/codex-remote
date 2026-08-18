@@ -37,7 +37,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Archive
-import androidx.compose.material.icons.outlined.ArrowDropDown
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
@@ -109,7 +108,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.model.AppState
+import dev.codexremote.app.model.AccountRateLimits
 import dev.codexremote.app.model.ChatMessage
+import dev.codexremote.app.model.CollaborationModeOption
+import dev.codexremote.app.model.CollaborationModeSelection
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.ModelOption
@@ -117,8 +119,10 @@ import dev.codexremote.app.model.PermissionProfile
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.PromptContextType
 import dev.codexremote.app.model.RemoteFile
+import dev.codexremote.app.model.RemoteFileMatch
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.SessionSummary
+import dev.codexremote.app.model.SkillOption
 import dev.codexremote.app.model.ThreadDetail
 import dev.codexremote.app.model.ThreadGoal
 import dev.codexremote.app.model.ThreadSettingsUpdate
@@ -132,18 +136,6 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 private data class SessionTarget(val id: String, val title: String)
-
-private data class SlashCommand(
-    val value: String,
-    val description: String,
-)
-
-private val slashCommands = listOf(
-    SlashCommand("/goal", "设置持续目标"),
-    SlashCommand("/compact", "压缩上下文"),
-    SlashCommand("/review-mode", "审阅未提交更改"),
-    SlashCommand("/new", "在相同工作目录新建会话"),
-)
 
 private sealed interface ChatTimelineEntry {
     val key: String
@@ -636,28 +628,63 @@ private fun ChatPane(
                         active = thread.activeTurnId != null,
                         hasMessages = thread.messages.isNotEmpty(),
                         tokenUsage = thread.tokenUsage,
+                        threadId = thread.id,
+                        rateLimits = state.rateLimits,
                         skills = state.skills,
+                        collaborationModes = state.collaborationModes,
+                        collaborationMode = thread.settings.collaborationMode,
+                        onToggleCollaborationMode = {
+                            val nextMode = if (thread.settings.collaborationMode == "plan") {
+                                "default"
+                            } else {
+                                "plan"
+                            }
+                            val option = state.collaborationModes.firstOrNull { it.mode == nextMode }
+                            val nextModel = option?.model ?: model
+                            if (option != null && nextModel != null) {
+                                viewModel.updateThreadSettings(
+                                    ThreadSettingsUpdate(
+                                        collaborationMode = CollaborationModeSelection(
+                                            mode = option.mode,
+                                            model = nextModel,
+                                            effort = option.effort ?: effort,
+                                        ),
+                                    ),
+                                )
+                            }
+                        },
+                        fileSearchQuery = state.contextFileSearchQuery,
+                        fileSearchResults = state.contextFileSearchResults,
+                        onFileSearchQuery = viewModel::searchContextFiles,
+                        onClearFileSearch = viewModel::clearContextFileSearch,
                         onBrowseFile = {
+                            viewModel.clearContextFileSearch()
                             viewModel.browse(thread.cwd)
                             showFilePicker = true
+                        },
+                        onFileSearchResult = { file ->
+                            viewModel.clearContextFileSearch()
+                            val type = if (
+                                file.type == RemoteFileType.FILE && file.path.isImagePath()
+                            ) {
+                                PromptContextType.IMAGE
+                            } else {
+                                PromptContextType.FILE
+                            }
+                            val context = PromptContext(type, file.name, file.path)
+                            if (contexts.none { it.path == context.path }) contexts = contexts + context
                         },
                         onAddSkill = { skill ->
                             val context = PromptContext(PromptContextType.SKILL, skill.name, skill.path)
                             if (contexts.none { it.path == context.path }) contexts = contexts + context
                         },
-                        onSlashCommand = { command ->
-                            when (command.value) {
-                                "/goal" -> {
-                                    goalDraft = thread.goal?.objective.orEmpty()
-                                    showGoalEditor = true
-                                }
-                                "/compact" -> viewModel.compactSession()
-                                "/review-mode" -> viewModel.reviewUncommitted()
-                                "/new" -> viewModel.createSession()
-                            }
-                            input = ""
-                            contexts = emptyList()
+                        onGoal = {
+                            goalDraft = thread.goal?.objective.orEmpty()
+                            showGoalEditor = true
                         },
+                        onNew = { viewModel.createSession() },
+                        onCompact = viewModel::compactSession,
+                        onReview = viewModel::reviewUncommitted,
                         onSend = {
                             val submitted = input.trim()
                             when {
@@ -1074,24 +1101,67 @@ private fun PromptComposer(
     active: Boolean,
     hasMessages: Boolean,
     tokenUsage: ThreadTokenUsage?,
-    skills: List<dev.codexremote.app.model.SkillOption>,
+    threadId: String,
+    rateLimits: AccountRateLimits?,
+    skills: List<SkillOption>,
+    collaborationModes: List<CollaborationModeOption>,
+    collaborationMode: String,
+    onToggleCollaborationMode: () -> Unit,
+    fileSearchQuery: String,
+    fileSearchResults: List<RemoteFileMatch>,
+    onFileSearchQuery: (String) -> Unit,
+    onClearFileSearch: () -> Unit,
     onBrowseFile: () -> Unit,
-    onAddSkill: (dev.codexremote.app.model.SkillOption) -> Unit,
-    onSlashCommand: (SlashCommand) -> Unit,
+    onFileSearchResult: (RemoteFileMatch) -> Unit,
+    onAddSkill: (SkillOption) -> Unit,
+    onGoal: () -> Unit,
+    onNew: () -> Unit,
+    onCompact: () -> Unit,
+    onReview: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
     val selected = models.firstOrNull { it.id == model }
-    var contextMenu by remember { mutableStateOf(false) }
-    val slashQuery = input.trimStart().takeIf { value ->
+    var panel by remember { mutableStateOf<ComposerPanel?>(null) }
+    var slashSession by remember { mutableStateOf(false) }
+    val slashInput = input.trimStart().takeIf { value ->
         value.startsWith('/') && value.none(Char::isWhitespace)
     }
-    val matchingCommands = slashQuery?.let { query ->
-        slashCommands.filter {
-            it.value.startsWith(query, ignoreCase = true) &&
-                (!active || it.value !in setOf("/compact", "/review-mode"))
+    val slashQuery = slashInput?.removePrefix("/").orEmpty()
+    val planAvailable = remember(collaborationModes, model) {
+        model != null &&
+            collaborationModes.any { it.mode == "plan" } &&
+            collaborationModes.any { it.mode == "default" }
+    }
+    val planEnabled = collaborationMode == "plan"
+
+    LaunchedEffect(slashInput) {
+        when {
+            slashInput != null && !slashSession -> {
+                slashSession = true
+                panel = ComposerPanel.COMMANDS
+            }
+            slashInput == null && slashSession -> {
+                slashSession = false
+                panel = null
+            }
         }
-    }.orEmpty()
+    }
+
+    fun finishPalette() {
+        val clearSlash = slashSession
+        slashSession = false
+        panel = null
+        onClearFileSearch()
+        if (clearSlash) onInput("")
+    }
+
+    fun openToolbarPanel(next: ComposerPanel) {
+        if (slashSession) onInput("")
+        slashSession = false
+        panel = next
+    }
+
     Surface(color = MaterialTheme.colorScheme.background) {
         Box(
             modifier = Modifier.fillMaxWidth(),
@@ -1103,10 +1173,73 @@ private fun PromptComposer(
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
-                if (matchingCommands.isNotEmpty()) {
-                    SlashCommandPreview(
-                        commands = matchingCommands,
-                        onSelect = onSlashCommand,
+                panel?.let { currentPanel ->
+                    ComposerPalette(
+                        panel = currentPanel,
+                        slashQuery = slashQuery,
+                        fileQuery = fileSearchQuery,
+                        fileResults = fileSearchResults,
+                        models = models,
+                        selectedModel = model,
+                        selectedEffort = effort,
+                        permissionProfiles = permissionProfiles,
+                        selectedPermission = permissionProfile,
+                        skills = skills,
+                        threadId = threadId,
+                        tokenUsage = tokenUsage,
+                        rateLimits = rateLimits,
+                        planAvailable = planAvailable,
+                        planEnabled = planEnabled,
+                        turnActive = active,
+                        onBack = {
+                            panel = if (slashSession) ComposerPanel.COMMANDS else null
+                        },
+                        onFileQuery = onFileSearchQuery,
+                        onBrowseFiles = {
+                            finishPalette()
+                            onBrowseFile()
+                        },
+                        onFile = { file ->
+                            finishPalette()
+                            onFileSearchResult(file)
+                        },
+                        onGoal = {
+                            finishPalette()
+                            onGoal()
+                        },
+                        onTogglePlan = {
+                            finishPalette()
+                            onToggleCollaborationMode()
+                        },
+                        onModel = { value ->
+                            finishPalette()
+                            onModel(value)
+                        },
+                        onEffort = { value ->
+                            finishPalette()
+                            onEffort(value)
+                        },
+                        onPermission = { value ->
+                            finishPalette()
+                            onPermissionProfile(value)
+                        },
+                        onSkill = { skill ->
+                            finishPalette()
+                            onAddSkill(skill)
+                        },
+                        onNew = {
+                            finishPalette()
+                            onNew()
+                        },
+                        onCompact = {
+                            finishPalette()
+                            onCompact()
+                        },
+                        onReview = {
+                            finishPalette()
+                            onReview()
+                        },
+                        onOpenPanel = { panel = it },
                     )
                     Spacer(Modifier.size(4.dp))
                 }
@@ -1188,65 +1321,73 @@ private fun PromptComposer(
                                 .padding(start = 9.dp, top = 2.dp, end = 10.dp, bottom = 9.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box {
-                                IconButton(onClick = { contextMenu = true }, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Outlined.Add, contentDescription = "添加上下文")
-                                }
-                                DropdownMenu(
-                                    expanded = contextMenu,
-                                    onDismissRequest = { contextMenu = false },
-                                    modifier = Modifier.heightIn(max = 420.dp),
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("引用远端文件") },
-                                        leadingIcon = { Icon(Icons.Outlined.FolderOpen, contentDescription = null) },
-                                        onClick = { contextMenu = false; onBrowseFile() },
-                                    )
-                                    if (skills.isNotEmpty()) {
-                                        HorizontalDivider()
-                                        skills.forEach { skill ->
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Column {
-                                                        Text(skill.displayName, maxLines = 1)
-                                                        Text(
-                                                            skill.description,
-                                                            style = MaterialTheme.typography.bodySmall,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                            maxLines = 2,
-                                                        )
-                                                    }
-                                                },
-                                                leadingIcon = {
-                                                    Icon(Icons.Outlined.Psychology, contentDescription = null)
-                                                },
-                                                onClick = { contextMenu = false; onAddSkill(skill) },
-                                            )
-                                        }
+                            IconButton(
+                                onClick = {
+                                    if (panel == ComposerPanel.ADD) {
+                                        panel = null
+                                        onClearFileSearch()
+                                    } else {
+                                        if (slashSession) onInput("")
+                                        slashSession = false
+                                        panel = ComposerPanel.ADD
                                     }
-                                }
+                                },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Add,
+                                    contentDescription = "添加",
+                                    tint = if (panel == ComposerPanel.ADD) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
                             }
-                            PermissionProfileMenu(
-                                profiles = permissionProfiles,
-                                selected = permissionProfile,
-                                onSelect = onPermissionProfile,
-                            )
+                            IconButton(
+                                onClick = { openToolbarPanel(ComposerPanel.PERMISSIONS) },
+                                enabled = permissionProfiles.isNotEmpty(),
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Shield,
+                                    contentDescription = permissionProfile
+                                        ?.let { "权限：${permissionProfileLabel(it)}" }
+                                        ?: "选择权限",
+                                    tint = if (permissionProfile == null) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.tertiary
+                                    },
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
                             Spacer(Modifier.weight(1f))
                             tokenUsage?.let { ContextUsageButton(it) }
-                            CompactOptionMenu(
-                                value = model,
-                                options = models.map { it.id to it.displayName },
-                                onSelect = onModel,
-                                fallback = "模型",
-                                modifier = Modifier.widthIn(max = 128.dp),
-                            )
-                            CompactOptionMenu(
-                                value = effort,
-                                options = selected?.efforts?.map { it to effortLabel(it) }.orEmpty(),
-                                onSelect = onEffort,
-                                fallback = "推理",
-                                modifier = Modifier.widthIn(max = 76.dp),
-                            )
+                            TextButton(
+                                onClick = { openToolbarPanel(ComposerPanel.MODELS) },
+                                enabled = models.isNotEmpty(),
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                                modifier = Modifier.widthIn(max = 126.dp),
+                            ) {
+                                Text(
+                                    selected?.displayName ?: model ?: "model",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            TextButton(
+                                onClick = { openToolbarPanel(ComposerPanel.EFFORTS) },
+                                enabled = selected?.efforts?.isNotEmpty() == true,
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                                modifier = Modifier.widthIn(max = 68.dp),
+                            ) {
+                                Text(
+                                    effort ?: "effort",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                             FilledIconButton(
                                 onClick = if (active && input.isBlank()) onStop else onSend,
                                 enabled = active || input.isNotBlank(),
@@ -1267,112 +1408,6 @@ private fun PromptComposer(
             }
         }
     }
-}
-
-@Composable
-private fun SlashCommandPreview(
-    commands: List<SlashCommand>,
-    onSelect: (SlashCommand) -> Unit,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(Modifier.padding(vertical = 4.dp)) {
-            commands.forEach { command ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelect(command) }
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(
-                        command.value,
-                        style = MonoTextStyle,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.width(82.dp),
-                    )
-                    Text(
-                        command.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PermissionProfileMenu(
-    profiles: List<PermissionProfile>,
-    selected: String?,
-    onSelect: (String) -> Unit,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val options = remember(profiles, selected) {
-        if (selected.isNullOrBlank() || profiles.any { it.id == selected }) {
-            profiles
-        } else {
-            listOf(PermissionProfile(selected, null, true)) + profiles
-        }
-    }
-    Box {
-        IconButton(
-            onClick = { expanded = true },
-            enabled = options.isNotEmpty(),
-            modifier = Modifier.size(36.dp),
-        ) {
-            Icon(
-                Icons.Outlined.Shield,
-                contentDescription = selected?.let { "权限：${permissionProfileLabel(it)}" } ?: "选择权限",
-                tint = if (selected == null) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.tertiary
-                },
-                modifier = Modifier.size(19.dp),
-            )
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { profile ->
-                DropdownMenuItem(
-                    text = {
-                        Column(Modifier.widthIn(max = 280.dp)) {
-                            Text(permissionProfileLabel(profile.id))
-                            profile.description?.let { description ->
-                                Text(
-                                    description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    },
-                    leadingIcon = if (profile.id == selected) {
-                        { Icon(Icons.Outlined.Check, contentDescription = null) }
-                    } else null,
-                    onClick = {
-                        expanded = false
-                        onSelect(profile.id)
-                    },
-                )
-            }
-        }
-    }
-}
-
-private fun permissionProfileLabel(id: String): String = when (id) {
-    ":read-only" -> "只读"
-    ":workspace" -> "工作区"
-    ":full-access", ":danger-full-access" -> "完全访问"
-    else -> id.removePrefix(":")
 }
 
 @Composable
@@ -1443,36 +1478,6 @@ private fun formatTokenCount(value: Long): String = when {
 }
 
 @Composable
-private fun CompactOptionMenu(
-    value: String?,
-    options: List<Pair<String, String>>,
-    onSelect: (String) -> Unit,
-    fallback: String,
-    modifier: Modifier = Modifier,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    val label = options.firstOrNull { it.first == value }?.second ?: value ?: fallback
-    Box(modifier) {
-        TextButton(
-            onClick = { expanded = true },
-            enabled = options.isNotEmpty(),
-            contentPadding = PaddingValues(horizontal = 4.dp),
-        ) {
-            Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Icon(Icons.Outlined.ArrowDropDown, contentDescription = null, modifier = Modifier.size(18.dp))
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            options.forEach { (key, text) ->
-                DropdownMenuItem(
-                    text = { Text(text) },
-                    onClick = { expanded = false; onSelect(key) },
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun RemoteContextPickerDialog(
     state: AppState,
     viewModel: MainViewModel,
@@ -1527,6 +1532,11 @@ private fun RemoteContextPickerDialog(
                             onClick = {
                                 if (file.type == RemoteFileType.DIRECTORY) viewModel.browse(file.path) else onSelect(file)
                             },
+                            onAdd = if (file.type == RemoteFileType.DIRECTORY) {
+                                { onSelect(file) }
+                            } else {
+                                null
+                            },
                         )
                     }
                 }
@@ -1541,6 +1551,7 @@ private fun ContextFileRow(
     subtitle: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onClick: () -> Unit,
+    onAdd: (() -> Unit)? = null,
 ) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 11.dp),
@@ -1551,6 +1562,11 @@ private fun ContextFileRow(
         Column(Modifier.weight(1f)) {
             Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+        }
+        onAdd?.let {
+            IconButton(onClick = it, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Add, contentDescription = "添加文件夹")
+            }
         }
     }
 }
@@ -1617,11 +1633,5 @@ private fun formatFileSize(bytes: Long): String = when {
     else -> String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)
 }
 
-private fun effortLabel(value: String): String = when (value) {
-    "minimal" -> "极低"
-    "low" -> "低"
-    "medium" -> "中"
-    "high" -> "高"
-    "xhigh" -> "极高"
-    else -> value
-}
+private fun String.isImagePath(): Boolean =
+    substringAfterLast('.', "").lowercase() in setOf("png", "jpg", "jpeg", "webp", "gif")
