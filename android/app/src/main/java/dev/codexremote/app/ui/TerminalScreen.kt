@@ -25,12 +25,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.codexremote.app.MainViewModel
+import dev.codexremote.app.data.TerminalSession
+import dev.codexremote.app.data.TerminalSessionObserver
+import dev.codexremote.app.data.TerminalSnapshot
 import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.RuntimeState
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
 import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,11 +41,14 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
 
     if (serviceId != null && service?.runtimeState == RuntimeState.CONNECTED) {
         key(serviceId) {
-            val controller = remember(serviceId) {
-                RemoteTerminalController(viewModel, service.home)
+            val session = remember(serviceId) {
+                viewModel.terminalSession(serviceId, service.home)
+            }
+            val controller = remember(session) {
+                RemoteTerminalController(session)
             }
             DisposableEffect(controller) {
-                onDispose(controller::dispose)
+                onDispose(controller::detach)
             }
             LaunchedEffect(controller, state.fontScale) {
                 controller.setFontScale(state.fontScale)
@@ -132,19 +135,11 @@ private fun TerminalWebView(controller: RemoteTerminalController, modifier: Modi
 }
 
 private class RemoteTerminalController(
-    private val viewModel: MainViewModel,
-    private val cwd: String?,
-) {
+    private val session: TerminalSession,
+) : TerminalSessionObserver {
     private val main = Handler(Looper.getMainLooper())
     private var webView: WebView? = null
-    private var webSocket: WebSocket? = null
-    private var reconnectTask: Runnable? = null
-    private var generation = 0
-    private var cols = 100
-    private var rows = 30
     private var pageReady = false
-    private var disposed = false
-    private var terminalExited = false
     private var fontScale = 1f
 
     val bridge = Bridge(this)
@@ -154,12 +149,7 @@ private class RemoteTerminalController(
     }
 
     fun reconnect() {
-        main.post {
-            if (disposed || !pageReady) return@post
-            terminalExited = false
-            evaluate("window.remoteTerminal.reset()")
-            connect()
-        }
+        session.reconnect()
     }
 
     fun setFontScale(value: Float) {
@@ -169,114 +159,73 @@ private class RemoteTerminalController(
         }
     }
 
-    fun dispose() {
-        disposed = true
-        generation += 1
-        reconnectTask?.let(main::removeCallbacks)
-        reconnectTask = null
-        webSocket?.close(1000, "Terminal view closed")
-        webSocket = null
-        webView?.let { view ->
-            view.removeJavascriptInterface("CodexTerminal")
-            view.stopLoading()
-            view.destroy()
+    fun detach() {
+        main.post {
+            session.detach(this)
+            pageReady = false
+            webView?.let { view ->
+                view.removeJavascriptInterface("CodexTerminal")
+                view.stopLoading()
+                view.destroy()
+            }
+            webView = null
         }
-        webView = null
     }
 
     private fun ready(newCols: Int, newRows: Int) {
         main.post {
-            if (disposed) return@post
-            cols = newCols.coerceIn(2, 500)
-            rows = newRows.coerceIn(1, 300)
+            if (webView == null) return@post
             pageReady = true
             evaluate("window.remoteTerminal.setFontScale($fontScale)")
-            connect()
+            session.attach(this)
+            session.ready(newCols, newRows)
         }
     }
 
     private fun input(data: String) {
-        if (data.length > MAX_INPUT_CHARS) return
-        webSocket?.send(JSONObject().put("type", "input").put("data", data).toString())
+        session.input(data)
     }
 
     private fun resize(newCols: Int, newRows: Int) {
-        cols = newCols.coerceIn(2, 500)
-        rows = newRows.coerceIn(1, 300)
-        webSocket?.send(
-            JSONObject()
-                .put("type", "resize")
-                .put("cols", cols)
-                .put("rows", rows)
-                .toString(),
-        )
+        session.resize(newCols, newRows)
     }
 
-    private fun connect() {
-        if (disposed || !pageReady) return
-        reconnectTask?.let(main::removeCallbacks)
-        reconnectTask = null
-        generation += 1
-        val activeGeneration = generation
-        webSocket?.cancel()
-        setStatus("正在连接终端", false)
-        webSocket = viewModel.openTerminal(cols, rows, cwd, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                postIfCurrent(activeGeneration) { setStatus("正在等待 Agent", false) }
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                val message = runCatching { JSONObject(text) }.getOrNull() ?: return
-                postIfCurrent(activeGeneration) {
-                    when (message.optString("type")) {
-                        "ready" -> {
-                            setStatus("", false)
-                            evaluate("window.remoteTerminal.focus()")
-                        }
-                        "data" -> write(message.optString("data"))
-                        "exit" -> {
-                            terminalExited = true
-                            setStatus("终端已退出 (${message.optInt("exitCode")})", false)
-                        }
-                        "error" -> setStatus(message.optString("message", "终端连接失败"), true)
-                    }
-                }
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                postIfCurrent(activeGeneration) {
-                    if (!terminalExited) scheduleReconnect("终端连接已断开")
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                postIfCurrent(activeGeneration) {
-                    scheduleReconnect(t.message ?: "终端连接失败")
-                }
-            }
-        })
-        if (webSocket == null) setStatus("选择一个已连接的服务", true)
+    override fun onTerminalSnapshot(snapshot: TerminalSnapshot) {
+        if (!pageReady) return
+        evaluate("window.remoteTerminal.reset()")
+        writeChunked(snapshot.output)
+        setStatus(snapshot.status, snapshot.statusIsError)
+        if (snapshot.status.isEmpty() && !snapshot.exited) focus()
     }
 
-    private fun scheduleReconnect(message: String) {
-        if (disposed || terminalExited || reconnectTask != null) return
-        setStatus("$message，正在重连", true)
-        val task = Runnable {
-            reconnectTask = null
-            connect()
-        }
-        reconnectTask = task
-        main.postDelayed(task, RECONNECT_DELAY_MS)
+    override fun onTerminalData(data: String) {
+        if (pageReady) write(data)
     }
 
-    private fun postIfCurrent(expectedGeneration: Int, block: () -> Unit) {
-        main.post {
-            if (!disposed && generation == expectedGeneration) block()
-        }
+    override fun onTerminalStatus(message: String, isError: Boolean) {
+        if (!pageReady) return
+        setStatus(message, isError)
+        if (message.isEmpty()) focus()
     }
 
     private fun write(data: String) {
         evaluate("window.remoteTerminal.write(${JSONObject.quote(data)})")
+    }
+
+    private fun writeChunked(data: String) {
+        var start = 0
+        while (start < data.length) {
+            var end = minOf(data.length, start + REPLAY_CHUNK_CHARS)
+            if (
+                end < data.length &&
+                data[end - 1].isHighSurrogate() &&
+                data[end].isLowSurrogate()
+            ) {
+                end -= 1
+            }
+            write(data.substring(start, end))
+            start = end
+        }
     }
 
     private fun setStatus(message: String, error: Boolean) {
@@ -287,6 +236,10 @@ private class RemoteTerminalController(
 
     private fun evaluate(script: String) {
         webView?.evaluateJavascript(script, null)
+    }
+
+    private fun focus() {
+        evaluate("window.remoteTerminal.focus()")
     }
 
     class Bridge(private val controller: RemoteTerminalController) {
@@ -301,8 +254,7 @@ private class RemoteTerminalController(
     }
 
     private companion object {
-        const val MAX_INPUT_CHARS = 64 * 1024
-        const val RECONNECT_DELAY_MS = 2_500L
+        const val REPLAY_CHUNK_CHARS = 16 * 1024
     }
 }
 

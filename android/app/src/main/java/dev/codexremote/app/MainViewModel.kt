@@ -13,6 +13,8 @@ import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.GatewayException
 import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.SessionPreferences
+import dev.codexremote.app.data.TerminalSession
+import dev.codexremote.app.data.TerminalSessionManager
 import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.data.objects
 import dev.codexremote.app.data.parseChatItem
@@ -41,11 +43,11 @@ import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.NewSessionOptions
-import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
+import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.ThreadSettings
 import dev.codexremote.app.model.ThreadSettingsUpdate
 import dev.codexremote.app.model.ThreadTakeoverPrompt
@@ -73,6 +75,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val uiPreferences = UiPreferences(application)
     private val eventPreferences = application.getSharedPreferences("event_offsets", 0)
     private val api = GatewayApi()
+    private val terminalSessions = TerminalSessionManager(api)
     private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale))
     val state: StateFlow<AppState> = _state.asStateFlow()
 
@@ -121,6 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearGateway() {
         stopViewingThread()
+        terminalSessions.closeAll()
         events?.cancel()
         events = null
         reconnectJob?.cancel()
@@ -211,6 +215,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteService(serviceId: String) {
         launchOperation("正在删除服务") {
+            terminalSessions.close(serviceId)
             api.deleteService(serviceId)
             chatCache.delete(cacheScope, serviceId)
             subscribedThreads.removeAll { it.startsWith("$serviceId:") }
@@ -834,15 +839,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(filePreview = null) }
     }
 
-    fun openTerminal(
-        cols: Int,
-        rows: Int,
-        cwd: String?,
-        listener: WebSocketListener,
-    ): WebSocket? {
-        val serviceId = _state.value.selectedServiceId ?: return null
-        return api.terminal(serviceId, cols, rows, cwd, listener)
-    }
+    internal fun terminalSession(serviceId: String, cwd: String?): TerminalSession =
+        terminalSessions.session(serviceId, cwd)
 
     fun respondToRequest(requestId: String, decision: String) {
         launchOperation("正在提交审批") {
@@ -897,6 +895,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         stopViewingThread(notifyGateway = false)
+        terminalSessions.closeAll()
         events?.close(1000, "Android client closed")
         sessionSearchJob?.cancel()
         contextFileSearchJob?.cancel()
