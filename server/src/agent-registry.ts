@@ -222,6 +222,8 @@ class AgentPeer {
 export class AgentRegistry extends EventEmitter {
   private readonly peers = new Map<string, AgentPeer>();
   private readonly pendingRequests = new Map<string, PendingServerRequest>();
+  private readonly attachOperations = new Set<Promise<void>>();
+  private closing = false;
 
   constructor(
     private readonly services: ServiceStore,
@@ -230,7 +232,26 @@ export class AgentRegistry extends EventEmitter {
     super();
   }
 
-  async attach(
+  attach(
+    ownerId: string,
+    serviceId: string,
+    name: string,
+    socket: WebSocket,
+  ): Promise<void> {
+    if (this.closing) {
+      socket.close(1012, "Gateway 正在关闭");
+      return Promise.resolve();
+    }
+    const operation = this.attachPeer(ownerId, serviceId, name, socket);
+    this.attachOperations.add(operation);
+    void operation.then(
+      () => this.attachOperations.delete(operation),
+      () => this.attachOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  private async attachPeer(
     ownerId: string,
     serviceId: string,
     name: string,
@@ -250,19 +271,24 @@ export class AgentRegistry extends EventEmitter {
     );
     this.peers.set(key, peer);
     await this.services.register(ownerId, serviceId, name);
+    if (this.closing) return;
     this.journal.publish(ownerId, "service.status", { state: "connected" }, serviceId);
 
     try {
       const description = await peer.request<AgentDescription>("service.describe", {}, 15_000);
       await this.services.register(ownerId, serviceId, name, description);
-      this.journal.publish(ownerId, "service.updated", description, serviceId);
+      if (!this.closing) {
+        this.journal.publish(ownerId, "service.updated", description, serviceId);
+      }
     } catch (error) {
-      this.journal.publish(
-        ownerId,
-        "service.warning",
-        { message: errorMessage(error) },
-        serviceId,
-      );
+      if (!this.closing) {
+        this.journal.publish(
+          ownerId,
+          "service.warning",
+          { message: errorMessage(error) },
+          serviceId,
+        );
+      }
     }
   }
 
@@ -393,8 +419,10 @@ export class AgentRegistry extends EventEmitter {
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     for (const peer of this.peers.values()) peer.close();
     this.peers.clear();
+    await Promise.allSettled([...this.attachOperations]);
     await this.journal.flush();
   }
 

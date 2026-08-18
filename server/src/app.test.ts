@@ -40,7 +40,7 @@ describe("Gateway Agent relay", () => {
   afterEach(async () => {
     agent?.close();
     await gateway.app.close();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     delete process.env.LOG_LEVEL;
   });
 
