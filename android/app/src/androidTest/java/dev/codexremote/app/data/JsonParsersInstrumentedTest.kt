@@ -12,6 +12,17 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class JsonParsersInstrumentedTest {
     @Test
+    fun sessionRetainsGatewayOccupancyState() {
+        val session = parseSession(
+            JSONObject(
+                """{"id":"thread-1","preview":"fixture","locked":true}""",
+            ),
+        )
+
+        assertTrue(session.locked)
+    }
+
+    @Test
     fun threadRetainsTurnLifecycleAndParsedCommandActions() {
         val detail = parseThread(
             JSONObject(

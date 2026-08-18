@@ -82,6 +82,16 @@ class ChatActivityInstrumentedTest {
             text = "npm test",
             status = "inProgress",
             kind = "commandExecution",
+            detail = "running output",
+            turnId = "turn-1",
+        )
+        val reasoning = ChatMessage(
+            id = "reasoning-1",
+            role = MessageRole.SYSTEM,
+            text = "正在分析",
+            status = "inProgress",
+            kind = "reasoning",
+            detail = "中间分析保持展开",
             turnId = "turn-1",
         )
 
@@ -90,12 +100,14 @@ class ChatActivityInstrumentedTest {
                 androidx.compose.foundation.layout.Column {
                     val itemExpansion = remember { mutableStateMapOf<String, Boolean>() }
                     ActivityGroup(
-                        messages = listOf(command),
+                        messages = listOf(command, reasoning),
                         turn = TurnSummary("turn-1", "inProgress"),
                         isActiveTurn = true,
                         expanded = true,
                         onExpandedChange = {},
-                        itemExpanded = { itemExpansion[it.id] ?: true },
+                        itemExpanded = {
+                            itemExpansion[it.id] ?: (it.kind != "commandExecution")
+                        },
                         onItemExpandedChange = { message, value -> itemExpansion[message.id] = value },
                     )
                     ThinkingIndicator()
@@ -103,6 +115,8 @@ class ChatActivityInstrumentedTest {
             }
         }
         compose.onNodeWithText("正在运行 npm test").assertIsDisplayed()
+        compose.onAllNodesWithText("running output").assertCountEquals(0)
+        compose.onNodeWithText("中间分析保持展开").assertIsDisplayed()
         compose.onNodeWithText("正在思考").assertIsDisplayed()
     }
 
@@ -131,7 +145,7 @@ class ChatActivityInstrumentedTest {
                             isActiveTurn = true,
                             expanded = true,
                             onExpandedChange = {},
-                            itemExpanded = { itemExpansion[it.id] ?: it.status == "inProgress" },
+                            itemExpanded = { itemExpansion[it.id] ?: false },
                             onItemExpandedChange = { message, value -> itemExpansion[message.id] = value },
                         )
                     }
@@ -145,6 +159,8 @@ class ChatActivityInstrumentedTest {
             }
         }
 
+        compose.onAllNodesWithText("stable output").assertCountEquals(0)
+        compose.onNodeWithText("正在运行 npm test").performClick()
         compose.onNodeWithText("stable output").assertIsDisplayed()
         compose.onNodeWithText("正在运行 npm test").performClick()
         compose.onAllNodesWithText("stable output").assertCountEquals(0)

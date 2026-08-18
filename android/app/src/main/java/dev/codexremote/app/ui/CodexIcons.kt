@@ -37,6 +37,8 @@ object CodexIcons {
     val Info: ImageVector = Lucide.Info
     val Lightbulb: ImageVector = Lucide.Lightbulb
     val Link: ImageVector = Lucide.Link
+    val Lock: ImageVector = Lucide.Lock
+    val LockOpen: ImageVector = Lucide.LockOpen
     val Loading: ImageVector = Lucide.LoaderCircle
     val Logout: ImageVector = Lucide.LogOut
     val Message: ImageVector = Lucide.MessageSquare

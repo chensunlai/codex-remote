@@ -50,6 +50,7 @@ data class SessionSummary(
     val updatedAt: Long,
     val status: String,
     val isPinned: Boolean,
+    val locked: Boolean = false,
 )
 
 data class NewSessionOptions(

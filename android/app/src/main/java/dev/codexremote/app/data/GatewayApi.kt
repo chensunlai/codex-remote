@@ -139,6 +139,30 @@ class GatewayApi {
             ),
         ) as JSONObject
 
+    suspend fun acquireLease(serviceId: String, threadId: String, clientId: String) {
+        request(
+            "PUT",
+            "api/v1/services/$serviceId/sessions/$threadId/lease",
+            JSONObject().put("clientId", clientId),
+        )
+    }
+
+    suspend fun leaveLease(serviceId: String, threadId: String, clientId: String) {
+        request(
+            "DELETE",
+            "api/v1/services/$serviceId/sessions/$threadId/lease",
+            query = mapOf("clientId" to clientId),
+        )
+    }
+
+    suspend fun releaseSession(serviceId: String, threadId: String) {
+        request(
+            "POST",
+            "api/v1/services/$serviceId/sessions/$threadId/release",
+            JSONObject(),
+        )
+    }
+
     suspend fun permissionProfiles(serviceId: String, cwd: String?): JSONObject =
         data(
             request(

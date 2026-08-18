@@ -235,7 +235,7 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
             title = { Text("会话正在使用") },
             text = {
                 Text(
-                    "“${prompt.title}”正在被另一个 Codex 使用。停止服务器上的 Codex daemon 并接管此会话？这会断开该服务器上的其他 Codex 客户端。",
+                    "“${prompt.title}”正在被另一个 Codex 使用。停止持有此会话写入锁的 Codex 进程并接管？",
                 )
             },
             confirmButton = {
@@ -382,6 +382,7 @@ private fun SessionList(
                 onRename = { onRename(session) },
                 onArchive = { viewModel.archiveSession(session.id) },
                 onUnarchive = { viewModel.unarchiveSession(session.id) },
+                onRelease = { viewModel.releaseSession(session.id) },
                 onDelete = { onDelete(session) },
             )
         }
@@ -397,6 +398,7 @@ private fun SessionRow(
     onRename: () -> Unit,
     onArchive: () -> Unit,
     onUnarchive: () -> Unit,
+    onRelease: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -450,12 +452,25 @@ private fun SessionRow(
                 }
             }
             Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    sessionTime(session.updatedAt),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.outline,
+                Row(
                     modifier = Modifier.padding(top = 3.dp, end = 2.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    if (session.locked) {
+                        Icon(
+                            CodexIcons.Lock,
+                            contentDescription = "会话已占用",
+                            tint = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(13.dp),
+                        )
+                    }
+                    Text(
+                        sessionTime(session.updatedAt),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(40.dp)) {
                         Icon(CodexIcons.More, contentDescription = "会话菜单")
@@ -466,6 +481,13 @@ private fun SessionRow(
                             leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
                             onClick = { menu = false; onRename() },
                         )
+                        if (session.locked) {
+                            DropdownMenuItem(
+                                text = { Text("释放占用") },
+                                leadingIcon = { Icon(CodexIcons.LockOpen, contentDescription = null) },
+                                onClick = { menu = false; onRelease() },
+                            )
+                        }
                         if (archived) {
                             DropdownMenuItem(
                                 text = { Text("恢复") },
@@ -503,6 +525,7 @@ private fun ChatPane(
 ) {
     val thread = state.thread ?: return
     val threadTitle = thread.displayTitle(state.sessions)
+    val threadLocked = state.sessions.firstOrNull { it.id == thread.id }?.locked == true
     var input by remember(thread.id) { mutableStateOf("") }
     var contexts by remember(thread.id) { mutableStateOf<List<PromptContext>>(emptyList()) }
     var showGoalEditor by remember(thread.id) { mutableStateOf(false) }
@@ -598,10 +621,12 @@ private fun ChatPane(
                         ThreadMenu(
                             expanded = menu,
                             archived = state.showingArchivedSessions,
+                            locked = threadLocked,
                             onDismiss = { menu = false },
                             onRename = { menu = false; onRename(thread) },
                             onReview = { menu = false; viewModel.reviewUncommitted() },
                             onCompact = { menu = false; viewModel.compactSession() },
+                            onRelease = { menu = false; viewModel.releaseSession(thread.id) },
                             onArchive = { menu = false; viewModel.archiveSession(thread.id) },
                             onUnarchive = { menu = false; viewModel.unarchiveSession(thread.id) },
                             onDelete = { menu = false; onDelete(thread) },
@@ -824,7 +849,8 @@ private fun ChatPane(
                             onExpandedChange = { activityExpansion[entry.key] = it },
                             itemExpanded = { message ->
                                 activityExpansion["item:${message.id}"]
-                                    ?: message.status.isRunningStatus()
+                                    ?: (entry.turnId == thread.activeTurnId &&
+                                        message.kind != "commandExecution")
                             },
                             onItemExpandedChange = { message, expanded ->
                                 activityExpansion["item:${message.id}"] = expanded
@@ -938,10 +964,12 @@ private fun String?.isRunningStatus(): Boolean = this in setOf("inProgress", "in
 private fun ThreadMenu(
     expanded: Boolean,
     archived: Boolean,
+    locked: Boolean,
     onDismiss: () -> Unit,
     onRename: () -> Unit,
     onReview: () -> Unit,
     onCompact: () -> Unit,
+    onRelease: () -> Unit,
     onArchive: () -> Unit,
     onUnarchive: () -> Unit,
     onDelete: () -> Unit,
@@ -952,6 +980,13 @@ private fun ThreadMenu(
             leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
             onClick = onRename,
         )
+        if (locked) {
+            DropdownMenuItem(
+                text = { Text("释放占用") },
+                leadingIcon = { Icon(CodexIcons.LockOpen, contentDescription = null) },
+                onClick = onRelease,
+            )
+        }
         if (!archived) {
             DropdownMenuItem(
                 text = { Text("审阅未提交更改") },

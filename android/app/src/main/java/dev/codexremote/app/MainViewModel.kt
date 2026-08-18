@@ -61,6 +61,7 @@ import okhttp3.WebSocketListener
 import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.net.URI
+import java.util.UUID
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val secretStore = SecretStore(application)
@@ -73,6 +74,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var events: WebSocket? = null
     private var reconnectJob: Job? = null
+    private var leaseHeartbeatJob: Job? = null
     private var sessionSearchJob: Job? = null
     private var contextFileSearchJob: Job? = null
     private var cacheScope = ""
@@ -82,6 +84,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeOperations = 0
     private val subscribedThreads = mutableSetOf<String>()
     private val newEmptyThreads = mutableSetOf<String>()
+    private val pendingMessageSubmissions = mutableSetOf<String>()
+    private val pendingThreadResumes = mutableSetOf<String>()
+    private var viewedThread: ViewedThread? = null
+    private var appForeground = false
 
     init {
         secretStore.load()?.let { config ->
@@ -109,6 +115,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearGateway() {
+        stopViewingThread()
         events?.cancel()
         events = null
         reconnectJob?.cancel()
@@ -121,12 +128,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         activeOperations = 0
         subscribedThreads.clear()
         newEmptyThreads.clear()
+        pendingMessageSubmissions.clear()
+        pendingThreadResumes.clear()
         _state.value = AppState()
     }
 
     fun setSection(section: MainSection) {
-        if (section != MainSection.SESSIONS) discardSelectedEmptyThread()
+        if (section != MainSection.SESSIONS) {
+            stopViewingThread()
+            discardSelectedEmptyThread()
+        }
         _state.update { it.copy(section = section) }
+        if (section == MainSection.SESSIONS) resumeViewingSelectedThread()
+    }
+
+    fun setAppForeground(foreground: Boolean) {
+        if (appForeground == foreground) return
+        appForeground = foreground
+        if (foreground) resumeViewingSelectedThread() else stopViewingThread()
     }
 
     fun clearError() {
@@ -218,6 +237,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectService(serviceId: String) {
         if (_state.value.selectedServiceId == serviceId && _state.value.models.isNotEmpty()) return
+        stopViewingThread()
         discardSelectedEmptyThread()
         _state.update {
             it.copy(
@@ -261,6 +281,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showArchivedSessions(value: Boolean) {
         val serviceId = _state.value.selectedServiceId ?: return
+        stopViewingThread()
         discardSelectedEmptyThread()
         _state.update {
             it.copy(
@@ -276,6 +297,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createSession(cwd: String, onComplete: () -> Unit = {}) {
         val serviceId = _state.value.selectedServiceId ?: return
+        stopViewingThread()
         discardSelectedEmptyThread()
         launchOperation("正在创建会话") {
             val options = initialSessionOptions(serviceId, cwd)
@@ -300,6 +322,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             rememberThreadSettings(serviceId, detail.settings)
+            if (!startViewingThread(serviceId, threadId)) {
+                deferThreadRelease(serviceId, threadId)
+            }
             loadPermissionProfiles(serviceId, detail.cwd ?: options.cwd)
             loadSkills(serviceId, detail.cwd ?: options.cwd)
             onComplete()
@@ -309,6 +334,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSession(threadId: String) {
         val serviceId = _state.value.selectedServiceId ?: return
         if (_state.value.selectedThreadId == threadId && _state.value.thread != null) return
+        stopViewingThread()
         discardSelectedEmptyThread()
         val resume = !_state.value.showingArchivedSessions
         _state.update {
@@ -353,6 +379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeSession() {
+        stopViewingThread()
         if (!discardSelectedEmptyThread()) clearSelectedThread()
     }
 
@@ -367,73 +394,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         val serviceId = current.selectedServiceId ?: return
         val threadId = current.selectedThreadId ?: return
+        val requestKey = threadKey(serviceId, threadId)
+        if (!pendingMessageSubmissions.add(requestKey)) return
         launchOperation("正在发送") {
-            if (!subscribedThreads.contains(threadKey(serviceId, threadId))) {
-                val resumed = try {
-                    api.resume(serviceId, threadId)
-                } catch (error: GatewayException) {
-                    if (!showThreadTakeover(error, serviceId, threadId)) throw error
-                    return@launchOperation
-                }
-                val summary = _state.value.sessions.firstOrNull { it.id == threadId }
-                chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, resumed)
-                val rawParsed = parseThread(resumed)
-                val parsed = rawParsed.copy(
-                    settings = resolveThreadSettings(
-                        resumed,
-                        rawParsed.settings,
-                        _state.value.thread?.settings?.toOptions(),
-                    ),
-                )
-                _state.update { state ->
-                    state.copy(
-                        thread = parsed.copy(
-                            tokenUsage = state.thread?.takeIf { it.id == parsed.id }?.tokenUsage,
-                            goal = state.thread?.takeIf { it.id == parsed.id }?.goal,
+            try {
+                if (!subscribedThreads.contains(requestKey)) {
+                    val resumed = try {
+                        api.resume(serviceId, threadId)
+                    } catch (error: GatewayException) {
+                        if (!showThreadTakeover(error, serviceId, threadId)) throw error
+                        return@launchOperation
+                    }
+                    val summary = _state.value.sessions.firstOrNull { it.id == threadId }
+                    chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, resumed)
+                    val rawParsed = parseThread(resumed)
+                    val parsed = rawParsed.copy(
+                        settings = resolveThreadSettings(
+                            resumed,
+                            rawParsed.settings,
+                            _state.value.thread?.settings?.toOptions(),
                         ),
                     )
+                    _state.update { state ->
+                        state.copy(
+                            thread = parsed.copy(
+                                tokenUsage = state.thread?.takeIf { it.id == parsed.id }?.tokenUsage,
+                                goal = state.thread?.takeIf { it.id == parsed.id }?.goal,
+                            ),
+                        )
+                    }
+                    rememberThreadSettings(serviceId, parsed.settings)
+                    subscribedThreads.add(requestKey)
                 }
-                rememberThreadSettings(serviceId, parsed.settings)
-                subscribedThreads.add(threadKey(serviceId, threadId))
-            }
-            val activeTurnId = _state.value.thread?.activeTurnId
-            if (activeTurnId != null) {
-                api.steer(serviceId, threadId, activeTurnId, text, context)
-            } else {
-                val result = api.sendTurn(serviceId, threadId, text, model, effort, context)
-                val turnJson = result.optJSONObject("turn")
-                val turnId = turnJson?.optString("id")
-                val turn = turnJson?.let(::parseTurnSummary)
-                val optimistic = ChatMessage(
-                    id = "local-" + System.nanoTime(),
-                    role = MessageRole.USER,
-                    text = text,
-                    status = "inProgress",
-                    turnId = turnId,
-                )
-                newEmptyThreads.remove(threadKey(serviceId, threadId))
-                _state.update { state ->
-                    state.copy(
-                        sessions = state.sessions.map { session ->
-                            if (session.id == threadId && session.preview.isBlank()) {
-                                session.copy(
-                                    preview = text,
-                                    updatedAt = System.currentTimeMillis() / 1_000,
-                                )
-                            } else {
-                                session
-                            }
-                        },
-                        thread = state.thread?.copy(
-                            messages = state.thread.messages + optimistic,
-                            activeTurnId = turnId,
-                            turns = turn?.let { state.thread.turns.upsert(it) }
-                                ?: state.thread.turns,
-                        ),
+                val activeTurnId = _state.value.thread?.activeTurnId
+                if (activeTurnId != null) {
+                    api.steer(serviceId, threadId, activeTurnId, text, context)
+                } else {
+                    val result = api.sendTurn(serviceId, threadId, text, model, effort, context)
+                    val turnJson = result.optJSONObject("turn")
+                    val turnId = turnJson?.optString("id")
+                    val turn = turnJson?.let(::parseTurnSummary)
+                    val optimistic = ChatMessage(
+                        id = "local-" + System.nanoTime(),
+                        role = MessageRole.USER,
+                        text = text,
+                        status = "inProgress",
+                        turnId = turnId,
                     )
+                    newEmptyThreads.remove(requestKey)
+                    _state.update { state ->
+                        val selected = state.thread?.takeIf { it.id == threadId }
+                        state.copy(
+                            sessions = state.sessions.map { session ->
+                                if (session.id == threadId && session.preview.isBlank()) {
+                                    session.copy(
+                                        preview = text,
+                                        updatedAt = System.currentTimeMillis() / 1_000,
+                                    )
+                                } else {
+                                    session
+                                }
+                            },
+                            thread = selected?.copy(
+                                messages = selected.messages.withOptimisticUserMessage(optimistic),
+                                activeTurnId = turnId,
+                                turns = turn?.let { selected.turns.upsert(it) }
+                                    ?: selected.turns,
+                            ) ?: state.thread,
+                        )
+                    }
                 }
+                onAccepted()
+            } finally {
+                pendingMessageSubmissions.remove(requestKey)
             }
-            onAccepted()
         }
     }
 
@@ -443,6 +477,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val threadId = current.selectedThreadId ?: return
         val turnId = current.thread?.activeTurnId ?: return
         launchOperation("正在停止") { api.interrupt(serviceId, threadId, turnId) }
+    }
+
+    fun releaseSession(threadId: String) {
+        val serviceId = _state.value.selectedServiceId ?: return
+        val wasViewing = viewedThread?.serviceId == serviceId && viewedThread?.threadId == threadId
+        val stoppedHeartbeat = if (wasViewing) stopViewingThread(notifyGateway = false) else null
+        launchOperation("正在释放占用") {
+            try {
+                stoppedHeartbeat?.join()
+                api.releaseSession(serviceId, threadId)
+            } catch (error: Throwable) {
+                if (
+                    wasViewing &&
+                    _state.value.selectedServiceId == serviceId &&
+                    _state.value.selectedThreadId == threadId
+                ) {
+                    startViewingThread(serviceId, threadId)
+                }
+                throw error
+            }
+            subscribedThreads.remove(threadKey(serviceId, threadId))
+            _state.update { state ->
+                state.copy(
+                    sessions = state.sessions.map { session ->
+                        if (session.id == threadId) session.copy(locked = false) else session
+                    },
+                )
+            }
+        }
     }
 
     fun updateThreadSettings(update: ThreadSettingsUpdate) {
@@ -748,10 +811,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        stopViewingThread(notifyGateway = false)
         events?.close(1000, "Android client closed")
         sessionSearchJob?.cancel()
         contextFileSearchJob?.cancel()
         chatCache.close()
+    }
+
+    private fun startViewingThread(serviceId: String, threadId: String): Boolean {
+        if (
+            !appForeground ||
+            _state.value.section != MainSection.SESSIONS ||
+            _state.value.showingArchivedSessions
+        ) return false
+        val current = viewedThread
+        if (current?.serviceId == serviceId && current.threadId == threadId) return true
+        stopViewingThread()
+        val target = ViewedThread(serviceId, threadId, UUID.randomUUID().toString())
+        viewedThread = target
+        leaseHeartbeatJob = viewModelScope.launch {
+            while (viewedThread == target) {
+                runCatching {
+                    api.acquireLease(target.serviceId, target.threadId, target.clientId)
+                }.onSuccess {
+                    if (viewedThread == target) {
+                        _state.update { state ->
+                            state.copy(
+                                sessions = state.sessions.map { session ->
+                                    if (session.id == target.threadId) {
+                                        session.copy(locked = true)
+                                    } else {
+                                        session
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+                delay(30_000)
+            }
+        }
+        return true
+    }
+
+    private fun stopViewingThread(notifyGateway: Boolean = true): Job? {
+        val target = viewedThread ?: return null
+        viewedThread = null
+        val heartbeat = leaseHeartbeatJob
+        heartbeat?.cancel()
+        leaseHeartbeatJob = null
+        if (notifyGateway) {
+            viewModelScope.launch {
+                heartbeat?.join()
+                runCatching {
+                    api.leaveLease(target.serviceId, target.threadId, target.clientId)
+                }
+            }
+        }
+        return heartbeat
+    }
+
+    private fun resumeViewingSelectedThread() {
+        if (!appForeground) return
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val threadId = current.thread?.id ?: return
+        if (current.showingArchivedSessions) return
+        val key = threadKey(serviceId, threadId)
+        if (key in subscribedThreads) {
+            startViewingThread(serviceId, threadId)
+            return
+        }
+        if (!pendingThreadResumes.add(key)) return
+        launchOperation("正在恢复会话") {
+            try {
+                loadThread(serviceId, threadId, resume = true, allowCache = true)
+            } catch (error: GatewayException) {
+                if (!showThreadTakeover(error, serviceId, threadId)) throw error
+            } finally {
+                pendingThreadResumes.remove(key)
+            }
+        }
+    }
+
+    private suspend fun deferThreadRelease(serviceId: String, threadId: String) {
+        val clientId = UUID.randomUUID().toString()
+        runCatching {
+            api.acquireLease(serviceId, threadId, clientId)
+            api.leaveLease(serviceId, threadId, clientId)
+        }
     }
 
     private fun activateConfig(config: GatewayConfig) {
@@ -879,17 +1027,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         takeover: Boolean = false,
     ) {
         val summary = _state.value.sessions.firstOrNull { it.id == threadId }
-        val cached = if (allowCache && summary?.status != "active") {
+        val key = threadKey(serviceId, threadId)
+        val alreadySubscribed = key in subscribedThreads && !takeover
+        val cached = if (allowCache && alreadySubscribed && summary?.status != "active") {
             chatCache.get(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0)
         } else null
         val root = cached ?: (when {
             takeover -> api.takeover(serviceId, threadId)
-            resume -> api.resume(serviceId, threadId)
+            resume && !alreadySubscribed -> api.resume(serviceId, threadId)
             else -> api.thread(serviceId, threadId)
         }).also {
             chatCache.put(cacheScope, serviceId, threadId, summary?.updatedAt ?: 0, it)
         }
-        if (cached == null && resume) subscribedThreads.add(threadKey(serviceId, threadId))
+        if (resume) subscribedThreads.add(key)
         val rawDetail = parseThread(root)
         val fallback = _state.value.thread
             ?.takeIf { it.id == threadId }
@@ -912,7 +1062,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (
             _state.value.selectedServiceId != serviceId ||
             _state.value.selectedThreadId != threadId
-        ) return
+        ) {
+            if (resume) deferThreadRelease(serviceId, threadId)
+            return
+        }
         _state.update { state ->
             state.copy(
                 thread = detail.copy(
@@ -921,6 +1074,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         rememberThreadSettings(serviceId, detail.settings)
+        if (resume && !startViewingThread(serviceId, threadId)) {
+            deferThreadRelease(serviceId, threadId)
+        }
         loadPermissionProfiles(serviceId, detail.cwd)
         detail.cwd?.let { cwd -> runCatching { loadSkills(serviceId, cwd) } }
     }
@@ -1108,6 +1264,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             status = statusType,
                             activeFlags = status.optJSONArray("activeFlags")?.strings()?.toSet().orEmpty(),
                         ) ?: state.thread,
+                    )
+                }
+            }
+            "session.occupancy/changed" -> {
+                val threadId = payload.optString("threadId")
+                val serviceId = event.optString("serviceId")
+                val locked = payload.optBoolean("locked")
+                if (!locked && serviceId.isNotBlank()) {
+                    subscribedThreads.remove(threadKey(serviceId, threadId))
+                }
+                _state.update { state ->
+                    state.copy(
+                        sessions = state.sessions.map { session ->
+                            if (session.id == threadId) session.copy(locked = locked) else session
+                        },
                     )
                 }
             }
@@ -1320,23 +1491,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val attributedMessage = message.copy(
                 turnId = message.turnId ?: turnId.takeIf(String::isNotBlank),
             )
-            var current = thread.messages
-            if (attributedMessage.role == MessageRole.USER) {
-                current = current.filterNot {
-                    it.id.startsWith("local-") &&
-                        it.role == MessageRole.USER &&
-                        it.text == attributedMessage.text
-                }
-            }
-            val index = current.indexOfLast { it.id == attributedMessage.id }
-            val messages = if (index >= 0) {
-                current.toMutableList().also { it[index] = attributedMessage }
-            } else {
-                current + attributedMessage
-            }
             state.copy(
                 thread = thread.copy(
-                    messages = messages,
+                    messages = thread.messages.withRealtimeMessage(attributedMessage),
                     activeTurnId = if (markActive && turnId.isNotBlank()) turnId else thread.activeTurnId,
                 ),
             )
@@ -1351,6 +1508,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun clearSelectedThread() {
+        stopViewingThread()
         _state.update {
             it.copy(
                 selectedThreadId = null,
@@ -1390,6 +1548,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val threadId = current.selectedThreadId ?: return false
         val key = threadKey(serviceId, threadId)
         if (key !in newEmptyThreads) return false
+
+        if (viewedThread?.serviceId == serviceId && viewedThread?.threadId == threadId) {
+            stopViewingThread()
+        }
 
         val summary = current.sessions.firstOrNull { it.id == threadId }
         val hasConversation = current.thread?.let { thread ->
@@ -1520,6 +1682,48 @@ private fun ThreadSettings.apply(update: ThreadSettingsUpdate): ThreadSettings =
         else -> permissionProfile
     },
     collaborationMode = update.collaborationMode?.mode ?: collaborationMode,
+)
+
+internal fun List<ChatMessage>.withOptimisticUserMessage(message: ChatMessage): List<ChatMessage> {
+    val alreadyReceived = any { current ->
+        current.role == MessageRole.USER &&
+            current.text == message.text &&
+            (
+                current.turnId == message.turnId && message.turnId?.isNotBlank() == true ||
+                    message.turnId.isNullOrBlank() &&
+                    current.status in setOf("inProgress", "running", "active")
+            )
+    }
+    return if (alreadyReceived) this else this + message
+}
+
+internal fun List<ChatMessage>.withRealtimeMessage(message: ChatMessage): List<ChatMessage> {
+    val messages = if (message.role == MessageRole.USER) {
+        filterNot { current ->
+            current.id.startsWith("local-") &&
+                current.role == MessageRole.USER &&
+                current.text == message.text &&
+                (
+                    current.turnId == message.turnId ||
+                        current.turnId.isNullOrBlank() ||
+                        message.turnId.isNullOrBlank()
+                )
+        }
+    } else {
+        this
+    }
+    val index = messages.indexOfLast { it.id == message.id }
+    return if (index >= 0) {
+        messages.toMutableList().also { it[index] = message }
+    } else {
+        messages + message
+    }
+}
+
+private data class ViewedThread(
+    val serviceId: String,
+    val threadId: String,
+    val clientId: String,
 )
 
 private fun normalizeGatewayUrl(value: String): String {

@@ -141,6 +141,7 @@ fun parseSession(value: JSONObject): SessionSummary = SessionSummary(
     updatedAt = value.optLong("updatedAt", value.optLong("createdAt")),
     status = value.optJSONObject("status")?.optString("type", "notLoaded") ?: "notLoaded",
     isPinned = value.optBoolean("isPinned"),
+    locked = value.optBoolean("locked"),
 )
 
 fun parseThread(root: JSONObject): ThreadDetail {

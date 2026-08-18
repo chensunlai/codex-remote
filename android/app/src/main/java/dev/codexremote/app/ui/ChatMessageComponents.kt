@@ -120,7 +120,7 @@ fun ActivityGroup(
     modifier: Modifier = Modifier,
 ) {
     if (messages.isEmpty()) return
-    val running = isActiveTurn && messages.any { it.status.isRunningStatus() }
+    val running = isActiveTurn
     val failed = turn?.status == "failed" || messages.any { it.status == "failed" }
 
     Column(modifier.animateContentSize()) {
@@ -230,7 +230,9 @@ private fun ThinkingShimmer(
 
 @Composable
 private fun RememberedActivityMessage(message: ChatMessage, modifier: Modifier) {
-    var expanded by remember(message.id) { mutableStateOf(message.status.isRunningStatus()) }
+    var expanded by remember(message.id) {
+        mutableStateOf(message.status.isRunningStatus() && message.kind != "commandExecution")
+    }
     ActivityMessage(
         message = message,
         expanded = expanded,
