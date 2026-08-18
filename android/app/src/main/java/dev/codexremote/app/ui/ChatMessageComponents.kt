@@ -112,7 +112,7 @@ private fun AssistantMessage(message: ChatMessage, modifier: Modifier) {
 fun ActivityGroup(
     messages: List<ChatMessage>,
     turn: TurnSummary?,
-    isActiveTurn: Boolean,
+    isLiveActivity: Boolean,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     itemExpanded: (ChatMessage) -> Boolean,
@@ -120,7 +120,7 @@ fun ActivityGroup(
     modifier: Modifier = Modifier,
 ) {
     if (messages.isEmpty()) return
-    val running = isActiveTurn
+    val running = isLiveActivity
     val failed = turn?.status == "failed" || messages.any { it.status == "failed" }
 
     Column(modifier.animateContentSize()) {
@@ -231,7 +231,9 @@ private fun ThinkingShimmer(
 @Composable
 private fun RememberedActivityMessage(message: ChatMessage, modifier: Modifier) {
     var expanded by remember(message.id) {
-        mutableStateOf(message.status.isRunningStatus() && message.kind != "commandExecution")
+        mutableStateOf(
+            defaultActivityItemExpanded(message.status.isRunningStatus(), message.kind),
+        )
     }
     ActivityMessage(
         message = message,
@@ -599,8 +601,6 @@ private fun statusLabel(status: String?): String = when (status) {
     "declined" -> "已拒绝"
     else -> status.orEmpty()
 }
-
-private fun String?.isRunningStatus(): Boolean = this in setOf("inProgress", "in_progress", "active")
 
 @Composable
 private fun statusTint(status: String?): Color = when (status) {

@@ -58,7 +58,7 @@ class ChatActivityInstrumentedTest {
                 ActivityGroup(
                     messages = listOf(command),
                     turn = turn,
-                    isActiveTurn = false,
+                    isLiveActivity = false,
                     expanded = expanded,
                     onExpandedChange = { expanded = it },
                     itemExpanded = { itemExpansion[it.id] ?: false },
@@ -102,11 +102,11 @@ class ChatActivityInstrumentedTest {
                     ActivityGroup(
                         messages = listOf(command, reasoning),
                         turn = TurnSummary("turn-1", "inProgress"),
-                        isActiveTurn = true,
+                        isLiveActivity = true,
                         expanded = true,
                         onExpandedChange = {},
                         itemExpanded = {
-                            itemExpansion[it.id] ?: (it.kind != "commandExecution")
+                            itemExpansion[it.id] ?: defaultActivityItemExpanded(true, it.kind)
                         },
                         onItemExpandedChange = { message, value -> itemExpansion[message.id] = value },
                     )
@@ -142,7 +142,7 @@ class ChatActivityInstrumentedTest {
                         ActivityGroup(
                             messages = listOf(command),
                             turn = TurnSummary("turn-stable", "inProgress"),
-                            isActiveTurn = true,
+                            isLiveActivity = true,
                             expanded = true,
                             onExpandedChange = {},
                             itemExpanded = { itemExpansion[it.id] ?: false },

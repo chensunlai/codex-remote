@@ -117,7 +117,7 @@ import kotlin.math.roundToInt
 
 private data class SessionTarget(val id: String, val title: String)
 
-private sealed interface ChatTimelineEntry {
+internal sealed interface ChatTimelineEntry {
     val key: String
 
     data class Message(val message: ChatMessage) : ChatTimelineEntry {
@@ -848,23 +848,32 @@ private fun ChatPane(
                 ChatTimelineItem { itemModifier ->
                     when (entry) {
                         is ChatTimelineEntry.Message -> ChatMessageRow(entry.message, itemModifier)
-                        is ChatTimelineEntry.Activity -> ActivityGroup(
-                            messages = entry.messages,
-                            turn = entry.turn,
-                            isActiveTurn = entry.turnId == thread.activeTurnId,
-                            expanded = activityExpansion[entry.key]
-                                ?: (entry.turnId == thread.activeTurnId),
-                            onExpandedChange = { activityExpansion[entry.key] = it },
-                            itemExpanded = { message ->
-                                activityExpansion["item:${message.id}"]
-                                    ?: (entry.turnId == thread.activeTurnId &&
-                                        message.kind != "commandExecution")
-                            },
-                            onItemExpandedChange = { message, expanded ->
-                                activityExpansion["item:${message.id}"] = expanded
-                            },
-                            modifier = itemModifier,
-                        )
+                        is ChatTimelineEntry.Activity -> {
+                            val turnInProgress = entry.turnId == thread.activeTurnId
+                            val finalAssistantStarted = hasFinalAssistantStarted(
+                                thread.messages,
+                                entry.turnId,
+                            )
+                            val liveActivity = defaultActivityGroupExpanded(
+                                turnInProgress,
+                                finalAssistantStarted,
+                            )
+                            ActivityGroup(
+                                messages = entry.messages,
+                                turn = entry.turn,
+                                isLiveActivity = liveActivity,
+                                expanded = activityExpansion[entry.key] ?: liveActivity,
+                                onExpandedChange = { activityExpansion[entry.key] = it },
+                                itemExpanded = { message ->
+                                    activityExpansion["item:${message.id}"]
+                                        ?: defaultActivityItemExpanded(liveActivity, message.kind)
+                                },
+                                onItemExpandedChange = { message, expanded ->
+                                    activityExpansion["item:${message.id}"] = expanded
+                                },
+                                modifier = itemModifier,
+                            )
+                        }
                     }
                 }
             }
@@ -908,7 +917,7 @@ private fun ChatTimelineItem(content: @Composable (Modifier) -> Unit) {
     }
 }
 
-private fun buildChatTimeline(
+internal fun buildChatTimeline(
     messages: List<ChatMessage>,
     turns: List<TurnSummary>,
 ): List<ChatTimelineEntry> {
@@ -965,8 +974,6 @@ private fun shouldShowThinking(thread: ThreadDetail): Boolean {
     }
     return !activeActivity && !assistantStreaming
 }
-
-private fun String?.isRunningStatus(): Boolean = this in setOf("inProgress", "in_progress", "active")
 
 @Composable
 private fun ThreadMenu(
