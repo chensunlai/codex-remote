@@ -255,6 +255,7 @@ EOF
     "Gateway 已安装并启动: $DESTINATION" \
     "配置文件: $config_file" \
     "首次 Token: sudo cat $DATA_DIRECTORY/api-token" \
+    "管理: sudo $DESTINATION" \
     "状态检查: sudo systemctl status codex-remote-gateway"
 }
 

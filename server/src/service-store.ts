@@ -1,7 +1,7 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import type { AgentDescription, ServiceRecord } from "./domain.js";
 import { NotFoundError } from "./errors.js";
+import { writePrivateFileAtomically } from "./private-file.js";
 
 interface StoreFile {
   version: 1;
@@ -96,10 +96,7 @@ export class ServiceStore {
   private async persist(): Promise<void> {
     const snapshot: StoreFile = { version: 1, services: structuredClone(this.records!) };
     this.writeQueue = this.writeQueue.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-      const temporary = `${this.path}.${process.pid}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
-      await rename(temporary, this.path);
+      await writePrivateFileAtomically(this.path, `${JSON.stringify(snapshot, null, 2)}\n`);
       const metadata = await stat(this.path, { bigint: true });
       this.fileStamp = `${metadata.mtimeNs}:${metadata.size}`;
     });

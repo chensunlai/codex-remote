@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writePrivateFileExclusively } from "./private-file.js";
 
 export interface ServerConfig {
   host: string;
@@ -62,8 +63,7 @@ async function readTokens(dataDirectory: string, env: NodeJS.ProcessEnv): Promis
 
   const generated = randomBytes(32).toString("base64url");
   const path = resolve(dataDirectory, "api-token");
-  await writeFile(path, `${generated}\n`, { mode: 0o600, flag: "wx" });
-  await chmod(path, 0o600);
+  await writePrivateFileExclusively(path, `${generated}\n`);
   return { tokens: [generated], generated };
 }
 
