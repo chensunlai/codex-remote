@@ -166,6 +166,18 @@ describe("Gateway Agent relay", () => {
     agent = await MockAgent.connect(baseUrl, TOKEN_A);
     const threadId = "thread-rich-client";
 
+    const created = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions`,
+      TOKEN_A,
+      jsonBody({
+        cwd: "/home/fixture/project",
+        model: "fixture-model",
+        effort: "high",
+        permissions: ":workspace",
+      }),
+    );
+    expect(created.status).toBe(201);
+
     const sessions = await api(
       `/api/v1/services/${SERVICE_ID}/sessions?archived=true&searchTerm=review`,
       TOKEN_A,
@@ -177,6 +189,60 @@ describe("Gateway Agent relay", () => {
       TOKEN_A,
     );
     expect(skills.status).toBe(200);
+
+    const permissionProfiles = await api(
+      `/api/v1/services/${SERVICE_ID}/permission-profiles?cwd=%2Fhome%2Ffixture%2Fproject`,
+      TOKEN_A,
+    );
+    expect(permissionProfiles.status).toBe(200);
+    expect(await permissionProfiles.json()).toEqual({
+      data: {
+        data: [{ id: ":workspace", description: "Workspace access", allowed: true }],
+        nextCursor: null,
+      },
+    });
+
+    const namedSettings = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/settings`,
+      TOKEN_A,
+      jsonBody({ model: "fixture-model", effort: "max", permissions: ":workspace" }, "PUT"),
+    );
+    expect(namedSettings.status).toBe(200);
+
+    const sandboxSettings = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/settings`,
+      TOKEN_A,
+      jsonBody({
+        cwd: "/home/fixture/project",
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        networkAccess: false,
+      }, "PUT"),
+    );
+    expect(sandboxSettings.status).toBe(200);
+
+    const currentGoal = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/goal`,
+      TOKEN_A,
+    );
+    expect(currentGoal.status).toBe(200);
+    expect(await currentGoal.json()).toEqual({ data: { goal: null } });
+
+    const goal = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/goal`,
+      TOKEN_A,
+      jsonBody({ objective: "Ship the fixture" }, "PUT"),
+    );
+    expect(goal.status).toBe(200);
+    expect((await goal.json() as { data: { goal: { objective: string } } }).data.goal.objective)
+      .toBe("Ship the fixture");
+
+    const clearedGoal = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/goal`,
+      TOKEN_A,
+      { method: "DELETE" },
+    );
+    expect(clearedGoal.status).toBe(200);
 
     const turn = await api(
       `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/turns`,
@@ -212,6 +278,17 @@ describe("Gateway Agent relay", () => {
 
     expect(agent.codexRequests).toEqual([
       {
+        method: "thread/start",
+        params: {
+          cwd: "/home/fixture/project",
+          model: "fixture-model",
+          approvalPolicy: "on-request",
+          permissions: ":workspace",
+          serviceName: "codex_remote_android",
+          config: { model_reasoning_effort: "high" },
+        },
+      },
+      {
         method: "thread/list",
         params: expect.objectContaining({ archived: true, searchTerm: "review" }),
       },
@@ -219,6 +296,34 @@ describe("Gateway Agent relay", () => {
         method: "skills/list",
         params: { cwds: ["/home/fixture/project"], forceReload: false },
       },
+      {
+        method: "permissionProfile/list",
+        params: { cwd: "/home/fixture/project" },
+      },
+      {
+        method: "thread/settings/update",
+        params: {
+          threadId,
+          model: "fixture-model",
+          effort: "max",
+          permissions: ":workspace",
+        },
+      },
+      {
+        method: "thread/settings/update",
+        params: {
+          threadId,
+          cwd: "/home/fixture/project",
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly", networkAccess: false },
+        },
+      },
+      { method: "thread/goal/get", params: { threadId } },
+      {
+        method: "thread/goal/set",
+        params: { threadId, objective: "Ship the fixture" },
+      },
+      { method: "thread/goal/clear", params: { threadId } },
       {
         method: "turn/start",
         params: {
@@ -249,9 +354,9 @@ describe("Gateway Agent relay", () => {
     });
   }
 
-  function jsonBody(body: unknown): RequestInit {
+  function jsonBody(body: unknown, method = "POST"): RequestInit {
     return {
-      method: "POST",
+      method,
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     };
@@ -358,6 +463,39 @@ class MockAgent {
         });
       } else if (method === "thread/list" || method === "skills/list") {
         this.respond(message.id!, { data: [] });
+      } else if (method === "permissionProfile/list") {
+        this.respond(message.id!, {
+          data: [{ id: ":workspace", description: "Workspace access", allowed: true }],
+          nextCursor: null,
+        });
+      } else if (method === "thread/start") {
+        this.respond(message.id!, {
+          thread: {
+            id: "thread-created",
+            cwd: "/home/fixture/project",
+            status: { type: "idle" },
+            turns: [],
+          },
+        });
+      } else if (method === "thread/settings/update") {
+        this.respond(message.id!, {});
+      } else if (method === "thread/goal/get") {
+        this.respond(message.id!, { goal: null });
+      } else if (method === "thread/goal/set") {
+        this.respond(message.id!, {
+          goal: {
+            threadId: String(rpcParams.threadId),
+            objective: String(rpcParams.objective),
+            status: "active",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        });
+      } else if (method === "thread/goal/clear") {
+        this.respond(message.id!, { cleared: true });
       } else if (method === "turn/start" || method === "review/start") {
         this.respond(message.id!, { turn: { id: "turn-1" } });
       } else if (method === "thread/unarchive" || method === "thread/compact/start") {

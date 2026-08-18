@@ -62,6 +62,16 @@ const reviewTarget = z.discriminatedUnion("type", [
     instructions: z.string().trim().min(1).max(16 * 1024),
   }),
 ]);
+const approvalPolicy = z.enum(["untrusted", "on-request", "never"]);
+const sandboxMode = z.enum(["read-only", "workspace-write", "danger-full-access"]);
+const goalStatus = z.enum([
+  "active",
+  "paused",
+  "blocked",
+  "usageLimited",
+  "budgetLimited",
+  "complete",
+]);
 
 export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> {
   const events = await EventJournal.open(resolve(config.dataDirectory, "events.jsonl"));
@@ -156,6 +166,9 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
         "files",
         "review",
         "prompt-context",
+        "thread-settings",
+        "permission-profiles",
+        "thread-goals",
       ],
     },
   }));
@@ -257,13 +270,20 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         cwd: filePath,
         model: z.string().min(1).max(255).optional(),
         effort: z.string().trim().min(1).max(32).optional(),
-        approvalPolicy: z.enum(["untrusted", "on-request", "never"]).default("on-request"),
-        sandbox: z.enum(["read-only", "workspace-write", "danger-full-access"])
-          .default("workspace-write"),
+        approvalPolicy: approvalPolicy.default("on-request"),
+        sandbox: sandboxMode.default("workspace-write"),
+        permissions: z.string().trim().min(1).max(255).optional(),
         networkAccess: z.boolean().default(true),
       }),
       request.body,
     );
+    if (body.permissions && body.sandbox !== "workspace-write") {
+      throw new AppError(
+        400,
+        "VALIDATION_ERROR",
+        "permissions 不能与自定义 sandbox 同时设置",
+      );
+    }
     const result = await codexRpc(
       services,
       request,
@@ -273,11 +293,12 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
         cwd: body.cwd,
         model: body.model,
         approvalPolicy: body.approvalPolicy,
-        sandbox: body.sandbox,
+        sandbox: body.permissions ? undefined : body.sandbox,
+        permissions: body.permissions,
         serviceName: "codex_remote_android",
         config: compact({
           model_reasoning_effort: body.effort,
-          sandbox_workspace_write: body.sandbox === "workspace-write"
+          sandbox_workspace_write: !body.permissions && body.sandbox === "workspace-write"
             ? { network_access: body.networkAccess }
             : undefined,
         }),
@@ -298,6 +319,109 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
     const { serviceId, threadId } = parse(threadParams, request.params);
     return {
       data: await codexRpc(services, request, serviceId, "thread/resume", { threadId }),
+    };
+  });
+
+  app.get("/api/v1/services/:serviceId/permission-profiles", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const query = parse(
+      z.object({
+        cwd: filePath.optional(),
+        cursor: z.string().min(1).max(2048).optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      }),
+      request.query,
+    );
+    return {
+      data: await codexRpc(
+        services,
+        request,
+        serviceId,
+        "permissionProfile/list",
+        compact(query),
+      ),
+    };
+  });
+
+  app.put("/api/v1/services/:serviceId/sessions/:threadId/settings", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const body = parse(
+      z.object({
+        cwd: filePath.optional(),
+        model: z.string().trim().min(1).max(255).optional(),
+        effort: z.string().trim().min(1).max(32).optional(),
+        approvalPolicy: approvalPolicy.optional(),
+        permissions: z.string().trim().min(1).max(255).optional(),
+        sandbox: sandboxMode.optional(),
+        networkAccess: z.boolean().optional(),
+      }).refine((value) => Object.values(value).some((item) => item !== undefined), {
+        message: "至少提供一项会话设置",
+      }),
+      request.body,
+    );
+    if (body.permissions && body.sandbox) {
+      throw new AppError(
+        400,
+        "VALIDATION_ERROR",
+        "permissions 不能与 sandbox 同时设置",
+      );
+    }
+    const sandboxPolicy = body.sandbox
+      ? toSandboxPolicy(body.sandbox, body.networkAccess ?? true, body.cwd)
+      : undefined;
+    return {
+      data: await codexRpc(
+        services,
+        request,
+        serviceId,
+        "thread/settings/update",
+        compact({
+          threadId,
+          cwd: body.cwd,
+          model: body.model,
+          effort: body.effort,
+          approvalPolicy: body.approvalPolicy,
+          permissions: body.permissions,
+          sandboxPolicy,
+        }),
+      ),
+    };
+  });
+
+  app.get("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    return {
+      data: await codexRpc(services, request, serviceId, "thread/goal/get", { threadId }),
+    };
+  });
+
+  app.put("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const body = parse(
+      z.object({
+        objective: z.string().trim().min(1).max(16 * 1024).optional(),
+        status: goalStatus.optional(),
+        tokenBudget: z.number().int().positive().nullable().optional(),
+      }).refine((value) => Object.values(value).some((item) => item !== undefined), {
+        message: "至少提供一项 Goal 设置",
+      }),
+      request.body,
+    );
+    return {
+      data: await codexRpc(
+        services,
+        request,
+        serviceId,
+        "thread/goal/set",
+        compact({ threadId, ...body }),
+      ),
+    };
+  });
+
+  app.delete("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    return {
+      data: await codexRpc(services, request, serviceId, "thread/goal/clear", { threadId }),
     };
   });
 
@@ -702,6 +826,27 @@ function codexRpc(
     { method, params },
     timeoutMs,
   );
+}
+
+function toSandboxPolicy(
+  sandbox: z.infer<typeof sandboxMode>,
+  networkAccess: boolean,
+  cwd?: string,
+): Record<string, unknown> {
+  switch (sandbox) {
+    case "danger-full-access":
+      return { type: "dangerFullAccess" };
+    case "read-only":
+      return { type: "readOnly", networkAccess };
+    case "workspace-write":
+      return {
+        type: "workspaceWrite",
+        writableRoots: cwd ? [cwd] : [],
+        networkAccess,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+  }
 }
 
 async function readThreadWithTurns(
