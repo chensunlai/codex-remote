@@ -2,6 +2,7 @@
 
 package dev.codexremote.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -135,6 +136,13 @@ private sealed interface ChatTimelineEntry {
 fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
     var deleteTarget by remember { mutableStateOf<SessionTarget?>(null) }
     var renameTarget by remember { mutableStateOf<SessionTarget?>(null) }
+    var showDirectoryPicker by remember { mutableStateOf(false) }
+    val requestNewSession = {
+        viewModel.browseHome()
+        showDirectoryPicker = true
+    }
+
+    BackHandler(enabled = state.thread != null) { viewModel.closeSession() }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val split = maxWidth >= 920.dp
@@ -143,7 +151,7 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
                 SessionListPane(
                     state = state,
                     viewModel = viewModel,
-                    onCreate = { viewModel.createSession() },
+                    onCreate = requestNewSession,
                     onRename = { renameTarget = it.target() },
                     onDelete = { deleteTarget = it.target() },
                     modifier = Modifier.width(380.dp),
@@ -154,8 +162,9 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
                         state = state,
                         viewModel = viewModel,
                         showBack = false,
-                        onRename = { renameTarget = SessionTarget(it.id, it.name ?: "未命名会话") },
-                        onDelete = { deleteTarget = SessionTarget(it.id, it.name ?: "未命名会话") },
+                        onNew = requestNewSession,
+                        onRename = { renameTarget = SessionTarget(it.id, it.displayTitle(state.sessions)) },
+                        onDelete = { deleteTarget = SessionTarget(it.id, it.displayTitle(state.sessions)) },
                         modifier = Modifier.weight(1f),
                     )
                 } else {
@@ -171,20 +180,33 @@ fun SessionsScreen(state: AppState, viewModel: MainViewModel) {
                 state = state,
                 viewModel = viewModel,
                 showBack = true,
-                onRename = { renameTarget = SessionTarget(it.id, it.name ?: "未命名会话") },
-                onDelete = { deleteTarget = SessionTarget(it.id, it.name ?: "未命名会话") },
+                onNew = requestNewSession,
+                onRename = { renameTarget = SessionTarget(it.id, it.displayTitle(state.sessions)) },
+                onDelete = { deleteTarget = SessionTarget(it.id, it.displayTitle(state.sessions)) },
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
             SessionListPane(
                 state = state,
                 viewModel = viewModel,
-                onCreate = { viewModel.createSession() },
+                onCreate = requestNewSession,
                 onRename = { renameTarget = it.target() },
                 onDelete = { deleteTarget = it.target() },
                 modifier = Modifier.fillMaxSize(),
             )
         }
+    }
+
+    if (showDirectoryPicker) {
+        RemoteDirectoryPickerDialog(
+            state = state,
+            viewModel = viewModel,
+            onDismiss = { showDirectoryPicker = false },
+            onSelect = { cwd ->
+                showDirectoryPicker = false
+                viewModel.createSession(cwd)
+            },
+        )
     }
 
     renameTarget?.let { target ->
@@ -455,11 +477,13 @@ private fun ChatPane(
     state: AppState,
     viewModel: MainViewModel,
     showBack: Boolean,
+    onNew: () -> Unit,
     onRename: (dev.codexremote.app.model.ThreadDetail) -> Unit,
     onDelete: (dev.codexremote.app.model.ThreadDetail) -> Unit,
     modifier: Modifier,
 ) {
     val thread = state.thread ?: return
+    val threadTitle = thread.displayTitle(state.sessions)
     var input by remember(thread.id) { mutableStateOf("") }
     var contexts by remember(thread.id) { mutableStateOf<List<PromptContext>>(emptyList()) }
     var showGoalEditor by remember(thread.id) { mutableStateOf(false) }
@@ -518,7 +542,7 @@ private fun ChatPane(
                 title = {
                     Column {
                         Text(
-                            thread.name ?: "未命名会话",
+                            threadTitle,
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -701,7 +725,7 @@ private fun ChatPane(
                             goalDraft = thread.goal?.objective.orEmpty()
                             showGoalEditor = true
                         },
-                        onNew = { viewModel.createSession() },
+                        onNew = onNew,
                         onCompact = viewModel::compactSession,
                         onReview = viewModel::reviewUncommitted,
                         onSend = {
@@ -730,7 +754,7 @@ private fun ChatPane(
                                     contexts = emptyList()
                                 }
                                 submitted == "/new" -> {
-                                    viewModel.createSession()
+                                    onNew()
                                     input = ""
                                     contexts = emptyList()
                                 }
@@ -1574,6 +1598,84 @@ private fun RemoteContextPickerDialog(
 }
 
 @Composable
+private fun RemoteDirectoryPickerDialog(
+    state: AppState,
+    viewModel: MainViewModel,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(0.84f).padding(18.dp).widthIn(max = 680.dp),
+            shape = MaterialTheme.shapes.large,
+        ) {
+            Column {
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("选择工作目录", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            state.remotePath.ifBlank { "正在读取目录…" },
+                            style = MonoTextStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(CodexIcons.Close, contentDescription = "关闭")
+                    }
+                }
+                HorizontalDivider()
+                LazyColumn(Modifier.weight(1f)) {
+                    if (state.remotePath != "/" && state.remotePath.isNotBlank()) {
+                        item(key = "parent") {
+                            ContextFileRow(
+                                name = "..",
+                                subtitle = "上级目录",
+                                icon = CodexIcons.FolderOpen,
+                                onClick = {
+                                    viewModel.browse(state.remotePath.substringBeforeLast('/').ifBlank { "/" })
+                                },
+                            )
+                        }
+                    }
+                    items(
+                        items = state.remoteFiles.filter { it.type == RemoteFileType.DIRECTORY },
+                        key = RemoteFile::path,
+                    ) { directory ->
+                        ContextFileRow(
+                            name = directory.name,
+                            subtitle = "目录",
+                            icon = CodexIcons.Folder,
+                            onClick = { viewModel.browse(directory.path) },
+                        )
+                    }
+                }
+                HorizontalDivider()
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Button(
+                        onClick = { onSelect(state.remotePath) },
+                        enabled = state.remotePath.startsWith('/') && !state.loading,
+                    ) {
+                        Icon(CodexIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("使用此目录")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ContextFileRow(
     name: String,
     subtitle: String,
@@ -1627,6 +1729,20 @@ private fun RenameSessionDialog(
 
 private fun SessionSummary.target(): SessionTarget =
     SessionTarget(id, name ?: preview.ifBlank { "未命名会话" })
+
+internal fun ThreadDetail.displayTitle(sessions: List<SessionSummary>): String =
+    name?.takeIf(String::isNotBlank)
+        ?: sessions.firstOrNull { it.id == id }?.let { summary ->
+            summary.name?.takeIf(String::isNotBlank)
+                ?: summary.preview.takeIf(String::isNotBlank)
+        }
+        ?: messages.firstOrNull { it.role == MessageRole.USER && it.text.isNotBlank() }
+            ?.text
+            ?.lineSequence()
+            ?.firstOrNull()
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+        ?: "未命名会话"
 
 private fun sessionGroup(epochSeconds: Long): String {
     if (epochSeconds <= 0) return "更早"

@@ -8,13 +8,11 @@ import org.json.JSONObject
 class SessionPreferences(context: Context) {
     private val preferences = context.getSharedPreferences("session_preferences", 0)
 
-    fun load(scope: String, serviceId: String): NewSessionOptions? {
-        if (scope.isBlank() || serviceId.isBlank()) return null
+    fun load(scope: String, serviceId: String, cwd: String): NewSessionOptions? {
+        if (scope.isBlank() || serviceId.isBlank() || !cwd.startsWith('/')) return null
         val value = preferences.getString(key(scope, serviceId), null) ?: return null
         return runCatching {
             val root = JSONObject(value)
-            val cwd = root.optString("cwd")
-            if (!cwd.startsWith('/')) return@runCatching null
             NewSessionOptions(
                 cwd = cwd,
                 model = root.optionalString("model"),
@@ -30,7 +28,6 @@ class SessionPreferences(context: Context) {
     fun save(scope: String, serviceId: String, value: NewSessionOptions) {
         if (scope.isBlank() || serviceId.isBlank() || !value.cwd.startsWith('/')) return
         val root = JSONObject()
-            .put("cwd", value.cwd)
             .put("approvalPolicy", value.approvalPolicy)
             .put("sandbox", value.sandbox)
             .put("networkAccess", value.networkAccess)

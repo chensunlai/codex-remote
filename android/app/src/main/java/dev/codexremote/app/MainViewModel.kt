@@ -79,6 +79,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var eventGeneration = 0L
     private var activeOperations = 0
     private val subscribedThreads = mutableSetOf<String>()
+    private val newEmptyThreads = mutableSetOf<String>()
 
     init {
         secretStore.load()?.let { config ->
@@ -117,10 +118,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentEventServiceId = null
         activeOperations = 0
         subscribedThreads.clear()
+        newEmptyThreads.clear()
         _state.value = AppState()
     }
 
     fun setSection(section: MainSection) {
+        if (section != MainSection.SESSIONS) discardSelectedEmptyThread()
         _state.update { it.copy(section = section) }
     }
 
@@ -179,6 +182,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             api.deleteService(serviceId)
             chatCache.delete(cacheScope, serviceId)
             subscribedThreads.removeAll { it.startsWith("$serviceId:") }
+            newEmptyThreads.removeAll { it.startsWith("$serviceId:") }
             if (_state.value.selectedServiceId == serviceId) {
                 events?.cancel()
                 events = null
@@ -212,6 +216,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectService(serviceId: String) {
         if (_state.value.selectedServiceId == serviceId && _state.value.models.isNotEmpty()) return
+        discardSelectedEmptyThread()
         _state.update {
             it.copy(
                 selectedServiceId = serviceId,
@@ -254,6 +259,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showArchivedSessions(value: Boolean) {
         val serviceId = _state.value.selectedServiceId ?: return
+        discardSelectedEmptyThread()
         _state.update {
             it.copy(
                 showingArchivedSessions = value,
@@ -266,10 +272,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun createSession(onComplete: () -> Unit = {}) {
+    fun createSession(cwd: String, onComplete: () -> Unit = {}) {
         val serviceId = _state.value.selectedServiceId ?: return
-        val options = initialSessionOptions(serviceId)
+        discardSelectedEmptyThread()
         launchOperation("正在创建会话") {
+            val options = initialSessionOptions(serviceId, cwd)
             val result = api.createSession(serviceId, options)
             val thread = result.optJSONObject("thread")
                 ?: error("Codex 未返回会话")
@@ -281,6 +288,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val detail = parsed.copy(
                 settings = resolveThreadSettings(result, parsed.settings, options),
             )
+            newEmptyThreads.add(threadKey(serviceId, threadId))
             _state.update { state ->
                 state.copy(
                     sessions = listOf(summary) + state.sessions.filterNot { it.id == threadId },
@@ -298,6 +306,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectSession(threadId: String) {
         val serviceId = _state.value.selectedServiceId ?: return
+        if (_state.value.selectedThreadId == threadId && _state.value.thread != null) return
+        discardSelectedEmptyThread()
         val resume = !_state.value.showingArchivedSessions
         _state.update { it.copy(selectedThreadId = threadId, thread = null) }
         launchOperation("正在载入会话") {
@@ -306,7 +316,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeSession() {
-        _state.update { it.copy(selectedThreadId = null, thread = null) }
+        if (!discardSelectedEmptyThread()) clearSelectedThread()
     }
 
     fun sendMessage(
@@ -359,8 +369,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     status = "inProgress",
                     turnId = turnId,
                 )
+                newEmptyThreads.remove(threadKey(serviceId, threadId))
                 _state.update { state ->
                     state.copy(
+                        sessions = state.sessions.map { session ->
+                            if (session.id == threadId && session.preview.isBlank()) {
+                                session.copy(
+                                    preview = text,
+                                    updatedAt = System.currentTimeMillis() / 1_000,
+                                )
+                            } else {
+                                session
+                            }
+                        },
                         thread = state.thread?.copy(
                             messages = state.thread.messages + optimistic,
                             activeTurnId = turnId,
@@ -448,9 +469,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun archiveSession(threadId: String) {
         val serviceId = _state.value.selectedServiceId ?: return
         launchOperation("正在归档会话") {
+            newEmptyThreads.remove(threadKey(serviceId, threadId))
             api.archiveSession(serviceId, threadId)
             chatCache.delete(cacheScope, serviceId, threadId)
-            if (_state.value.selectedThreadId == threadId) closeSession()
+            if (_state.value.selectedThreadId == threadId) clearSelectedThread()
             loadSessions(serviceId)
         }
     }
@@ -498,6 +520,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val result = api.reviewUncommitted(serviceId, threadId)
             val turnId = result.optJSONObject("turn")?.optString("id")
             if (!turnId.isNullOrBlank()) {
+                newEmptyThreads.remove(threadKey(serviceId, threadId))
                 _state.update { state ->
                     state.copy(thread = state.thread?.copy(activeTurnId = turnId))
                 }
@@ -508,9 +531,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteSession(threadId: String) {
         val serviceId = _state.value.selectedServiceId ?: return
         launchOperation("正在删除会话") {
+            newEmptyThreads.remove(threadKey(serviceId, threadId))
             api.deleteSession(serviceId, threadId)
             chatCache.delete(cacheScope, serviceId, threadId)
-            if (_state.value.selectedThreadId == threadId) closeSession()
+            if (_state.value.selectedThreadId == threadId) clearSelectedThread()
             loadSessions(serviceId)
         }
     }
@@ -521,6 +545,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val target = path ?: _state.value.remotePath.ifBlank { api.home(serviceId) }
             val list = parseFiles(api.files(serviceId, target))
             _state.update { it.copy(remotePath = target, remoteFiles = list, filePreview = null) }
+        }
+    }
+
+    fun browseHome() {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val knownHome = current.services.firstOrNull { it.id == serviceId }?.home
+        _state.update { it.copy(remotePath = "", remoteFiles = emptyList()) }
+        launchOperation("正在读取目录") {
+            browseNow(serviceId, knownHome ?: api.home(serviceId))
         }
     }
 
@@ -814,7 +848,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?.takeIf { it.id == threadId }
             ?.settings
             ?.toOptions()
-            ?: sessionPreferences.load(cacheScope, serviceId)
+            ?: (rawDetail.cwd ?: summary?.cwd)?.let { cwd ->
+                sessionPreferences.load(cacheScope, serviceId, cwd)
+            }
         val currentGoal = _state.value.thread?.takeIf { it.id == threadId }?.goal
         val goal = runCatching {
             parseThreadGoal(api.goal(serviceId, threadId).optJSONObject("goal"))
@@ -823,6 +859,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             settings = resolveThreadSettings(root, rawDetail.settings, fallback),
             goal = goal,
         )
+        if (detail.messages.any { it.role == MessageRole.USER } || detail.turns.isNotEmpty()) {
+            newEmptyThreads.remove(threadKey(serviceId, threadId))
+        }
         if (
             _state.value.selectedServiceId != serviceId ||
             _state.value.selectedThreadId != threadId
@@ -1139,6 +1178,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             "codex.thread/archived", "codex.thread/unarchived", "codex.thread/deleted" -> {
                 val serviceId = _state.value.selectedServiceId ?: return
+                if (type == "codex.thread/deleted") {
+                    payload.optString("threadId").takeIf(String::isNotBlank)?.let { threadId ->
+                        newEmptyThreads.remove(threadKey(serviceId, threadId))
+                    }
+                }
                 viewModelScope.launch { runCatching { loadSessions(serviceId) } }
             }
             "codex.request", "codex.request.resolved" -> {
@@ -1219,6 +1263,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         message: ChatMessage,
         markActive: Boolean = true,
     ) {
+        if (message.role == MessageRole.USER) {
+            _state.value.selectedServiceId?.let { serviceId ->
+                newEmptyThreads.remove(threadKey(serviceId, threadId))
+            }
+        }
         _state.update { state ->
             val thread = state.thread?.takeIf { it.id == threadId } ?: return@update state
             val attributedMessage = message.copy(
@@ -1247,13 +1296,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun initialSessionOptions(serviceId: String): NewSessionOptions {
-        sessionPreferences.load(cacheScope, serviceId)?.let { return it }
+    private fun initialSessionOptions(serviceId: String, cwd: String): NewSessionOptions {
+        val selectedDirectory = cwd.trim()
+        require(selectedDirectory.startsWith('/')) { "请选择有效的工作目录" }
+        return sessionPreferences.load(cacheScope, serviceId, selectedDirectory)
+            ?: NewSessionOptions(cwd = selectedDirectory, model = null, effort = null)
+    }
+
+    private fun clearSelectedThread() {
+        _state.update { it.copy(selectedThreadId = null, thread = null) }
+    }
+
+    private fun discardSelectedEmptyThread(): Boolean {
         val current = _state.value
-        val cwd = current.services.firstOrNull { it.id == serviceId }?.home
-            ?: current.remotePath.takeIf { it.startsWith('/') }
-            ?: error("服务器未返回工作目录")
-        return NewSessionOptions(cwd = cwd, model = null, effort = null)
+        val serviceId = current.selectedServiceId ?: return false
+        val threadId = current.selectedThreadId ?: return false
+        val key = threadKey(serviceId, threadId)
+        if (key !in newEmptyThreads) return false
+
+        val summary = current.sessions.firstOrNull { it.id == threadId }
+        val hasConversation = current.thread?.let { thread ->
+            thread.messages.any { it.role == MessageRole.USER } || thread.turns.isNotEmpty()
+        } == true || !summary?.preview.isNullOrBlank()
+        if (hasConversation) {
+            newEmptyThreads.remove(key)
+            return false
+        }
+
+        newEmptyThreads.remove(key)
+        subscribedThreads.remove(key)
+        val scope = cacheScope
+        _state.update { state ->
+            state.copy(
+                sessions = state.sessions.filterNot { it.id == threadId },
+                selectedThreadId = if (state.selectedThreadId == threadId) null else state.selectedThreadId,
+                thread = state.thread?.takeUnless { it.id == threadId },
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                api.deleteSession(serviceId, threadId)
+                chatCache.delete(scope, serviceId, threadId)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(error = "清理空会话失败：${error.message ?: error}")
+                }
+            }
+        }
+        return true
     }
 
     private fun resolveThreadSettings(

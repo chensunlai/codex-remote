@@ -11,7 +11,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class SessionPreferencesInstrumentedTest {
     @Test
-    fun retainsLastThreadConfigurationForTheNextSession() {
+    fun retainsConfigurationButUsesTheUserSelectedDirectory() {
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val preferences = SessionPreferences(context)
         val scope = "test-${UUID.randomUUID()}"
@@ -25,9 +25,13 @@ class SessionPreferencesInstrumentedTest {
             networkAccess = true,
             permissionProfile = ":workspace",
         )
+        val selectedDirectory = "/workspace/another-project"
 
         preferences.save(scope, serviceId, expected)
 
-        assertEquals(expected, preferences.load(scope, serviceId))
+        assertEquals(
+            expected.copy(cwd = selectedDirectory),
+            preferences.load(scope, serviceId, selectedDirectory),
+        )
     }
 }
