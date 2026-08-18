@@ -402,6 +402,40 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
     }
   });
 
+  app.post("/api/v1/services/:serviceId/sessions/:threadId/fork", async (request, reply) => {
+    const { serviceId, threadId } = parse(threadParams, request.params);
+    const body = parse(
+      z.object({
+        name: z.string().trim().min(1).max(255).optional(),
+      }).default({}),
+      request.body,
+    );
+    const result = await codexRpc(
+      services,
+      request,
+      serviceId,
+      "thread/fork",
+      { threadId },
+      90_000,
+    );
+    let response = result;
+    if (body.name) {
+      const forkedThreadId = resultThreadId(result);
+      if (!forkedThreadId) {
+        throw new AppError(502, "CODEX_INVALID_RESPONSE", "Codex 未返回分支会话 ID");
+      }
+      await codexRpc(
+        services,
+        request,
+        serviceId,
+        "thread/name/set",
+        { threadId: forkedThreadId, name: body.name },
+      );
+      response = withThreadName(result, body.name);
+    }
+    return reply.status(201).send({ data: response });
+  });
+
   app.post("/api/v1/services/:serviceId/sessions/:threadId/takeover", async (request) => {
     const { serviceId, threadId } = parse(threadParams, request.params);
     return {
@@ -977,6 +1011,25 @@ function threadStatus(value: unknown): string {
   if (!status || typeof status !== "object" || Array.isArray(status)) return "notLoaded";
   const type = (status as Record<string, unknown>).type;
   return typeof type === "string" ? type : "notLoaded";
+}
+
+function resultThreadId(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const thread = (value as Record<string, unknown>).thread;
+  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return null;
+  const id = (thread as Record<string, unknown>).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function withThreadName(value: unknown, name: string): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const result = value as Record<string, unknown>;
+  const thread = result.thread;
+  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return value;
+  return {
+    ...result,
+    thread: { ...thread as Record<string, unknown>, name },
+  };
 }
 
 function toSandboxPolicy(

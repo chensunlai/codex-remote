@@ -190,6 +190,34 @@ describe("Gateway Agent relay", () => {
     expect(agent.takeoverThreads).toEqual([threadId]);
   });
 
+  it("forks a Codex thread and applies the client branch title", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+
+    const response = await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/thread-source/fork`,
+      TOKEN_A,
+      jsonBody({ name: "Fixture task (2)" }),
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({
+      data: {
+        thread: expect.objectContaining({
+          id: "thread-forked",
+          forkedFromId: "thread-source",
+          name: "Fixture task (2)",
+        }),
+      },
+    });
+    expect(agent.codexRequests).toEqual([
+      { method: "thread/fork", params: { threadId: "thread-source" } },
+      {
+        method: "thread/name/set",
+        params: { threadId: "thread-forked", name: "Fixture task (2)" },
+      },
+    ]);
+  });
+
   it("reports loaded thread locks and releases them explicitly", async () => {
     agent = await MockAgent.connect(baseUrl, TOKEN_A);
     const threadId = "thread-locked";
@@ -692,6 +720,18 @@ class MockAgent {
             turns: [],
           },
         });
+      } else if (method === "thread/fork") {
+        this.respond(message.id!, {
+          thread: {
+            id: "thread-forked",
+            forkedFromId: String(rpcParams.threadId),
+            cwd: "/home/fixture/project",
+            status: { type: "idle" },
+            turns: [],
+          },
+        });
+      } else if (method === "thread/name/set") {
+        this.respond(message.id!, {});
       } else if (method === "thread/settings/update") {
         this.respond(message.id!, {});
       } else if (method === "thread/goal/get") {
