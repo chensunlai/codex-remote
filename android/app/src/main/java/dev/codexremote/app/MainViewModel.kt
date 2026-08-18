@@ -14,11 +14,14 @@ import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.SessionPreferences
 import dev.codexremote.app.data.objects
 import dev.codexremote.app.data.parseChatItem
+import dev.codexremote.app.data.parseCollaborationModes
+import dev.codexremote.app.data.parseFileSearchResults
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseModels
 import dev.codexremote.app.data.parsePending
 import dev.codexremote.app.data.parsePermissionProfiles
 import dev.codexremote.app.data.parsePlanSteps
+import dev.codexremote.app.data.parseRateLimits
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.data.parseSession
 import dev.codexremote.app.data.parseSessions
@@ -69,6 +72,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var events: WebSocket? = null
     private var reconnectJob: Job? = null
     private var sessionSearchJob: Job? = null
+    private var contextFileSearchJob: Job? = null
     private var cacheScope = ""
     private var lastEventSequence = 0L
     private var currentEventServiceId: String? = null
@@ -124,6 +128,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(error = null) }
     }
 
+    fun searchContextFiles(query: String) {
+        val normalized = query.trim()
+        _state.update {
+            it.copy(
+                contextFileSearchQuery = query,
+                contextFileSearchResults = if (normalized.isEmpty()) {
+                    emptyList()
+                } else {
+                    it.contextFileSearchResults
+                },
+            )
+        }
+        contextFileSearchJob?.cancel()
+        if (normalized.isEmpty()) return
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val cwd = current.thread?.cwd ?: return
+        contextFileSearchJob = viewModelScope.launch {
+            delay(200)
+            runCatching { parseFileSearchResults(api.searchFiles(serviceId, cwd, normalized)) }
+                .onSuccess { results ->
+                    if (
+                        _state.value.selectedServiceId == serviceId &&
+                        _state.value.thread?.cwd == cwd &&
+                        _state.value.contextFileSearchQuery.trim() == normalized
+                    ) {
+                        _state.update { it.copy(contextFileSearchResults = results) }
+                    }
+                }
+                .onFailure { error ->
+                    _state.update { it.copy(error = error.message ?: error.toString()) }
+                }
+        }
+    }
+
+    fun clearContextFileSearch() {
+        contextFileSearchJob?.cancel()
+        _state.update {
+            it.copy(contextFileSearchQuery = "", contextFileSearchResults = emptyList())
+        }
+    }
+
     fun refreshServices() {
         launchOperation("正在刷新服务") { loadServicesAndSelect() }
     }
@@ -141,9 +187,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         selectedServiceId = null,
                         sessions = emptyList(),
                         models = emptyList(),
+                        collaborationModes = emptyList(),
                         permissionProfiles = emptyList(),
                         skills = emptyList(),
                         remoteFiles = emptyList(),
+                        contextFileSearchQuery = "",
+                        contextFileSearchResults = emptyList(),
+                        rateLimits = null,
                         selectedThreadId = null,
                         thread = null,
                     )
@@ -167,11 +217,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 selectedServiceId = serviceId,
                 sessions = emptyList(),
                 models = emptyList(),
+                collaborationModes = emptyList(),
                 permissionProfiles = emptyList(),
                 skills = emptyList(),
                 selectedThreadId = null,
                 thread = null,
                 remoteFiles = emptyList(),
+                contextFileSearchQuery = "",
+                contextFileSearchResults = emptyList(),
+                rateLimits = null,
                 remotePath = "",
                 filePreview = null,
             )
@@ -620,6 +674,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         events?.close(1000, "Android client closed")
         sessionSearchJob?.cancel()
+        contextFileSearchJob?.cancel()
         chatCache.close()
     }
 
@@ -676,7 +731,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadServiceWorkspace(serviceId: String) {
         val models = parseModels(api.models(serviceId))
-        _state.update { it.copy(models = models) }
+        val collaborationModes = runCatching {
+            parseCollaborationModes(api.collaborationModes(serviceId))
+        }.getOrElse { emptyList() }
+        val rateLimits = runCatching { parseRateLimits(api.rateLimits(serviceId)) }.getOrNull()
+        _state.update {
+            it.copy(
+                models = models,
+                collaborationModes = collaborationModes,
+                rateLimits = rateLimits,
+            )
+        }
         val path = _state.value.services.firstOrNull { it.id == serviceId }?.home
             ?: api.home(serviceId)
         loadPermissionProfiles(serviceId, path)
@@ -980,6 +1045,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     updateThread(threadId) { it.copy(tokenUsage = tokenUsage) }
                 }
             }
+            "codex.account/rateLimits/updated" -> {
+                parseRateLimits(payload)?.let { limits ->
+                    _state.update { it.copy(rateLimits = limits) }
+                }
+            }
             "codex.thread/settings/updated" -> {
                 val threadId = payload.optString("threadId")
                 if (threadId != selectedThread) return
@@ -1195,7 +1265,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             root.has("reasoningEffort") ||
             root.has("approvalPolicy") ||
             root.has("sandbox") ||
-            root.has("activePermissionProfile")
+            root.has("activePermissionProfile") ||
+            root.has("collaborationMode")
         return if (hasRemoteSettings || fallback == null) {
             parsed
         } else {
@@ -1281,6 +1352,7 @@ private fun ThreadSettings.apply(update: ThreadSettingsUpdate): ThreadSettings =
         update.sandbox != null -> null
         else -> permissionProfile
     },
+    collaborationMode = update.collaborationMode?.mode ?: collaborationMode,
 )
 
 private fun normalizeGatewayUrl(value: String): String {

@@ -26,6 +26,14 @@ class JsonParsersInstrumentedTest {
                     "writableRoots": ["/workspace"]
                   },
                   "activePermissionProfile": {"id": ":workspace", "extends": null},
+                  "collaborationMode": {
+                    "mode": "plan",
+                    "settings": {
+                      "model": "gpt-fixture",
+                      "reasoning_effort": "medium",
+                      "developer_instructions": null
+                    }
+                  },
                   "thread": {
                     "id": "thread-1",
                     "name": "Fixture",
@@ -71,6 +79,65 @@ class JsonParsersInstrumentedTest {
         assertEquals(":workspace", detail.settings.permissionProfile)
         assertEquals("workspace-write", detail.settings.sandbox)
         assertTrue(detail.settings.networkAccess)
+        assertEquals("plan", detail.settings.collaborationMode)
+    }
+
+    @Test
+    fun composerCapabilitiesUseNativeProtocolFields() {
+        val modes = parseCollaborationModes(
+            JSONObject(
+                """
+                {
+                  "data": [
+                    {"name": "Plan", "mode": "plan", "model": null, "reasoning_effort": "medium"},
+                    {"name": "Default", "mode": "default", "model": null, "reasoning_effort": null}
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )
+        val files = parseFileSearchResults(
+            JSONObject(
+                """
+                {
+                  "files": [
+                    {
+                      "root": "/workspace",
+                      "path": "src/App.kt",
+                      "match_type": "file",
+                      "file_name": "App.kt"
+                    },
+                    {
+                      "root": "/workspace",
+                      "path": "docs",
+                      "match_type": "directory",
+                      "file_name": "docs"
+                    }
+                  ]
+                }
+                """.trimIndent(),
+            ),
+        )
+        val limits = parseRateLimits(
+            JSONObject(
+                """
+                {
+                  "rateLimits": {
+                    "primary": {"usedPercent": 25.5, "windowDurationMins": 300, "resetsAt": 1000},
+                    "secondary": null,
+                    "planType": "pro"
+                  }
+                }
+                """.trimIndent(),
+            ),
+        )
+
+        assertEquals(listOf("plan", "default"), modes.map { it.mode })
+        assertEquals("medium", modes.first().effort)
+        assertEquals("/workspace/src/App.kt", files.first().path)
+        assertEquals("DIRECTORY", files.last().type.name)
+        assertEquals(25.5, limits?.primary?.usedPercent ?: 0.0, 0.001)
+        assertEquals("pro", limits?.planType)
     }
 
     @Test

@@ -1,6 +1,8 @@
 package dev.codexremote.app.data
 
 import dev.codexremote.app.model.ChatMessage
+import dev.codexremote.app.model.AccountRateLimits
+import dev.codexremote.app.model.CollaborationModeOption
 import dev.codexremote.app.model.CommandActionSummary
 import dev.codexremote.app.model.FileChangeSummary
 import dev.codexremote.app.model.MessageRole
@@ -11,9 +13,11 @@ import dev.codexremote.app.model.PendingRequest
 import dev.codexremote.app.model.PermissionProfile
 import dev.codexremote.app.model.PlanStep
 import dev.codexremote.app.model.RemoteFile
+import dev.codexremote.app.model.RemoteFileMatch
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RemoteService
 import dev.codexremote.app.model.RuntimeState
+import dev.codexremote.app.model.RateLimitWindow
 import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.SkillOption
 import dev.codexremote.app.model.ThreadDetail
@@ -53,6 +57,50 @@ fun parseModels(root: JSONObject): List<ModelOption> =
             efforts = efforts,
             defaultEffort = value.nullableString("defaultReasoningEffort"),
             isDefault = value.optBoolean("isDefault"),
+        )
+    }.orEmpty()
+
+fun parseCollaborationModes(root: JSONObject): List<CollaborationModeOption> =
+    root.optJSONArray("data")?.objects()?.mapNotNull { value ->
+        val mode = value.nullableString("mode") ?: return@mapNotNull null
+        CollaborationModeOption(
+            name = value.optString("name", mode),
+            mode = mode,
+            model = value.nullableString("model"),
+            effort = value.nullableString("reasoning_effort"),
+        )
+    }.orEmpty()
+
+fun parseRateLimits(root: JSONObject): AccountRateLimits? {
+    val limits = root.optJSONObject("rateLimits") ?: return null
+    fun window(name: String): RateLimitWindow? = limits.optJSONObject(name)?.let { value ->
+        RateLimitWindow(
+            usedPercent = value.optDouble("usedPercent"),
+            windowDurationMins = value.nullableLong("windowDurationMins"),
+            resetsAt = value.nullableLong("resetsAt"),
+        )
+    }
+    return AccountRateLimits(
+        primary = window("primary"),
+        secondary = window("secondary"),
+        planType = limits.nullableString("planType"),
+    )
+}
+
+fun parseFileSearchResults(root: JSONObject): List<RemoteFileMatch> =
+    root.optJSONArray("files")?.objects()?.mapNotNull { value ->
+        val resultPath = value.optString("path")
+        val rootPath = value.optString("root").trimEnd('/')
+        if (resultPath.isBlank()) return@mapNotNull null
+        val absolutePath = if (resultPath.startsWith('/')) resultPath else "$rootPath/$resultPath"
+        RemoteFileMatch(
+            name = value.optString("file_name", resultPath.substringAfterLast('/')),
+            path = absolutePath,
+            type = if (value.optString("match_type") == "directory") {
+                RemoteFileType.DIRECTORY
+            } else {
+                RemoteFileType.FILE
+            },
         )
     }.orEmpty()
 
@@ -155,6 +203,9 @@ fun parseThreadSettings(value: JSONObject, fallbackCwd: String? = null): ThreadS
     }
     val permissionProfile = value.optJSONObject("activePermissionProfile")
         ?.nullableString("id")
+    val collaborationMode = value.optJSONObject("collaborationMode")
+        ?.nullableString("mode")
+        ?: "default"
     return ThreadSettings(
         cwd = value.nullableString("cwd") ?: fallbackCwd,
         model = value.nullableString("model"),
@@ -163,6 +214,7 @@ fun parseThreadSettings(value: JSONObject, fallbackCwd: String? = null): ThreadS
         sandbox = sandboxType,
         networkAccess = sandbox.optBoolean("networkAccess", true),
         permissionProfile = permissionProfile,
+        collaborationMode = collaborationMode,
     )
 }
 

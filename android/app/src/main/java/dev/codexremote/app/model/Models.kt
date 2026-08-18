@@ -29,6 +29,19 @@ data class ModelOption(
     val isDefault: Boolean,
 )
 
+data class CollaborationModeOption(
+    val name: String,
+    val mode: String,
+    val model: String?,
+    val effort: String?,
+)
+
+data class CollaborationModeSelection(
+    val mode: String,
+    val model: String,
+    val effort: String?,
+)
+
 data class SessionSummary(
     val id: String,
     val name: String?,
@@ -57,6 +70,7 @@ data class ThreadSettings(
     val sandbox: String = "workspace-write",
     val networkAccess: Boolean = true,
     val permissionProfile: String? = null,
+    val collaborationMode: String = "default",
 )
 
 data class ThreadSettingsUpdate(
@@ -67,6 +81,7 @@ data class ThreadSettingsUpdate(
     val sandbox: String? = null,
     val networkAccess: Boolean? = null,
     val permissionProfile: String? = null,
+    val collaborationMode: CollaborationModeSelection? = null,
 )
 
 data class PermissionProfile(
@@ -152,6 +167,18 @@ data class ThreadTokenUsage(
     val contextWindow: Long,
 )
 
+data class RateLimitWindow(
+    val usedPercent: Double,
+    val windowDurationMins: Long?,
+    val resetsAt: Long?,
+)
+
+data class AccountRateLimits(
+    val primary: RateLimitWindow?,
+    val secondary: RateLimitWindow?,
+    val planType: String?,
+)
+
 data class ThreadDetail(
     val id: String,
     val name: String?,
@@ -178,6 +205,12 @@ data class RemoteFile(
     val size: Long,
     val modifiedAt: Long,
     val permissions: Int,
+)
+
+data class RemoteFileMatch(
+    val name: String,
+    val path: String,
+    val type: RemoteFileType,
 )
 
 data class FilePreview(
@@ -225,6 +258,7 @@ data class AppState(
     val services: List<RemoteService> = emptyList(),
     val selectedServiceId: String? = null,
     val models: List<ModelOption> = emptyList(),
+    val collaborationModes: List<CollaborationModeOption> = emptyList(),
     val permissionProfiles: List<PermissionProfile> = emptyList(),
     val skills: List<SkillOption> = emptyList(),
     val sessions: List<SessionSummary> = emptyList(),
@@ -234,9 +268,12 @@ data class AppState(
     val thread: ThreadDetail? = null,
     val remotePath: String = "",
     val remoteFiles: List<RemoteFile> = emptyList(),
+    val contextFileSearchQuery: String = "",
+    val contextFileSearchResults: List<RemoteFileMatch> = emptyList(),
     val filePreview: FilePreview? = null,
     val pendingRequests: List<PendingRequest> = emptyList(),
     val eventConnected: Boolean = false,
     val maxDownloadBytes: Long = 10L * 1024 * 1024,
+    val rateLimits: AccountRateLimits? = null,
     val operation: String? = null,
 )

@@ -1,6 +1,7 @@
 package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
+import dev.codexremote.app.model.CollaborationModeSelection
 import dev.codexremote.app.model.NewSessionOptions
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.PromptContextType
@@ -60,6 +61,21 @@ class GatewayApi {
 
     suspend fun models(serviceId: String): JSONObject =
         data(request("GET", "api/v1/services/$serviceId/models")) as JSONObject
+
+    suspend fun collaborationModes(serviceId: String): JSONObject =
+        data(request("GET", "api/v1/services/$serviceId/collaboration-modes")) as JSONObject
+
+    suspend fun rateLimits(serviceId: String): JSONObject =
+        data(request("GET", "api/v1/services/$serviceId/rate-limits")) as JSONObject
+
+    suspend fun searchFiles(serviceId: String, cwd: String, query: String): JSONObject =
+        data(
+            request(
+                "GET",
+                "api/v1/services/$serviceId/file-search",
+                query = mapOf("cwd" to cwd, "query" to query),
+            ),
+        ) as JSONObject
 
     suspend fun sessions(
         serviceId: String,
@@ -136,6 +152,7 @@ class GatewayApi {
             .putIfNotBlank("permissions", update.permissionProfile)
             .putIfNotBlank("sandbox", update.sandbox)
         update.networkAccess?.let { body.put("networkAccess", it) }
+        update.collaborationMode?.let { body.put("collaborationMode", it.toJson()) }
         request("PUT", "api/v1/services/$serviceId/sessions/$threadId/settings", body)
     }
 
@@ -496,5 +513,15 @@ private fun List<PromptContext>.toJson(): JSONArray = JSONArray().also { array -
         )
     }
 }
+
+private fun CollaborationModeSelection.toJson(): JSONObject = JSONObject()
+    .put("mode", mode)
+    .put(
+        "settings",
+        JSONObject()
+            .put("model", model)
+            .put("reasoning_effort", effort ?: JSONObject.NULL)
+            .put("developer_instructions", JSONObject.NULL),
+    )
 
 private fun String.ensureTrailingSlash(): String = if (endsWith('/')) this else "$this/"
