@@ -130,6 +130,15 @@ class GatewayApi {
             ),
         ) as JSONObject
 
+    suspend fun forkSession(serviceId: String, threadId: String, name: String?): JSONObject =
+        data(
+            request(
+                "POST",
+                "api/v1/services/$serviceId/sessions/$threadId/fork",
+                JSONObject().putIfNotBlank("name", name),
+            ),
+        ) as JSONObject
+
     suspend fun takeover(serviceId: String, threadId: String): JSONObject =
         data(
             request(

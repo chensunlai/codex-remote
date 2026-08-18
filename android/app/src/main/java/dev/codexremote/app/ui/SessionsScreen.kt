@@ -380,6 +380,7 @@ private fun SessionList(
                 archived = state.showingArchivedSessions,
                 onClick = { viewModel.selectSession(session.id) },
                 onRename = { onRename(session) },
+                onFork = { viewModel.forkSession(session.id) },
                 onArchive = { viewModel.archiveSession(session.id) },
                 onUnarchive = { viewModel.unarchiveSession(session.id) },
                 onRelease = { viewModel.releaseSession(session.id) },
@@ -396,6 +397,7 @@ private fun SessionRow(
     archived: Boolean,
     onClick: () -> Unit,
     onRename: () -> Unit,
+    onFork: () -> Unit,
     onArchive: () -> Unit,
     onUnarchive: () -> Unit,
     onRelease: () -> Unit,
@@ -480,6 +482,11 @@ private fun SessionRow(
                             text = { Text("重命名") },
                             leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
                             onClick = { menu = false; onRename() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("创建分支") },
+                            leadingIcon = { Icon(CodexIcons.Branch, contentDescription = null) },
+                            onClick = { menu = false; onFork() },
                         )
                         if (session.locked) {
                             DropdownMenuItem(
@@ -624,6 +631,7 @@ private fun ChatPane(
                             locked = threadLocked,
                             onDismiss = { menu = false },
                             onRename = { menu = false; onRename(thread) },
+                            onFork = { menu = false; viewModel.forkSession(thread.id) },
                             onReview = { menu = false; viewModel.reviewUncommitted() },
                             onCompact = { menu = false; viewModel.compactSession() },
                             onRelease = { menu = false; viewModel.releaseSession(thread.id) },
@@ -967,6 +975,7 @@ private fun ThreadMenu(
     locked: Boolean,
     onDismiss: () -> Unit,
     onRename: () -> Unit,
+    onFork: () -> Unit,
     onReview: () -> Unit,
     onCompact: () -> Unit,
     onRelease: () -> Unit,
@@ -979,6 +988,11 @@ private fun ThreadMenu(
             text = { Text("重命名") },
             leadingIcon = { Icon(CodexIcons.PencilLine, contentDescription = null) },
             onClick = onRename,
+        )
+        DropdownMenuItem(
+            text = { Text("创建分支") },
+            leadingIcon = { Icon(CodexIcons.Branch, contentDescription = null) },
+            onClick = onFork,
         )
         if (locked) {
             DropdownMenuItem(

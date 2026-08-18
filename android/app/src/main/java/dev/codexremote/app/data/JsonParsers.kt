@@ -142,6 +142,7 @@ fun parseSession(value: JSONObject): SessionSummary = SessionSummary(
     status = value.optJSONObject("status")?.optString("type", "notLoaded") ?: "notLoaded",
     isPinned = value.optBoolean("isPinned"),
     locked = value.optBoolean("locked"),
+    forkedFromId = value.nullableString("forkedFromId"),
 )
 
 fun parseThread(root: JSONObject): ThreadDetail {
@@ -188,6 +189,7 @@ fun parseThread(root: JSONObject): ThreadDetail {
         activeFlags = status.optJSONArray("activeFlags")?.strings()?.toSet().orEmpty(),
         turns = turns.map(::parseTurnSummary),
         settings = parseThreadSettings(root, thread.nullableString("cwd")),
+        forkedFromId = thread.nullableString("forkedFromId"),
     )
 }
 

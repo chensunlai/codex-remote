@@ -51,6 +51,7 @@ data class SessionSummary(
     val status: String,
     val isPinned: Boolean,
     val locked: Boolean = false,
+    val forkedFromId: String? = null,
 )
 
 data class NewSessionOptions(
@@ -195,6 +196,7 @@ data class ThreadDetail(
     val tokenUsage: ThreadTokenUsage? = null,
     val settings: ThreadSettings = ThreadSettings(),
     val goal: ThreadGoal? = null,
+    val forkedFromId: String? = null,
 )
 
 data class ThreadTakeoverPrompt(

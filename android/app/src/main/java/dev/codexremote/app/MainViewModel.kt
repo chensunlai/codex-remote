@@ -41,6 +41,7 @@ import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.MessageRole
 import dev.codexremote.app.model.NewSessionOptions
+import dev.codexremote.app.model.SessionSummary
 import dev.codexremote.app.model.PromptContext
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
@@ -49,6 +50,7 @@ import dev.codexremote.app.model.ThreadSettings
 import dev.codexremote.app.model.ThreadSettingsUpdate
 import dev.codexremote.app.model.ThreadTakeoverPrompt
 import dev.codexremote.app.model.TurnSummary
+import dev.codexremote.app.model.nextBranchTitle
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,6 +90,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val newEmptyThreads = mutableSetOf<String>()
     private val pendingMessageSubmissions = mutableSetOf<String>()
     private val pendingThreadResumes = mutableSetOf<String>()
+    private val pendingThreadForks = mutableSetOf<String>()
     private var viewedThread: ViewedThread? = null
     private var appForeground = false
 
@@ -132,6 +135,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         newEmptyThreads.clear()
         pendingMessageSubmissions.clear()
         pendingThreadResumes.clear()
+        pendingThreadForks.clear()
         _state.value = AppState(fontScale = uiPreferences.fontScale)
     }
 
@@ -335,6 +339,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             loadPermissionProfiles(serviceId, detail.cwd ?: options.cwd)
             loadSkills(serviceId, detail.cwd ?: options.cwd)
             onComplete()
+        }
+    }
+
+    fun forkSession(threadId: String) {
+        val current = _state.value
+        val serviceId = current.selectedServiceId ?: return
+        val key = threadKey(serviceId, threadId)
+        if (!pendingThreadForks.add(key)) return
+        val thread = current.thread?.takeIf { it.id == threadId }
+        val listed = current.sessions.firstOrNull { it.id == threadId }
+        val firstUserMessage = thread?.messages
+            ?.firstOrNull { it.role == MessageRole.USER && it.text.isNotBlank() }
+            ?.text
+            ?.lineSequence()
+            ?.firstOrNull()
+            ?.trim()
+            .orEmpty()
+        val source = listed?.copy(
+            name = thread?.name?.takeIf(String::isNotBlank) ?: listed.name,
+            preview = listed.preview.ifBlank { firstUserMessage },
+            forkedFromId = thread?.forkedFromId ?: listed.forkedFromId,
+        ) ?: SessionSummary(
+            id = threadId,
+            name = thread?.name,
+            preview = firstUserMessage,
+            cwd = thread?.cwd,
+            updatedAt = System.currentTimeMillis() / 1_000,
+            status = thread?.status ?: "idle",
+            isPinned = false,
+            forkedFromId = thread?.forkedFromId,
+        )
+        val branchName = nextBranchTitle(source, current.sessions)
+        launchOperation("正在创建分支") {
+            try {
+                val result = api.forkSession(serviceId, threadId, branchName)
+                val threadJson = result.optJSONObject("thread")
+                    ?: error("Codex 未返回分支会话")
+                val forkedThreadId = threadJson.optString("id")
+                require(forkedThreadId.isNotBlank()) { "Codex 未返回分支会话 ID" }
+                val parsed = parseThread(result)
+                val detail = parsed.copy(
+                    name = branchName ?: parsed.name,
+                    settings = resolveThreadSettings(
+                        result,
+                        parsed.settings,
+                        thread?.settings?.toOptions(),
+                    ),
+                )
+                val summary = parseSession(threadJson).copy(name = branchName ?: parsed.name)
+                stopViewingThread()
+                subscribedThreads.add(threadKey(serviceId, forkedThreadId))
+                newEmptyThreads.remove(threadKey(serviceId, forkedThreadId))
+                chatCache.put(cacheScope, serviceId, forkedThreadId, summary.updatedAt, result)
+                _state.update { state ->
+                    state.copy(
+                        sessions = listOf(summary) + state.sessions.filterNot {
+                            it.id == forkedThreadId
+                        },
+                        showingArchivedSessions = false,
+                        sessionSearch = "",
+                        selectedThreadId = forkedThreadId,
+                        thread = detail,
+                        section = MainSection.SESSIONS,
+                    )
+                }
+                rememberThreadSettings(serviceId, detail.settings)
+                if (!startViewingThread(serviceId, forkedThreadId)) {
+                    deferThreadRelease(serviceId, forkedThreadId)
+                }
+                loadPermissionProfiles(serviceId, detail.cwd)
+                detail.cwd?.let { loadSkills(serviceId, it) }
+            } finally {
+                pendingThreadForks.remove(key)
+            }
         }
     }
 

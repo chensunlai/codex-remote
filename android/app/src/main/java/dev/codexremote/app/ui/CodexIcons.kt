@@ -12,6 +12,7 @@ object CodexIcons {
     val ArrowUp: ImageVector = Lucide.ArrowUp
     val Attach: ImageVector = Lucide.Paperclip
     val Brain: ImageVector = Lucide.Brain
+    val Branch: ImageVector = Lucide.GitFork
     val Check: ImageVector = Lucide.Check
     val CheckCircle: ImageVector = Lucide.CircleCheck
     val ChevronDown: ImageVector = Lucide.ChevronDown
