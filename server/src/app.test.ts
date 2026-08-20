@@ -250,6 +250,7 @@ describe("Gateway Agent relay", () => {
     );
     expect(await released.json()).toEqual({ data: { released: true } });
     expect(agent.releasedThreads).toEqual([threadId]);
+    expect(agent.forceReleasedThreads).toEqual([threadId]);
 
     const after = await api(`/api/v1/services/${SERVICE_ID}/sessions`, TOKEN_A);
     expect(await after.json()).toEqual({
@@ -257,6 +258,38 @@ describe("Gateway Agent relay", () => {
         data: [expect.objectContaining({ id: threadId, locked: false })],
       },
     });
+  });
+
+  it("keeps a gateway lease visible when Codex loaded-list is empty", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+    const threadId = "thread-gateway-lease";
+    agent.sessionThreads.push({
+      id: threadId,
+      preview: "gateway lease fixture",
+      cwd: "/home/fixture",
+      status: { type: "idle" },
+      updatedAt: 1,
+    });
+
+    const clientId = "019fff0d-1c52-7042-9de0-9cc0eecf4095";
+    expect((await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/lease`,
+      TOKEN_A,
+      jsonBody({ clientId }, "PUT"),
+    )).status).toBe(204);
+
+    const sessions = await api(`/api/v1/services/${SERVICE_ID}/sessions`, TOKEN_A);
+    expect(await sessions.json()).toEqual({
+      data: {
+        data: [expect.objectContaining({ id: threadId, locked: true })],
+      },
+    });
+
+    await api(
+      `/api/v1/services/${SERVICE_ID}/sessions/${threadId}/release`,
+      TOKEN_A,
+      jsonBody({}),
+    );
   });
 
   it("applies token changes from the admin process without restarting", async () => {
@@ -562,6 +595,7 @@ class MockAgent {
   readonly codexRequests: Array<{ method: string; params: Record<string, unknown> }> = [];
   readonly takeoverThreads: string[] = [];
   readonly releasedThreads: string[] = [];
+  readonly forceReleasedThreads: string[] = [];
   readonly loadedThreads = new Set<string>();
   readonly sessionThreads: Array<Record<string, unknown>> = [];
 
@@ -635,6 +669,12 @@ class MockAgent {
       });
     } else if (message.method === "terminal.open") {
       this.respond(message.id!, { terminalId: "terminal-1" });
+    } else if (message.method === "codex.release") {
+      const threadId = String(params.threadId);
+      this.loadedThreads.delete(threadId);
+      this.releasedThreads.push(threadId);
+      this.forceReleasedThreads.push(threadId);
+      this.respond(message.id!, { released: true });
     } else if (message.method === "codex.rpc") {
       const method = String(params.method);
       const rpcParams = (params.params ?? {}) as Record<string, unknown>;

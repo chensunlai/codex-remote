@@ -44,7 +44,9 @@ export class CodexRuntime {
   }
 
   async releaseThread(threadId: string): Promise<unknown> {
-    return this.request("thread/unsubscribe", { threadId });
+    await this.request("thread/unsubscribe", { threadId }).catch(() => undefined);
+    await stopThreadLockOwner(threadId);
+    return { released: true };
   }
 
   close(): void {

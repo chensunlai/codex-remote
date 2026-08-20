@@ -6,7 +6,7 @@ interface ThreadLeaseTarget {
 
 interface ThreadLeaseCallbacks {
   status: (target: ThreadLeaseTarget) => Promise<string>;
-  release: (target: ThreadLeaseTarget) => Promise<void>;
+  release: (target: ThreadLeaseTarget, force: boolean) => Promise<void>;
   changed: (target: ThreadLeaseTarget, locked: boolean) => void;
 }
 
@@ -79,8 +79,12 @@ export class ThreadLeaseManager {
     return this.scheduleRelease(lease, this.releaseDelayMs);
   }
 
-  async release(target: ThreadLeaseTarget): Promise<void> {
-    await this.callbacks.release(target);
+  isLocked(target: ThreadLeaseTarget): boolean {
+    return this.leases.has(this.key(target));
+  }
+
+  async release(target: ThreadLeaseTarget, force = false): Promise<void> {
+    await this.callbacks.release(target, force);
     this.remove(target, true);
   }
 
@@ -134,7 +138,7 @@ export class ThreadLeaseManager {
         this.scheduleRelease(lease, this.retryDelayMs);
         return;
       }
-      await this.callbacks.release(lease);
+      await this.callbacks.release(lease, false);
       this.remove(lease, true);
     } catch {
       if (!this.closed && this.leases.get(this.key(lease)) === lease) {

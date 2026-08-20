@@ -99,13 +99,17 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
       );
       return threadStatus(result);
     },
-    release: async ({ ownerId, serviceId, threadId }) => {
-      await agents.request(
-        ownerId,
-        serviceId,
-        "codex.rpc",
-        { method: "thread/unsubscribe", params: { threadId } },
-      );
+    release: async ({ ownerId, serviceId, threadId }, force) => {
+      if (force) {
+        await agents.request(ownerId, serviceId, "codex.release", { threadId });
+      } else {
+        await agents.request(
+          ownerId,
+          serviceId,
+          "codex.rpc",
+          { method: "thread/unsubscribe", params: { threadId } },
+        );
+      }
     },
     changed: ({ ownerId, serviceId, threadId }, locked) => {
       events.publish(ownerId, "session.occupancy/changed", { threadId, locked }, serviceId);
@@ -330,7 +334,13 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
       codexRpc(services, request, serviceId, "thread/loaded/list", { limit: 10_000 })
         .catch(() => ({ data: [] })),
     ]);
-    return { data: withLoadedState(threads, loaded) };
+    return {
+      data: withLoadedState(threads, loaded, (threadId) => services.leases.isLocked({
+        ownerId: request.ownerId,
+        serviceId,
+        threadId,
+      })),
+    };
   });
 
   app.post("/api/v1/services/:serviceId/sessions", async (request, reply) => {
@@ -468,7 +478,7 @@ function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): v
 
   app.post("/api/v1/services/:serviceId/sessions/:threadId/release", async (request) => {
     const { serviceId, threadId } = parse(threadParams, request.params);
-    await services.leases.release({ ownerId: request.ownerId, serviceId, threadId });
+    await services.leases.release({ ownerId: request.ownerId, serviceId, threadId }, true);
     return { data: { released: true } };
   });
 
@@ -980,7 +990,11 @@ function codexRpc(
   );
 }
 
-function withLoadedState(threads: unknown, loaded: unknown): unknown {
+function withLoadedState(
+  threads: unknown,
+  loaded: unknown,
+  isLeased: (threadId: string) => boolean,
+): unknown {
   if (!threads || typeof threads !== "object" || Array.isArray(threads)) return threads;
   const result = threads as Record<string, unknown>;
   const data = Array.isArray(result.data) ? result.data : [];
@@ -994,12 +1008,14 @@ function withLoadedState(threads: unknown, loaded: unknown): unknown {
   );
   return {
     ...result,
-    data: data.map((value) => value && typeof value === "object" && !Array.isArray(value)
-      ? {
-          ...value as Record<string, unknown>,
-          locked: loadedIds.has(String((value as Record<string, unknown>).id)),
-        }
-      : value),
+    data: data.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const threadId = String((value as Record<string, unknown>).id);
+      return {
+        ...value as Record<string, unknown>,
+        locked: loadedIds.has(threadId) || isLeased(threadId),
+      };
+    }),
   };
 }
 

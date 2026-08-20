@@ -21,13 +21,16 @@ describe("ThreadLeaseManager", () => {
       { releaseDelayMs: 10, viewerTtlMs: 100, retryDelayMs: 10 },
     );
 
+    expect(manager.isLocked(TARGET)).toBe(false);
     manager.acquire(TARGET, "019fff0d-1c52-7042-9de0-9cc0eecf4095");
+    expect(manager.isLocked(TARGET)).toBe(true);
     manager.leave(TARGET, "019fff0d-1c52-7042-9de0-9cc0eecf4095");
     await wait(25);
     expect(releases).toBe(0);
 
     status = "idle";
     await eventually(() => releases === 1);
+    expect(manager.isLocked(TARGET)).toBe(false);
     expect(changes).toEqual([true, false]);
     manager.close();
   });
