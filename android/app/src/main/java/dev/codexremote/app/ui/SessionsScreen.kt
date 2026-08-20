@@ -459,14 +459,10 @@ private fun SessionRow(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    if (session.locked) {
-                        Icon(
-                            CodexIcons.Lock,
-                            contentDescription = "会话已占用",
-                            tint = MaterialTheme.colorScheme.outline,
-                            modifier = Modifier.size(13.dp),
-                        )
-                    }
+                    ThreadOccupancyIcon(
+                        locked = session.locked,
+                        modifier = Modifier.size(15.dp),
+                    )
                     Text(
                         sessionTime(session.updatedAt),
                         style = MaterialTheme.typography.labelMedium,
@@ -615,6 +611,10 @@ private fun ChatPane(
                     }
                 },
                 actions = {
+                    ThreadOccupancyIcon(
+                        locked = threadLocked,
+                        modifier = Modifier.size(18.dp),
+                    )
                     Icon(
                         if (state.eventConnected) CodexIcons.Wifi else CodexIcons.WifiOff,
                         contentDescription = if (state.eventConnected) "实时连接正常" else "实时连接已断开",
@@ -976,7 +976,22 @@ private fun shouldShowThinking(thread: ThreadDetail): Boolean {
 }
 
 @Composable
-private fun ThreadMenu(
+internal fun ThreadOccupancyIcon(
+    locked: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (locked) {
+        Icon(
+            CodexIcons.Lock,
+            contentDescription = "会话已占用",
+            tint = MaterialTheme.colorScheme.outline,
+            modifier = modifier,
+        )
+    }
+}
+
+@Composable
+internal fun ThreadMenu(
     expanded: Boolean,
     archived: Boolean,
     locked: Boolean,

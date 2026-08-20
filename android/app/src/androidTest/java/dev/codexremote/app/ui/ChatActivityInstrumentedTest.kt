@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -33,6 +34,36 @@ import org.junit.Test
 class ChatActivityInstrumentedTest {
     @get:Rule
     val compose = createComposeRule()
+
+    @Test
+    fun occupiedThreadShowsLockAndReleaseAction() {
+        var released = false
+        compose.setContent {
+            CodexRemoteTheme {
+                androidx.compose.foundation.layout.Column {
+                    ThreadOccupancyIcon(locked = true)
+                    ThreadMenu(
+                        expanded = true,
+                        archived = false,
+                        locked = true,
+                        onDismiss = {},
+                        onRename = {},
+                        onFork = {},
+                        onReview = {},
+                        onCompact = {},
+                        onRelease = { released = true },
+                        onArchive = {},
+                        onUnarchive = {},
+                        onDelete = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithContentDescription("会话已占用").assertIsDisplayed()
+        compose.onNodeWithText("释放占用").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(true, released) }
+    }
 
     @Test
     fun completedActivityCollapsesAndExpandsLikeCodex() {
