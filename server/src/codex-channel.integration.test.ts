@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +43,7 @@ describe("Gateway and Agent process channel integration", () => {
       "--import", "tsx", join(root, "agent/src/index.ts"),
       "--gateway", baseUrl, "--token", TOKEN, "--name", "integration",
       "--codex", executable, "--config", join(directory, "agent.json"),
-    ], { cwd: root, stdio: ["pipe", "pipe", "pipe"] });
+    ], { cwd: root, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, CODEX_HOME: directory } });
     agent.stdout.resume();
     agent.stderr.on("data", (chunk) => { stderr += String(chunk); });
     await eventually(async () => {
@@ -140,6 +141,57 @@ describe("Gateway and Agent process channel integration", () => {
       message: { id: 8, method: "fixture/current", params: {} } }));
     await second.messages.next((message) => message.message?.id === 8);
     expect(second.messages.pending.some((message) => message.message?.result?.source === "old")).toBe(false);
+  });
+
+  it("bridges fragmented official IPC live, fences old pages and never replays coordination", async () => {
+    await mkdir(join(directory, "ipc"), { mode: 0o700 });
+    const peers: Socket[] = [];
+    const received: Buffer[] = [];
+    const router = createServer(peer => { peers.push(peer); peer.on("data", data => received.push(data)); });
+    await new Promise<void>(resolve => router.listen(join(directory, "ipc/ipc.sock"), resolve));
+    try {
+      const first = await connect();
+      const ready = await first.messages.next(message => message.type === "ready");
+      expect(ready.clientCoordination).toBe(true);
+      const control = { type: "coordination", epoch: ready.epoch, message: { type: "connect" } };
+      first.socket.send(JSON.stringify(control));
+      await first.messages.next(message => message.type === "coordination" && message.message?.type === "connected");
+      const request = { type: "request", requestId: "initialize", sourceClientId: "initializing-client",
+        version: 0, method: "initialize", params: { clientType: "vscode" } };
+      first.socket.send(JSON.stringify({ ...control, message: { type: "message", message: request } }));
+      await eventually(() => Buffer.concat(received).length >= 4 + Buffer.byteLength(JSON.stringify(request)));
+      const bytes = Buffer.concat(received);
+      expect(bytes.readUInt32LE()).toBe(bytes.length - 4);
+      expect(JSON.parse(bytes.subarray(4).toString())).toEqual(request);
+      const response = { type: "response", requestId: "initialize", resultType: "success", method: "initialize", result: { clientId: "fixture-phone" } };
+      const payload = Buffer.from(JSON.stringify(response));
+      const frame = Buffer.alloc(payload.length + 4);
+      frame.writeUInt32LE(payload.length); payload.copy(frame, 4);
+      peers[0]!.write(frame.subarray(0, 2));
+      peers[0]!.write(frame.subarray(2, 7));
+      peers[0]!.write(frame.subarray(7));
+      const event = await first.messages.next(message => message.type === "coordination" && message.message?.type === "message");
+      expect(event.message.message).toEqual(response);
+      first.socket.close();
+      await eventually(() => peers[0]!.destroyed);
+      const second = await connect({ epoch: ready.epoch });
+      const restored = await second.messages.next(message => message.type === "ready");
+      expect(restored.epoch).toBe(ready.epoch);
+      expect(restored.frames.some((frame: Json) => frame.type === "coordination")).toBe(false);
+      second.socket.send(JSON.stringify(control));
+      await second.messages.next(message => message.type === "coordination" && message.message?.type === "connected");
+      expect(peers).toHaveLength(2);
+      expect(Buffer.concat(received)).toEqual(bytes);
+      second.socket.close();
+      await eventually(() => peers[1]!.destroyed);
+      // A socket in a writable directory must not be trusted as the local official router.
+      await chmod(join(directory, "ipc"), 0o777);
+      const third = await connect({ epoch: ready.epoch });
+      await third.messages.next(message => message.type === "ready");
+      third.socket.send(JSON.stringify(control));
+      await third.messages.next(message => message.type === "coordination" && message.message?.type === "unavailable");
+      expect(peers).toHaveLength(2);
+    } finally { for (const peer of peers) peer.destroy(); router.close(); }
   });
 
   it("requires confirmation for an active runtime and reattaches with a fresh epoch after restart", async () => {

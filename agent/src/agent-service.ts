@@ -80,6 +80,13 @@ export class AgentService {
           channelId: stringValue(params.channelId, "channelId"),
           sessionId: stringValue(params.sessionId, "sessionId"),
         });
+      case "codex.channel.coordinate":
+        return this.channels.coordinate({
+          channelId: stringValue(params.channelId, "channelId"),
+          sessionId: stringValue(params.sessionId, "sessionId"),
+          epoch: stringValue(params.epoch, "epoch"),
+          message: record(params.message),
+        });
       case "codex.channel.ack":
         return this.channels.ack({
           channelId: stringValue(params.channelId, "channelId"),

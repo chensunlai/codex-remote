@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { APP_VERSION } from "./version.js";
+import { ClientCoordination, type CoordinationMessage } from "./client-coordination.js";
 
 export type RawRpc = Record<string, unknown>;
 type RpcId = string | number;
@@ -9,7 +10,7 @@ export interface ChannelFrame {
   channelId: string;
   epoch: string;
   sequence: number;
-  type: "rpc" | "closed" | "stderr" | "resync-required";
+  type: "rpc" | "closed" | "stderr" | "resync-required" | "coordination";
   message?: RawRpc | string;
   sessionId?: string;
 }
@@ -77,6 +78,10 @@ export class CodexChannels {
     return {};
   }
 
+  coordinate(input: { channelId: string; sessionId: string; epoch: string; message: CoordinationMessage }): unknown {
+    return this.channel(input.channelId).coordinate(input);
+  }
+
   ack(input: { channelId: string; sessionId: string; sequence: number }): unknown {
     this.channel(input.channelId).ack(input.sessionId, input.sequence);
     return {};
@@ -131,6 +136,7 @@ class CodexChannel {
   private lastDroppedSequence = 0;
   private sessionId: string | undefined;
   private attached = false;
+  private coordination: ClientCoordination | undefined;
   private initializeResult: unknown;
   private initializeParams: unknown;
   private frames: SavedFrame[] = [];
@@ -164,6 +170,7 @@ class CodexChannel {
     this.cancelIdle();
     const previousSession = this.sessionId;
     const wasRunning = this.running || this.opening !== undefined;
+    this.closeCoordination();
     this.sessionId = input.sessionId;
     this.attached = true;
     if (previousSession !== input.sessionId) this.deliveries.clear();
@@ -200,6 +207,7 @@ class CodexChannel {
       frames,
       pendingRequests,
       runningVersion: this.version,
+      clientCoordination: process.platform === "linux",
       resyncRequired,
     };
   }
@@ -267,8 +275,42 @@ class CodexChannel {
 
   detach(sessionId?: string): void {
     if (sessionId !== undefined && this.sessionId !== sessionId) return;
+    this.closeCoordination();
     this.attached = false;
     this.scheduleIdle();
+  }
+
+  coordinate(input: { sessionId: string; epoch: string; message: CoordinationMessage }): unknown {
+    this.assertSession(input.sessionId);
+    if (input.epoch !== this.epoch) throw new Error("Codex 通道已重建，请重新同步");
+    if (process.platform !== "linux") throw new Error("当前平台不支持官方客户端协调");
+    if (input.message.type === "connect") {
+      this.closeCoordination();
+      const home = asRecord(this.initializeResult).codexHome;
+      const bridge = new ClientCoordination(typeof home === "string" ? home : "", (message) => {
+        if (this.coordination === bridge && this.attached) this.publish("coordination", message, input.sessionId);
+      });
+      this.coordination = bridge;
+      bridge.start();
+    } else if (input.message.type === "message") {
+      const message = input.message.message;
+      if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error("无效的协调消息");
+      try {
+        if (!this.coordination) throw new Error("Coordination disconnected");
+        this.coordination.send(message as CoordinationMessage);
+      } catch {
+        // IPC commands are never queued or replayed after a broken connection.
+        this.closeCoordination();
+        this.publish("coordination", { type: "disconnected" }, input.sessionId);
+        this.coordinate({ ...input, message: { type: "connect" } });
+      }
+    } else throw new Error("无效的协调操作");
+    return {};
+  }
+
+  private closeCoordination(): void {
+    this.coordination?.close();
+    this.coordination = undefined;
   }
 
   ack(sessionId: string, sequence: number): void {
@@ -288,6 +330,7 @@ class CodexChannel {
   }
 
   private async stop(): Promise<void> {
+    this.closeCoordination();
     this.cancelIdle();
     const child = this.child;
     this.child = undefined;
@@ -302,6 +345,7 @@ class CodexChannel {
 
   close(): void {
     this.closed = true;
+    this.closeCoordination();
     this.cancelIdle();
     const child = this.child;
     this.child = undefined;
@@ -343,6 +387,7 @@ class CodexChannel {
         clearTimeout(timer);
         if (!initialized) reject(error);
         if (this.child !== child) return;
+        this.closeCoordination();
         this.child = undefined;
         this.calls.clear();
         this.pending.clear();
@@ -476,11 +521,14 @@ class CodexChannel {
       channelId: this.channelId, epoch: this.epoch, sequence: ++this.sequence, type, message,
       ...(sessionId !== undefined ? { sessionId } : {}),
     };
-    const bytes = Buffer.byteLength(JSON.stringify(frame));
-    this.frames.push({ frame, bytes });
-    this.bufferBytes += bytes;
-    while (this.frames.length > (this.options.maxFrames ?? 2048)
-      || this.bufferBytes > (this.options.maxBufferBytes ?? 8 * 1024 * 1024)) this.dropFirst();
+    // Coordination belongs to the live renderer and must not survive reconnects.
+    if (type !== "coordination") {
+      const bytes = Buffer.byteLength(JSON.stringify(frame));
+      this.frames.push({ frame, bytes });
+      this.bufferBytes += bytes;
+      while (this.frames.length > (this.options.maxFrames ?? 2048)
+        || this.bufferBytes > (this.options.maxBufferBytes ?? 8 * 1024 * 1024)) this.dropFirst();
+    }
     if (this.attached && this.visible(frame)) this.emit(frame);
   }
 
@@ -514,6 +562,7 @@ class CodexChannel {
   }
 
   private reset(): void {
+    this.closeCoordination();
     this.epoch = randomUUID();
     this.sequence = 0;
     this.lastDroppedSequence = 0;

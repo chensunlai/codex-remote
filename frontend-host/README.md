@@ -58,7 +58,8 @@ delivers objects to `window.codexRemoteReceive(message)`.
 | JS → Native | `{type:'host-request',id,method,params}` |
 | JS → Native | `{type:'log',level,message}` |
 | JS → Native | `{type:'thread-conflict',threadId,message,retryable:true}` |
-| Native → JS | `{type:'initialized',result,runningVersion,home,workspace?,serviceName}` |
+| JS ↔ Native | `{type:'coordination',message}` |
+| Native → JS | `{type:'initialized',result,runningVersion,home,workspace?,serviceName,clientCoordination}` |
 | Native → JS | `{type:'rpc-message',message}` |
 | Native → JS | `{type:'host-response',id,result or error}` |
 | Native → JS | `{type:'connection',state,message?}` |
@@ -76,12 +77,26 @@ only emits `resync-required` for a live view whose replay cursor is lost. The
 host reloads in that case; a cold attach must not cause a reload loop.
 The first connected event is a snapshot; duplicate connected events do not
 restart official thread recovery. A genuine reconnect triggers recovery once.
-Writer conflicts preserve the original app-server error and notify Native for
-an explanatory dialog. The host never takes over, forks, or retries a request;
-official history loading can independently attempt resume again. Repeated
-conflicts for the same thread produce one Native warning until resume succeeds
-or the page is reopened. The existing writer must release the thread before a
-manual retry can succeed.
+On Linux, `clientCoordination: true` enables the official owner/follower protocol.
+Agent connects to the existing same-user official IPC router at
+`$CODEX_HOME/ipc/ipc.sock` (or the official legacy temporary socket). Gateway and
+Android relay live IPC JSON; Agent handles the 4-byte little-endian framing.
+`client-coordination.mjs` adapts the official host capability to this transport,
+including discovery, targeted follower operations, approvals, and stream state.
+Roles and conversation behavior remain in the unmodified official WebView.
+The desktop plugin must be open under the same remote user and Codex home.
+This needs matching updated Gateway, Agent and App; an older Agent falls back
+to local operation. Agent does not create an IPC router. Independent CLI writers
+that do not participate in official client coordination still report the original
+writer error and may need to release the thread. There is no forced takeover or
+automatic fork. Read/unread markers remain local because the desktop account
+and execution-host identity context is not exposed by this host.
+
+Coordination is bound to the current renderer session and process epoch. It is
+never buffered or replayed: disconnect rejects outstanding follower calls and
+removes the IPC peer without stopping the Agent-owned app-server or active task.
+Do not retry a mutation with an unknown outcome automatically. Gateway channel
+authentication and service/owner isolation also apply to coordination frames.
 Theme messages update CSS and the official theme attribute without reloading
 the page, changing the connection or submitting the current draft.
 
@@ -92,7 +107,7 @@ content uses `{text}`. `file/open` shows a remote file preview.
 
 Persisted frontend settings, global state, view state and thread memberships
 use browser storage scoped to the remote service. Capability RPC remains
-inside the page; only app-server JSON-RPC and native host requests cross the
+inside the page; app-server JSON-RPC, coordination JSON and native host requests cross the
 Android bridge.
 
 ## Validation and current limits

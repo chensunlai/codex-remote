@@ -1,6 +1,7 @@
 import { createAppServerInbox } from "./app-server-inbox.mjs";
 import { createConnectionTracker, createThreadConflictObserver } from "./app-server-state.mjs";
 import { applyTheme } from "./theme.mjs";
+import { createClientCoordination } from "./client-coordination.mjs";
 
 const version = document.querySelector('meta[name="codex-extension-version"]')?.content;
 const scope = window.__codexRemoteStorageKey || document.querySelector('meta[name="codex-remote-storage-key"]')?.content || location.host;
@@ -16,6 +17,7 @@ let sequence = 0;
 const appServerInbox = createAppServerInbox({ isReady: () => pageReady && !!initialized, dispatch: receiveRpc });
 const connectionTracker = createConnectionTracker();
 const threadConflicts = createThreadConflictObserver(send);
+const coordination = createClientCoordination(message => send({ type: "coordination", message }), message => log("warning", message));
 
 function send(message) {
   if (!window.CodexRemoteHost?.postMessage) throw new Error("Android host bridge is unavailable");
@@ -84,6 +86,7 @@ function receiveNative(message) {
   if (message.type === "theme") applyTheme(message.theme);
   else if (message.type === "initialized") {
     initialized = message;
+    coordination.connect(message.clientCoordination === true);
     if (typeof message.workspace === "string" && message.workspace.startsWith("/")) {
       save("workspace-root", message.workspace);
       const current = project();
@@ -93,6 +96,7 @@ function receiveNative(message) {
     initialMessages();
   }
   else if (message.type === "rpc-message") appServerInbox.receive(message.message);
+  else if (message.type === "coordination") coordination.receive(message.message);
   else if (message.type === "host-response") {
     const pending = nativePending.get(message.id);
     if (!pending) return;
@@ -101,6 +105,7 @@ function receiveNative(message) {
     if (message.error) pending.reject(new Error(message.error.message || String(message.error)));
     else pending.resolve(message.result);
   } else if (message.type === "connection") {
+    if (message.state === "disconnected" || message.state === "error") coordination.disconnect();
     if (message.state === "resync-required") { location.reload(); return; }
     const connection = connectionTracker.receive(message);
     if (!connection) return;
@@ -242,20 +247,7 @@ function createServices(RpcTarget) {
       async read({ path, representation }) { const blob = representation === "blob"; const value = await nativeRequest("fs/read", { path, encoding: blob ? "base64" : "utf8" }); return blob ? { blob: value.content } : { text: value.content }; },
       async write({ path, text }) { return nativeRequest("fs/write", { path, content: text, encoding: "utf8" }); },
     },
-    clientCoordination: {
-      async setThreadOwnership() {},
-      async findThreadOwner() { return null; },
-      async getIdeContext() { return { activeFile: null, openFiles: [], workspaceFolders: project().rootPaths }; },
-      async invalidateQueryCache() {},
-      async threadArchived() {},
-      async threadUnarchived() {},
-      async threadQueuedFollowUpsChanged() {},
-      async threadStreamStateChanged() {},
-      async threadStreamFollowingChanged() {},
-      async threadStreamFollowingStatusRequested() {},
-      async threadReadStateChanged() {},
-      async requestThreadFollower() { throw new Error("No other frontend is attached to this host"); },
-    },
+    clientCoordination: coordination.service,
   };
 }
 
@@ -295,7 +287,9 @@ async function install() {
     if (message.type === "vscode-capn-rpc-connect") {
       if (sessions.has(message.sessionId)) return;
       const transport = makeTransport(message.sessionId);
-      sessions.set(message.sessionId, { transport, session: new RpcSession(transport, new HostRoot()) });
+      const session = new RpcSession(transport, new HostRoot());
+      sessions.set(message.sessionId, { transport, session });
+      coordination.setView(session.getRemoteMain().services.clientCoordination);
       return;
     }
     if (message.type === "vscode-capn-rpc-message") { sessions.get(message.sessionId)?.transport.accept(message.message); return; }

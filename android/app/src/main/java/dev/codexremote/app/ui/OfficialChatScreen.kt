@@ -376,7 +376,7 @@ private fun OfficialWebView(
     if (conflict) AlertDialog(
         onDismissRequest = { conflict = false },
         title = { Text("会话正在被占用") },
-        text = { Text("另一个 Codex 实例仍持有此会话的写入权。请先在电脑端释放该会话，必要时退出持有它的 Codex 实例，再重新打开。任务完成并不一定会释放占用。") },
+        text = { Text("另一个 Codex 实例仍持有此会话，当前未能通过官方客户端协调连接到它。请确认电脑端 VS Code 已打开此会话、Agent 与插件使用同一用户和 Codex 目录。独立 CLI 若未参与协调，需要先释放会话后再重新打开。") },
         confirmButton = { TextButton(onClick = { conflict = false; browser?.reload() }) { Text("释放后重新打开") } },
         dismissButton = { TextButton(onClick = { conflict = false }) { Text("关闭") } },
     )

@@ -22,6 +22,14 @@ const incomingMessage = z.discriminatedUnion("type", [
     message: z.record(z.string(), z.unknown()),
   }),
   z.object({ type: z.literal("ack"), sequence: z.number().int().nonnegative().safe() }),
+  z.object({
+    type: z.literal("coordination"),
+    epoch: z.string().min(1).max(255),
+    message: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("connect") }),
+      z.object({ type: z.literal("message"), message: z.record(z.string(), z.unknown()) }),
+    ]),
+  }),
 ]);
 
 interface ChannelSnapshot {
@@ -207,6 +215,10 @@ export function registerCodexChannelRoutes(
               { channelId, sessionId, epoch: parsed.epoch, messageId: parsed.messageId, message: parsed.message },
             );
             send({ ...delivery, type: "delivery", messageId: parsed.messageId });
+          } else if (parsed.type === "coordination") {
+            await services.agents.request(ownerId, serviceId, "codex.channel.coordinate", {
+              channelId, sessionId, epoch: parsed.epoch, message: parsed.message,
+            });
           } else {
             await services.agents.request(ownerId, serviceId, "codex.channel.ack", {
               channelId, sessionId, sequence: parsed.sequence,

@@ -111,6 +111,14 @@ internal class OfficialChatSession(
             }
             "rpc", "notification" -> sendRpc(message.getJSONObject("request"))
             "response" -> sendRpc(message.getJSONObject("response"))
+            "coordination" -> {
+                // Owner/follower commands are live-only; never put them in the RPC outbox.
+                val frame = JSONObject().put("type", "coordination").put("epoch", epoch)
+                    .put("message", message.getJSONObject("message"))
+                if (!connected || socket?.send(frame.toString()) != true) {
+                    deliver(JSONObject().put("type", "coordination").put("message", JSONObject().put("type", "disconnected")))
+                }
+            }
             "host-request" -> handleHostRequest(message)
             "thread-conflict" -> {
                 onStatus(null)
@@ -176,6 +184,7 @@ internal class OfficialChatSession(
                 connected = true
                 attachedBefore = true
                 deliver(JSONObject().put("type", "initialized").put("result", frame.optJSONObject("initializeResult") ?: JSONObject())
+                    .put("clientCoordination", frame.optBoolean("clientCoordination"))
                     .put("runningVersion", frame.opt("runningVersion") ?: JSONObject.NULL).put("home", home).put("workspace", workspace).put("serviceName", serviceName))
                 frame.optJSONArray("frames")?.objects()?.forEach(::handleServer)
                 frame.optJSONArray("pendingRequests")?.objects()?.forEach { request ->
@@ -193,11 +202,14 @@ internal class OfficialChatSession(
                 onStatus(null)
                 outbox.values.forEach { it.put("epoch", epoch); socket?.send(it.toString()) }
             }
-            "rpc" -> {
+            "rpc", "coordination" -> {
                 if (frame.optString("epoch") != epoch) return
                 val next = frame.optLong("sequence")
                 if (next <= sequence) return
-                frame.optJSONObject("message")?.let(::forwardRpc)
+                frame.optJSONObject("message")?.let { message ->
+                    if (frame.optString("type") == "rpc") forwardRpc(message)
+                    else deliver(JSONObject().put("type", "coordination").put("message", message))
+                }
                 sequence = next
                 socket?.send(JSONObject().put("type", "ack").put("sequence", sequence).toString())
             }
