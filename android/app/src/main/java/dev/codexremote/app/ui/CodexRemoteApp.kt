@@ -138,9 +138,12 @@ private fun MainContent(
     modifier: Modifier = Modifier,
 ) {
     Box(modifier.fillMaxSize()) {
+        RetainedPane(visible = state.section == MainSection.SESSIONS) {
+            OfficialChatScreen(state, viewModel, visible = state.section == MainSection.SESSIONS)
+        }
         when (state.section) {
             MainSection.SERVICES -> ServicesScreen(state, viewModel)
-            MainSection.SESSIONS -> OfficialChatScreen(state, viewModel)
+            MainSection.SESSIONS -> Unit
             MainSection.TERMINAL -> TerminalScreen(state, viewModel)
             MainSection.FILES -> FilesScreen(state, viewModel)
             MainSection.SETTINGS -> SettingsScreen(state, viewModel)

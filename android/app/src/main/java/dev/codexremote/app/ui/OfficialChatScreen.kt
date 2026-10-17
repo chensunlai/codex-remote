@@ -3,6 +3,7 @@
 package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.MimeTypeMap
@@ -67,7 +68,6 @@ import dev.codexremote.app.data.objects
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.MainSection
-import dev.codexremote.app.model.RuntimeState
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -77,10 +77,10 @@ import java.io.File
 import java.util.UUID
 
 @Composable
-fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
+fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true) {
     val service = state.services.firstOrNull { it.id == state.selectedServiceId }
     val config = state.gatewayConfig
-    if (service == null || config == null || service.runtimeState != RuntimeState.CONNECTED) {
+    if (service == null || config == null) {
         EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
         return
     }
@@ -194,7 +194,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
                 frontend?.let { bundle ->
                     key(scopeKey, bundle.version, bundle.slot, workspace) {
                         OfficialWebView(bundle, scopeKey, store.clientId(scopeKey), service.id,
-                            service.home ?: "/", workspace, service.name, state.theme, viewModel, { status = it }, Modifier.weight(1f))
+                            service.home ?: "/", workspace, service.name, state.theme, visible, viewModel, { status = it }, Modifier.weight(1f))
                     }
                 } ?: Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("选择官方前端版本后打开会话。")
@@ -204,11 +204,11 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
         }
     }
 
-    if (chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
+    if (visible && chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
         onSelect = { path -> store.setWorkspace(scopeKey, path); workspace = path; chooseWorkspace = false },
         onDismiss = { chooseWorkspace = false })
 
-    choices?.let { versions ->
+    choices?.takeIf { visible }?.let { versions ->
         AlertDialog(
             onDismissRequest = { choices = null },
             title = { Text("指定官方前端版本") },
@@ -273,6 +273,7 @@ private fun OfficialWebView(
     workspace: String,
     serviceName: String,
     theme: AppTheme,
+    visible: Boolean,
     viewModel: MainViewModel,
     onStatus: (String?) -> Unit,
     modifier: Modifier,
@@ -370,17 +371,19 @@ private fun OfficialWebView(
             loadUrl("https://$originHost/")
         }
     }, update = { browser ->
+        if (!visible && browser.hasFocus()) browser.clearFocus()
+        browser.visibility = if (visible) View.VISIBLE else View.INVISIBLE
         browser.setBackgroundColor(background)
         session.setTheme(theme.id)
     })
-    if (conflict) AlertDialog(
+    if (visible && conflict) AlertDialog(
         onDismissRequest = { conflict = false },
         title = { Text("会话正在被占用") },
         text = { Text("另一个 Codex 实例仍持有此会话，当前未能通过官方客户端协调连接到它。请确认电脑端 VS Code 已打开此会话、Agent 与插件使用同一用户和 Codex 目录。独立 CLI 若未参与协调，需要先释放会话后再重新打开。") },
         confirmButton = { TextButton(onClick = { conflict = false; browser?.reload() }) { Text("释放后重新打开") } },
         dismissButton = { TextButton(onClick = { conflict = false }) { Text("关闭") } },
     )
-    preview?.let { (path, content) ->
+    preview?.takeIf { visible }?.let { (path, content) ->
         AlertDialog(onDismissRequest = { preview = null }, title = { Text(path.substringAfterLast('/')) },
             text = { SelectionContainer { Text(content, modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), style = MonoTextStyle) } },
             confirmButton = { TextButton(onClick = { preview = null }) { Text("关闭") } })
