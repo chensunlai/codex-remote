@@ -92,6 +92,8 @@ if [[ -z "$DATA_DIRECTORY" && "$COMPONENT" == "gateway" ]]; then
 fi
 
 ASSET="codex-remote-${COMPONENT}-${PLATFORM}"
+RUNTIME_ASSET="codex-remote-agent-runtime-${PLATFORM}.tar.gz"
+WITH_RUNTIME=false
 SCRIPT_DIRECTORY=""
 if [[ -f "${BASH_SOURCE[0]}" ]]; then
   SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -114,8 +116,13 @@ if [[ -n "$LOCAL_SOURCE" ]]; then
   LOCAL_SOURCE="$(cd "$LOCAL_SOURCE" && pwd)"
   [[ -f "$LOCAL_SOURCE/$ASSET" ]] || fail "本地目录缺少 $ASSET"
   [[ -f "$LOCAL_SOURCE/SHA256SUMS" ]] || fail "本地目录缺少 SHA256SUMS"
-  cp "$LOCAL_SOURCE/$ASSET" "$TEMP_DIRECTORY/$ASSET"
   cp "$LOCAL_SOURCE/SHA256SUMS" "$TEMP_DIRECTORY/SHA256SUMS"
+  select_runtime
+  cp "$LOCAL_SOURCE/$ASSET" "$TEMP_DIRECTORY/$ASSET"
+  if [[ "$WITH_RUNTIME" == true ]]; then
+    [[ -f "$LOCAL_SOURCE/$RUNTIME_ASSET" ]] || fail "本地目录缺少 $RUNTIME_ASSET"
+    cp "$LOCAL_SOURCE/$RUNTIME_ASSET" "$TEMP_DIRECTORY/$RUNTIME_ASSET"
+  fi
 else
   if command -v curl >/dev/null 2>&1; then
     DOWNLOAD_TOOL="curl"
@@ -134,17 +141,42 @@ else
     BASE_URL="https://github.com/$REPOSITORY/releases/download/$VERSION"
   fi
   download "$BASE_URL/SHA256SUMS" "$TEMP_DIRECTORY/SHA256SUMS"
+  select_runtime
   download "$BASE_URL/$ASSET" "$TEMP_DIRECTORY/$ASSET"
+  if [[ "$WITH_RUNTIME" == true ]]; then
+    download "$BASE_URL/$RUNTIME_ASSET" "$TEMP_DIRECTORY/$RUNTIME_ASSET"
+  fi
 fi
 
-EXPECTED="$(awk -v name="$ASSET" '$2 == name || $2 == "*" name { print $1 }' "$TEMP_DIRECTORY/SHA256SUMS")"
-[[ "$EXPECTED" =~ ^[0-9a-fA-F]{64}$ ]] || fail "SHA256SUMS 中没有 $ASSET 的唯一有效摘要"
-ACTUAL="$(sha256sum "$TEMP_DIRECTORY/$ASSET" | awk '{print $1}')"
-[[ "$ACTUAL" == "$EXPECTED" ]] || fail "$ASSET 的 SHA-256 校验失败"
+verify_asset "$ASSET"
+if [[ "$WITH_RUNTIME" == true ]]; then
+  verify_asset "$RUNTIME_ASSET"
+  command -v tar >/dev/null 2>&1 || fail "缺少命令: tar"
+  mkdir "$TEMP_DIRECTORY/extracted"
+  tar -xzf "$TEMP_DIRECTORY/$RUNTIME_ASSET" -C "$TEMP_DIRECTORY/extracted" \
+    --no-same-owner --no-same-permissions
+  [[ -x "$TEMP_DIRECTORY/extracted/runtime/node" ]] || fail "Agent 运行时缺少 Node.js"
+  [[ -f "$TEMP_DIRECTORY/extracted/runtime/extension-host/runtime.cjs" ]] || fail "Agent 运行时缺少扩展宿主"
+  [[ "$("$TEMP_DIRECTORY/extracted/runtime/node" --version)" == "v24.18.0" ]] || fail "Agent Node.js 运行时版本无效"
+fi
 
 install -d -m 0755 "$INSTALL_DIRECTORY"
 DESTINATION="$INSTALL_DIRECTORY/codex-remote-$COMPONENT"
 install -m 0755 "$TEMP_DIRECTORY/$ASSET" "$DESTINATION.new"
+if [[ "$WITH_RUNTIME" == true ]]; then
+  # Keep the previous runtime until the following installation; running hosts are not stopped.
+  rm -rf -- "$INSTALL_DIRECTORY/runtime.previous"
+  if [[ -e "$INSTALL_DIRECTORY/runtime" ]]; then
+    mv "$INSTALL_DIRECTORY/runtime" "$INSTALL_DIRECTORY/runtime.previous"
+  fi
+  if ! cp -a "$TEMP_DIRECTORY/extracted/runtime" "$INSTALL_DIRECTORY/runtime"; then
+    rm -rf -- "$INSTALL_DIRECTORY/runtime"
+    if [[ -e "$INSTALL_DIRECTORY/runtime.previous" ]]; then
+      mv "$INSTALL_DIRECTORY/runtime.previous" "$INSTALL_DIRECTORY/runtime"
+    fi
+    fail "Agent 运行时安装失败，已恢复原运行时"
+  fi
+fi
 mv -f "$DESTINATION.new" "$DESTINATION"
 
 if [[ "$INSTALL_SYSTEMD" == true ]]; then
@@ -152,6 +184,23 @@ if [[ "$INSTALL_SYSTEMD" == true ]]; then
 else
   print_completion
 fi
+}
+
+# Older release manifests do not include a separate runtime archive.
+select_runtime() {
+  if [[ "$COMPONENT" == "agent" ]] && \
+    awk -v name="$RUNTIME_ASSET" '$2 == name || $2 == "*" name { found = 1 } END { exit !found }' "$TEMP_DIRECTORY/SHA256SUMS"; then
+    WITH_RUNTIME=true
+  fi
+}
+
+verify_asset() {
+  local asset="$1"
+  local expected actual
+  expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$TEMP_DIRECTORY/SHA256SUMS")"
+  [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || fail "SHA256SUMS 中没有 $asset 的唯一有效摘要"
+  actual="$(sha256sum "$TEMP_DIRECTORY/$asset" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || fail "$asset 的 SHA-256 校验失败"
 }
 
 download() {
@@ -282,6 +331,9 @@ print_completion() {
     printf '%s\n' \
       "运行: $DESTINATION" \
       "Codex CLI 不包含在安装包中，Agent 会调用系统中的 codex 或 --codex 指定路径。"
+    if [[ "$WITH_RUNTIME" == true ]]; then
+      printf '%s\n' "官方扩展宿主及 Node.js 运行时: $INSTALL_DIRECTORY/runtime"
+    fi
   else
     install -d -m 0700 "$DATA_DIRECTORY"
     if [[ "$DATA_DIRECTORY" == "$INSTALL_DIRECTORY/data" ]]; then
@@ -318,7 +370,7 @@ install.sh <agent|gateway> [options]
   --data-dir DIRECTORY    Gateway 数据目录，默认位于程序目录的 data
   --systemd               安装并启动 Gateway systemd 服务（需要 root）
 
-Agent 安装器只放置程序，不配置后台运行方式，也不会安装 Codex CLI。
+Agent 安装器包含官方扩展宿主及 Node.js 运行时，不配置后台运行方式，也不会安装 Codex CLI。
 EOF
 }
 

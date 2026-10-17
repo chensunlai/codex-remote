@@ -6,6 +6,8 @@ import { TerminalService } from "./terminal-service.js";
 import { APP_VERSION } from "./version.js";
 import { CodexChannels } from "./codex-channels.js";
 import { CodexRuntimeControl } from "./codex-runtime-control.js";
+import { OfficialExtensionService } from "./official-extension-service.js";
+import { join, resolve } from "node:path";
 
 interface Transport {
   event: (event: string, payload: unknown) => Promise<void>;
@@ -18,12 +20,20 @@ export class AgentService {
   private readonly terminals: TerminalService;
   private readonly channels: CodexChannels;
   private readonly runtimeControl: CodexRuntimeControl;
+  private readonly extensions: OfficialExtensionService;
 
-  constructor(codexExecutable: string) {
+  constructor(codexExecutable: string, dataDirectory = resolve(".codex-remote-agent")) {
     this.channels = new CodexChannels(codexExecutable, (frame) => {
       void this.emit("codex.channel", frame).catch(() => {});
     });
-    this.runtimeControl = new CodexRuntimeControl(codexExecutable, this.channels, () => {
+    this.extensions = new OfficialExtensionService(join(dataDirectory, "official-extension"), codexExecutable, frame => {
+      void this.emit("extension.view", frame).catch(() => {});
+    });
+    const runtimes = {
+      status: () => [...this.channels.status(), ...this.extensions.runtimeStatus()],
+      restart: async () => { await Promise.all([this.channels.restart(), this.extensions.restart()]); },
+    };
+    this.runtimeControl = new CodexRuntimeControl(codexExecutable, runtimes, () => {
       void this.emit("codex.runtime", this.runtimeControl.snapshot()).catch(() => {});
     });
     this.terminals = new TerminalService({
@@ -38,11 +48,12 @@ export class AgentService {
 
   setTransport(transport?: Transport): void {
     this.transport = transport;
-    if (!transport) this.channels.disconnected();
+    if (!transport) { this.channels.disconnected(); this.extensions.disconnected(); }
   }
 
   async request(method: string, rawParams: unknown): Promise<unknown> {
     const params = record(rawParams);
+    if (method.startsWith("extension.")) return this.extensions.request(method, params);
     switch (method) {
       case "service.describe":
         return {
@@ -54,6 +65,7 @@ export class AgentService {
           capabilities: [
             "codex-raw-channels",
             "codex-runtime-control",
+            "official-extension-host-v1",
             "terminal",
             "files",
             "stream-transfer",
@@ -178,6 +190,7 @@ export class AgentService {
   close(): void {
     this.terminals.closeAll();
     this.channels.close();
+    this.extensions.close();
   }
 
   private emit(event: string, payload: unknown): Promise<void> {

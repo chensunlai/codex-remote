@@ -6,6 +6,7 @@ import { loadAgentConfig, toAgentWebSocketUrl } from "./config.js";
 import { ProtocolClient } from "./protocol-client.js";
 import { AgentSetupCancelledError } from "./setup-tui.js";
 import { errorMessage } from "./error-message.js";
+import { dirname, join } from "node:path";
 
 const config = await loadAgentConfig().catch((error: unknown) => {
   if (error instanceof AgentSetupCancelledError) process.exit(0);
@@ -14,7 +15,7 @@ const config = await loadAgentConfig().catch((error: unknown) => {
   );
   process.exit(1);
 });
-const service = new AgentService(config.codexExecutable);
+const service = new AgentService(config.codexExecutable, join(dirname(config.configPath), "agent-data"));
 let client: ProtocolClient | undefined;
 let stopping = false;
 let retryDelay = 1_000;

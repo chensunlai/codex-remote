@@ -88,6 +88,8 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             release/codex-remote-agent-linux-x64 \
             release/codex-remote-agent-linux-arm64 \
+            release/codex-remote-agent-runtime-linux-x64.tar.gz \
+            release/codex-remote-agent-runtime-linux-arm64.tar.gz \
             release/codex-remote-gateway-linux-x64 \
             release/codex-remote-gateway-linux-arm64 \
             release/codex-remote-android.apk \

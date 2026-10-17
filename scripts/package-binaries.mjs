@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, chmod, mkdir, stat, writeFile } from "node:fs/promises";
+import { access, chmod, cp, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import http from "node:http";
+
+// Respect the same HTTPS_PROXY/NO_PROXY settings used by the installer.
+http.setGlobalProxyFromEnv?.();
 
 const root = resolve(import.meta.dirname, "..");
 const targets = {
@@ -15,6 +20,12 @@ const components = {
   gateway: "server/src/cli.ts",
 };
 const maxBinaryBytes = 100_000_000;
+// Pin both official Node archives and digests; installing the Agent needs no system Node.
+const nodeVersion = "24.18.0";
+const nodeArchives = {
+  "linux-x64": "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
+  "linux-arm64": "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+};
 
 const options = parseArgs(process.argv.slice(2));
 const outputDirectory = resolve(root, options.outputDirectory);
@@ -55,6 +66,11 @@ for (const targetName of options.targets) {
     }
     outputs.push(output);
     process.stdout.write(`${output} (${metadata.size} bytes)\n`);
+    if (componentName === "agent") {
+      const runtime = await packageAgentRuntime(targetName);
+      outputs.push(runtime);
+      process.stdout.write(`${runtime} (${(await stat(runtime)).size} bytes)\n`);
+    }
   }
 }
 
@@ -65,6 +81,46 @@ for (const output of outputs) {
 await writeFile(resolve(outputDirectory, "SHA256SUMS"), `${checksums.join("\n")}\n`, {
   mode: 0o644,
 });
+
+async function packageAgentRuntime(targetName) {
+  const archiveName = `node-v${nodeVersion}-${targetName}.tar.gz`;
+  const cacheDirectory = resolve(root, ".data", "node-runtime-downloads");
+  const archive = resolve(cacheDirectory, archiveName);
+  await mkdir(cacheDirectory, { recursive: true });
+  const expected = nodeArchives[targetName];
+  const cached = await sha256(archive).catch(() => null);
+  if (cached !== expected) {
+    process.stdout.write(`Downloading verified Node.js ${nodeVersion} runtime (${targetName})...\n`);
+    const response = await fetch(`https://nodejs.org/dist/v${nodeVersion}/${archiveName}`, {
+      signal: AbortSignal.timeout(5 * 60_000),
+    });
+    if (!response.ok) throw new Error(`Node runtime download failed: HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > 150_000_000 || createHash("sha256").update(bytes).digest("hex") !== expected) {
+      throw new Error(`Node runtime checksum mismatch: ${archiveName}`);
+    }
+    await writeFile(archive, bytes, { mode: 0o600 });
+  }
+  const temporary = await mkdtemp(join(tmpdir(), "codex-remote-runtime-"));
+  try {
+    const nodeDirectory = `node-v${nodeVersion}-${targetName}`;
+    await run("tar", ["-xzf", archive, "-C", temporary, `${nodeDirectory}/bin/node`, `${nodeDirectory}/LICENSE`]);
+    const runtime = join(temporary, "runtime");
+    await mkdir(runtime);
+    await cp(join(temporary, nodeDirectory, "bin", "node"), join(runtime, "node"));
+    await chmod(join(runtime, "node"), 0o755);
+    await cp(join(temporary, nodeDirectory, "LICENSE"), join(runtime, "NODE-LICENSE"));
+    const hostDirectory = resolve(root, "agent/src/extension-host");
+    await access(join(hostDirectory, "runtime.cjs"));
+    await cp(hostDirectory, join(runtime, "extension-host"), { recursive: true, filter: (source) => !source.endsWith(".test.cjs") });
+    await writeFile(join(runtime, "version.json"), `${JSON.stringify({ node: nodeVersion })}\n`);
+    const output = resolve(outputDirectory, `codex-remote-agent-runtime-${targetName}.tar.gz`);
+    await run("tar", ["-czf", output, "-C", temporary, "runtime"]);
+    return output;
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+}
 
 function parseArgs(args) {
   let requestedTargets;

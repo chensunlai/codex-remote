@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { CodexChannels, commandOutput, readCodexVersion } from "./codex-channels.js";
+import { commandOutput, readCodexVersion } from "./codex-channels.js";
+
+interface RuntimeProcesses {
+  status(): Array<{ channelId: string; version: string | null; active: boolean; pendingRequests: number }>;
+  restart(): Promise<void>;
+}
 
 export interface RuntimeOperation {
   id: string;
@@ -28,7 +33,7 @@ export class CodexRuntimeControl {
 
   constructor(
     private readonly executable: string,
-    private readonly channels: CodexChannels,
+    private readonly channels: RuntimeProcesses,
     private readonly changed: () => void = () => {},
     private readonly options: RuntimeControlOptions = {},
   ) {}

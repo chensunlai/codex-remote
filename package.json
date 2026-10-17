@@ -17,7 +17,7 @@
     "frontend:import": "node scripts/import-official-frontend.mjs",
     "frontend:smoke": "node scripts/smoke-official-frontend.mjs",
     "test": "npm run test --workspaces && npm run test:frontend",
-    "test:frontend": "node --test frontend-host/*.test.mjs scripts/import-official-frontend.test.mjs",
+    "test:frontend": "node --test frontend-host/*.test.mjs scripts/import-official-frontend.test.mjs scripts/install.test.mjs",
     "typecheck": "npm run typecheck --workspaces"
   },
   "engines": {
