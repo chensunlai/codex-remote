@@ -5,7 +5,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: #101214;
+  background: var(--terminal-background, #1e1e1e);
 }
 
 body {
@@ -25,8 +25,8 @@ body {
   max-width: calc(100% - 20px);
   padding: 4px 7px;
   border-radius: 4px;
-  background: #303438;
-  color: #d8dde2;
+  background: var(--terminal-status-background, #343434);
+  color: var(--terminal-status-foreground, #d4d4d4);
   font: 12px sans-serif;
   overflow-wrap: anywhere;
   pointer-events: none;
@@ -37,6 +37,6 @@ body {
 }
 
 #status.error {
-  background: #712f32;
-  color: #fff;
+  background: var(--terminal-error-background, #5a1d1d);
+  color: var(--terminal-error-foreground, #f48771);
 }

@@ -5,26 +5,27 @@ package dev.codexremote.app.ui
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.UiPreferences
@@ -36,11 +37,11 @@ import kotlin.math.roundToInt
 @Composable
 fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(
+        CodexTopBar(
             title = { Text("设置") },
             navigationIcon = {
                 IconButton(onClick = { viewModel.setSection(MainSection.SERVICES) }) {
-                    Icon(CodexIcons.ArrowBack, contentDescription = "返回服务器")
+                    AppIcon(CodexIcons.ArrowBack, contentDescription = "返回服务器")
                 }
             },
         )
@@ -48,10 +49,10 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
             Column(
                 Modifier
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 20.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
                     .widthIn(max = 620.dp),
             ) {
-                Text("网关")
+                Text("网关", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(14.dp))
                 GatewayForm(
                     initial = state.gatewayConfig,
@@ -61,17 +62,24 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     submitLabel = "保存并测试",
                     onSave = viewModel::configureGateway,
                 )
-                Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(20.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(20.dp))
-                Text("主题")
+                Text("主题", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.height(8.dp))
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    AppTheme.entries.forEachIndexed { index, theme ->
-                        SegmentedButton(
-                            selected = state.theme == theme,
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppTheme.entries.forEach { theme ->
+                        val active = state.theme == theme
+                        OutlinedButton(
                             onClick = { viewModel.setTheme(theme) },
-                            shape = SegmentedButtonDefaults.itemShape(index, AppTheme.entries.size),
+                            modifier = Modifier.weight(1f).semantics { selected = active },
+                            shape = MaterialTheme.shapes.small,
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+                            border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (active) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.background,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                            ),
                         ) {
                             Text(when (theme) {
                                 AppTheme.DARK -> "黑色"
@@ -104,8 +112,8 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                 Spacer(Modifier.height(20.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(20.dp))
-                OutlinedButton(onClick = viewModel::clearGateway, modifier = Modifier.fillMaxWidth()) {
-                    Icon(CodexIcons.Logout, contentDescription = null)
+                OutlinedButton(onClick = viewModel::clearGateway, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) {
+                    AppIcon(CodexIcons.Logout, contentDescription = null)
                     Text("移除此网关", Modifier.padding(start = 8.dp))
                 }
             }

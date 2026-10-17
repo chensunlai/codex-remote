@@ -94,15 +94,15 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
             current?.optJSONObject("operation")?.optString("state") != "running"
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (current?.optBoolean("restartRequired") == true) {
-                Button(onClick = { operate(false) }, enabled = enabled) { Text("重启") }
+                Button(onClick = { operate(false) }, enabled = enabled, shape = MaterialTheme.shapes.small) { Text("重启") }
             } else {
-                OutlinedButton(onClick = { operate(false) }, enabled = enabled) { Text("重启") }
+                OutlinedButton(onClick = { operate(false) }, enabled = enabled, shape = MaterialTheme.shapes.small) { Text("重启") }
             }
             val canUpdate = enabled && current?.optBoolean("updateSupported", false) == true
             if (current?.optBoolean("updateAvailable") == true) {
-                Button(onClick = { operate(true) }, enabled = canUpdate) { Text("更新") }
+                Button(onClick = { operate(true) }, enabled = canUpdate, shape = MaterialTheme.shapes.small) { Text("更新") }
             } else {
-                OutlinedButton(onClick = { operate(true) }, enabled = canUpdate) { Text("更新") }
+                OutlinedButton(onClick = { operate(true) }, enabled = canUpdate, shape = MaterialTheme.shapes.small) { Text("更新") }
             }
             TextButton(onClick = { refresh += 1 }, enabled = !busy) { Text("刷新") }
         }

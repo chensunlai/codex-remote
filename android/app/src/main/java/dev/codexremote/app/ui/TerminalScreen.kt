@@ -1,7 +1,6 @@
 package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
-import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
@@ -13,16 +12,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.TerminalSession
@@ -36,6 +35,7 @@ import org.json.JSONObject
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
+    val colors = MaterialTheme.colorScheme
     val serviceId = state.selectedServiceId
     val service = state.services.firstOrNull { it.id == serviceId }
 
@@ -50,12 +50,18 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
             DisposableEffect(controller) {
                 onDispose(controller::detach)
             }
-            LaunchedEffect(controller, state.fontScale) {
+            LaunchedEffect(controller, state.fontScale, colors) {
                 controller.setFontScale(state.fontScale)
+                fun color(value: androidx.compose.ui.graphics.Color) = "#%06x".format(value.toArgb() and 0xFFFFFF)
+                controller.setTheme(JSONObject()
+                    .put("background", color(colors.background)).put("foreground", color(colors.onBackground))
+                    .put("cursor", color(colors.onBackground)).put("selectionBackground", color(colors.primaryContainer))
+                    .put("statusBackground", color(colors.surfaceContainerHigh)).put("statusForeground", color(colors.onSurface))
+                    .put("errorBackground", color(colors.errorContainer)).put("errorForeground", color(colors.onErrorContainer)))
             }
             Scaffold(
                 topBar = {
-                    TopAppBar(
+                    CodexTopBar(
                         title = {
                             ServiceSelector(
                                 services = state.services,
@@ -65,7 +71,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
                         },
                         actions = {
                             IconButton(onClick = controller::reconnect) {
-                                Icon(CodexIcons.Refresh, contentDescription = "重新连接终端")
+                                AppIcon(CodexIcons.Refresh, contentDescription = "重新连接终端")
                             }
                         },
                     )
@@ -79,7 +85,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            CodexTopBar(
                 title = {
                     ServiceSelector(
                         services = state.services,
@@ -102,12 +108,13 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
 @Suppress("DEPRECATION")
 @Composable
 private fun TerminalWebView(controller: RemoteTerminalController, modifier: Modifier) {
+    val background = MaterialTheme.colorScheme.background.toArgb()
     Box(modifier) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
                 WebView(context).apply {
-                    setBackgroundColor(Color.rgb(16, 18, 20))
+                    setBackgroundColor(background)
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = false
                     settings.allowContentAccess = false
@@ -130,6 +137,7 @@ private fun TerminalWebView(controller: RemoteTerminalController, modifier: Modi
                     loadUrl(TERMINAL_ASSET)
                 }
             },
+            update = { it.setBackgroundColor(background) },
         )
     }
 }
@@ -141,6 +149,7 @@ private class RemoteTerminalController(
     private var webView: WebView? = null
     private var pageReady = false
     private var fontScale = 1f
+    private var theme = JSONObject()
 
     val bridge = Bridge(this)
 
@@ -156,6 +165,13 @@ private class RemoteTerminalController(
         main.post {
             fontScale = value.coerceIn(UiPreferences.MIN_FONT_SCALE, UiPreferences.MAX_FONT_SCALE)
             if (pageReady) evaluate("window.remoteTerminal.setFontScale($fontScale)")
+        }
+    }
+
+    fun setTheme(value: JSONObject) {
+        main.post {
+            theme = value
+            if (pageReady) evaluate("window.remoteTerminal.setTheme($theme)")
         }
     }
 
@@ -177,6 +193,7 @@ private class RemoteTerminalController(
             if (webView == null) return@post
             pageReady = true
             evaluate("window.remoteTerminal.setFontScale($fontScale)")
+            evaluate("window.remoteTerminal.setTheme($theme)")
             session.attach(this)
             session.ready(newCols, newRows)
         }

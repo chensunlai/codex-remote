@@ -3,23 +3,29 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -29,6 +35,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -75,20 +84,22 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
         val expanded = maxWidth >= 840.dp
         if (expanded) {
             Row(Modifier.fillMaxSize().navigationBarsPadding()) {
-                NavigationRail(modifier = Modifier.width(88.dp)) {
+                NavigationRail(modifier = Modifier.width(80.dp), containerColor = MaterialTheme.colorScheme.background) {
                     destinations.forEach { destination ->
                         NavigationRailItem(
                             selected = state.section == destination.section,
+                            colors = NavigationRailItemDefaults.colors(indicatorColor = Color.Transparent),
                             onClick = { viewModel.setSection(destination.section) },
-                            icon = { Icon(destination.icon, contentDescription = stringResource(destination.label)) },
+                            icon = { AppIcon(destination.icon, contentDescription = stringResource(destination.label)) },
                             label = { Text(stringResource(destination.label)) },
                         )
                     }
                     Spacer(Modifier.weight(1f))
                     NavigationRailItem(
                         selected = state.section == MainSection.SETTINGS,
+                        colors = NavigationRailItemDefaults.colors(indicatorColor = Color.Transparent),
                         onClick = { viewModel.setSection(MainSection.SETTINGS) },
-                        icon = { Icon(CodexIcons.Settings, contentDescription = stringResource(R.string.settings)) },
+                        icon = { AppIcon(CodexIcons.Settings, contentDescription = stringResource(R.string.settings)) },
                         label = { Text(stringResource(R.string.settings)) },
                     )
                 }
@@ -105,14 +116,24 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 bottomBar = {
                     if (!WindowInsets.isImeVisible) {
-                        NavigationBar {
-                            destinations.forEach { destination ->
-                                NavigationBarItem(
-                                    selected = state.section == destination.section,
-                                    onClick = { viewModel.setSection(destination.section) },
-                                    icon = { Icon(destination.icon, contentDescription = stringResource(destination.label)) },
-                                    label = { Text(stringResource(destination.label)) },
-                                )
+                        Column(Modifier.background(MaterialTheme.colorScheme.background).navigationBarsPadding()) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                            Row(Modifier.fillMaxWidth().selectableGroup()) {
+                                destinations.forEach { destination ->
+                                    val selected = state.section == destination.section
+                                    val color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                                    Column(
+                                        Modifier.weight(1f).heightIn(min = 56.dp)
+                                            .background(if (selected) MaterialTheme.colorScheme.surfaceContainer else Color.Transparent)
+                                            .selectable(selected, role = Role.Tab, onClick = { viewModel.setSection(destination.section) })
+                                            .padding(vertical = 6.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+                                    ) {
+                                        AppIcon(destination.icon, contentDescription = null, tint = color)
+                                        Text(stringResource(destination.label), style = MaterialTheme.typography.labelSmall, color = color)
+                                    }
+                                }
                             }
                         }
                     }
@@ -122,7 +143,7 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                     state = state,
                     viewModel = viewModel,
                     snackbar = snackbar,
-                    modifier = Modifier.padding(padding),
+                    modifier = Modifier.padding(padding).consumeWindowInsets(padding),
                 )
             }
         }

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -81,7 +80,7 @@ fun GatewayForm(
     ) {
         if (showBrand) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
+                AppIcon(
                     CodexIcons.Terminal,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
@@ -113,7 +112,7 @@ fun GatewayForm(
             visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
                 IconButton(onClick = { revealToken = !revealToken }, enabled = !loading) {
-                    Icon(
+                    AppIcon(
                         if (revealToken) CodexIcons.VisibilityOff else CodexIcons.Visibility,
                         contentDescription = if (revealToken) "隐藏令牌" else "显示令牌",
                     )
@@ -128,6 +127,7 @@ fun GatewayForm(
             onClick = { onSave(address, token) },
             enabled = !loading && address.isNotBlank() && token.isNotBlank(),
             modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = MaterialTheme.shapes.small,
         ) {
             if (loading) {
                 CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)

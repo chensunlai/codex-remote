@@ -30,7 +30,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -38,7 +37,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.codexremote.app.BuildConfig
@@ -154,21 +153,22 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     }
 
     Scaffold(topBar = {
-        TopAppBar(
+        CodexTopBar(
             title = {
                 Column {
-                    Text(service.name)
-                    Text("${if (mode == "latest") "最新" else "指定版本"} · ${frontend?.version ?: "未下载"}", style = MaterialTheme.typography.labelSmall)
+                    Text(service.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${if (mode == "latest") "最新" else "指定版本"} · ${frontend?.version ?: "未下载"}", style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             },
             navigationIcon = {
                 IconButton(onClick = { viewModel.setSection(MainSection.SERVICES) }) {
-                    Icon(CodexIcons.ArrowBack, contentDescription = "切换服务器")
+                    AppIcon(CodexIcons.ArrowBack, contentDescription = "切换服务器")
                 }
             },
             actions = {
                 IconButton(onClick = { chooseWorkspace = true }, enabled = !loading) {
-                    Icon(CodexIcons.FolderOpen, contentDescription = "选择工作目录")
+                    AppIcon(CodexIcons.FolderOpen, contentDescription = "选择工作目录")
                 }
                 Box {
                     TextButton(onClick = { chooseMode = true }, enabled = !loading) { Text("前端版本") }
@@ -180,7 +180,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                     }
                 }
                 IconButton(onClick = { viewModel.setSection(MainSection.SETTINGS) }) {
-                    Icon(CodexIcons.Settings, contentDescription = "服务器设置")
+                    AppIcon(CodexIcons.Settings, contentDescription = "服务器设置")
                 }
             },
         )

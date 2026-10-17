@@ -9,10 +9,10 @@
     fontSize: 14,
     scrollback: 5000,
     theme: {
-      background: '#101214',
-      foreground: '#e3e7ea',
-      cursor: '#65b88c',
-      selectionBackground: '#376b52',
+      background: '#1e1e1e',
+      foreground: '#d4d4d4',
+      cursor: '#d4d4d4',
+      selectionBackground: '#264f78',
     },
   });
   const fitAddon = new FitAddon.FitAddon();
@@ -50,6 +50,14 @@
   }).observe(container);
 
   window.remoteTerminal = {
+    setTheme(theme) {
+      if (!theme.background) return;
+      terminal.options.theme = theme;
+      for (const [property, key] of Object.entries({
+        background: 'background', 'status-background': 'statusBackground', 'status-foreground': 'statusForeground',
+        'error-background': 'errorBackground', 'error-foreground': 'errorForeground',
+      })) document.documentElement.style.setProperty(`--terminal-${property}`, theme[key]);
+    },
     write(data) {
       terminal.write(data);
     },

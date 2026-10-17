@@ -25,7 +25,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -33,7 +32,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,7 +70,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
 
     Scaffold(
         topBar = {
-            TopAppBar(
+            CodexTopBar(
                 title = {
                     ServiceSelector(
                         services = state.services,
@@ -84,16 +82,16 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
                     IconButton(
                         onClick = { upload.launch(arrayOf("*/*")) },
                         enabled = state.selectedServiceId != null && state.remotePath.isNotBlank(),
-                    ) { Icon(CodexIcons.Upload, contentDescription = "上传文件") }
+                    ) { AppIcon(CodexIcons.Upload, contentDescription = "上传文件") }
                     IconButton(
                         onClick = { createDirectory = true },
                         enabled = state.selectedServiceId != null && state.remotePath.isNotBlank(),
-                    ) { Icon(CodexIcons.Add, contentDescription = "新建目录") }
+                    ) { AppIcon(CodexIcons.Add, contentDescription = "新建目录") }
                     IconButton(
                         onClick = { viewModel.browse(state.remotePath.takeIf(String::isNotBlank)) },
                         enabled = state.selectedServiceId != null,
                     ) {
-                        Icon(CodexIcons.Refresh, contentDescription = "刷新目录")
+                        AppIcon(CodexIcons.Refresh, contentDescription = "刷新目录")
                     }
                 },
             )
@@ -113,8 +111,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
                 )
                 else -> LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(vertical = 4.dp),
                 ) {
                     items(state.remoteFiles, key = RemoteFile::path) { file ->
                         val downloadable = file.size < 0 || file.size <= state.maxDownloadBytes
@@ -235,17 +232,16 @@ private fun FileRow(
 ) {
     var menu by remember { mutableStateOf(false) }
     Surface(
-        shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.background,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onOpen)
-                .padding(start = 14.dp, top = 9.dp, bottom = 9.dp),
+                .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
+            AppIcon(
                 when (file.type) {
                     RemoteFileType.DIRECTORY -> CodexIcons.Folder
                     RemoteFileType.SYMLINK -> CodexIcons.Link
@@ -283,20 +279,20 @@ private fun FileRow(
             }
             Box {
                 IconButton(onClick = { menu = true }) {
-                    Icon(CodexIcons.More, contentDescription = "文件菜单")
+                    AppIcon(CodexIcons.More, contentDescription = "文件菜单")
                 }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     if (file.type != RemoteFileType.DIRECTORY) {
                         DropdownMenuItem(
                             text = { Text("下载") },
-                            leadingIcon = { Icon(CodexIcons.Download, contentDescription = null) },
+                            leadingIcon = { AppIcon(CodexIcons.Download, contentDescription = null) },
                             onClick = { menu = false; onDownload() },
                             enabled = downloadable,
                         )
                     }
                     DropdownMenuItem(
                         text = { Text("删除") },
-                        leadingIcon = { Icon(CodexIcons.Delete, contentDescription = null) },
+                        leadingIcon = { AppIcon(CodexIcons.Delete, contentDescription = null) },
                         onClick = { menu = false; onDelete() },
                     )
                 }
