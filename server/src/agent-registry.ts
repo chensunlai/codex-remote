@@ -53,6 +53,19 @@ export interface AgentDisconnectedEvent {
   serviceId: string;
 }
 
+export interface ExtensionViewEvent {
+  ownerId: string;
+  serviceId: string;
+  frame: {
+    viewId: string;
+    epoch: string;
+    sequence: number;
+    type: "html" | "message" | "host-request" | "status" | "surface";
+    surfaceId?: string;
+    payload: unknown;
+  };
+}
+
 class AgentPeer {
   private readonly pending = new Map<string, PendingCall>();
   private readonly streams = new Map<string, DownloadStream>();
@@ -428,6 +441,23 @@ export class AgentRegistry extends EventEmitter {
 
   private handleEvent(peer: AgentPeer, message: AgentEventMessage): void {
     const payload = asRecord(message.payload);
+    if (message.event === "extension.view") {
+      if (this.peers.get(this.key(peer.ownerId, peer.serviceId)) !== peer) return;
+      if (
+        typeof payload.viewId !== "string"
+        || typeof payload.epoch !== "string"
+        || !Number.isSafeInteger(payload.sequence)
+        || (payload.sequence as number) < 0
+        || typeof payload.type !== "string"
+        || !["html", "message", "host-request", "status", "surface"].includes(payload.type)
+      ) return;
+      this.emit("extension.view", {
+        ownerId: peer.ownerId,
+        serviceId: peer.serviceId,
+        frame: payload as unknown as ExtensionViewEvent["frame"],
+      } satisfies ExtensionViewEvent);
+      return;
+    }
     if (message.event === "codex.channel") {
       if (this.peers.get(this.key(peer.ownerId, peer.serviceId)) !== peer) return;
       if (

@@ -12,6 +12,7 @@ import { ServiceStore } from "./service-store.js";
 import { TokenStore } from "./token-store.js";
 import { APP_VERSION } from "./version.js";
 import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
+import { registerExtensionHostRoutes } from "./extension-host-routes.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -98,6 +99,7 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   registerAgentRoute(app, builtServices);
   registerServiceRoutes(app, builtServices);
   registerCodexChannelRoutes(app, builtServices);
+  registerExtensionHostRoutes(app, builtServices);
   registerFileRoutes(app, builtServices, config);
   registerTerminalRoute(app, builtServices);
   registerEventRoutes(app, builtServices);
@@ -128,6 +130,7 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
         "files",
         "codex-channel-v2",
         "codex-runtime-management",
+        "official-extension-host-v1",
       ],
     },
   }));
