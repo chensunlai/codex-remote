@@ -10,6 +10,8 @@ import android.os.Looper
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import dev.codexremote.app.model.FilePreview
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -33,8 +35,10 @@ internal class OfficialChatSession(
     private val workspace: String,
     private val serviceName: String,
     private val onStatus: (String?) -> Unit,
-    private val onOpenFile: (String, String) -> Unit,
+    private val onOpenFile: (FilePreview) -> Unit,
+    private val onPickFiles: suspend (JSONObject) -> JSONArray,
     private val onThreadConflict: (String?) -> Unit,
+    private val onSettingsChanged: (Boolean) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -53,9 +57,14 @@ internal class OfficialChatSession(
     private var closed = false
     private var reconnect: Runnable? = null
     private var theme = "dark"
+    private var fontScale = 1f
     val bridge = Bridge()
 
     fun attach(webView: WebView) { view = webView }
+
+    fun exitSettings() {
+        if (ready && !closed) deliver(JSONObject().put("type", "exit-settings"))
+    }
 
     fun setTheme(value: String) {
         if (theme == value) return
@@ -63,7 +72,18 @@ internal class OfficialChatSession(
         if (ready) deliver(JSONObject().put("type", "theme").put("theme", theme))
     }
 
+    fun setFontScale(value: Float) {
+        if (!value.isFinite() || value <= 0f || fontScale == value) return
+        fontScale = value
+        if (ready) deliverFontScale()
+    }
+
+    private fun deliverFontScale() {
+        deliver(JSONObject().put("type", "font-scale").put("scale", fontScale.toDouble()))
+    }
+
     fun pageStarted() {
+        onSettingsChanged(false)
         generation += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null
@@ -81,6 +101,7 @@ internal class OfficialChatSession(
     }
 
     fun close() {
+        onSettingsChanged(false)
         closed = true
         generation += 1
         reconnect?.let(main::removeCallbacks)
@@ -106,6 +127,7 @@ internal class OfficialChatSession(
             "ready" -> {
                 ready = true
                 deliver(JSONObject().put("type", "theme").put("theme", theme))
+                deliverFontScale()
                 pageQueue.toList().also { pageQueue.clear() }.forEach(::deliver)
                 if (socket == null) connect()
             }
@@ -120,6 +142,7 @@ internal class OfficialChatSession(
                 }
             }
             "host-request" -> handleHostRequest(message)
+            "settings-navigation" -> onSettingsChanged(message.optBoolean("inSettings"))
             "thread-conflict" -> {
                 onStatus(null)
                 onThreadConflict(message.optString("threadId").takeIf { it.isNotBlank() && it != "null" })
@@ -287,13 +310,17 @@ internal class OfficialChatSession(
         jobs.launch {
             val response = JSONObject().put("type", "host-response").put("id", id)
             runCatching { hostRequest(method, params) }.onSuccess { response.put("result", it) }
-                .onFailure { response.put("error", JSONObject().put("message", it.message ?: "宿主操作失败")) }
+                .onFailure {
+                    if (it is CancellationException) throw it
+                    response.put("error", JSONObject().put("message", it.message ?: "宿主操作失败"))
+                }
             if (pageSession == sessionId) deliver(response)
         }
     }
 
     private suspend fun hostRequest(method: String, params: JSONObject): Any {
         return when (method) {
+            "files/pick" -> JSONObject().put("files", onPickFiles(params))
             "fs/read" -> {
                 val output = ByteArrayOutputStream()
                 api.download(serviceId, params.getString("path"), output)
@@ -345,7 +372,7 @@ internal class OfficialChatSession(
             "file/open" -> {
                 val path = params.getString("path")
                 val preview = api.preview(serviceId, path)
-                onOpenFile(path, preview.content + if (preview.truncated) "\n…" else "")
+                onOpenFile(FilePreview(path.substringAfterLast('/'), path, preview))
                 JSONObject()
             }
             else -> error("当前移动端宿主不支持：$method")

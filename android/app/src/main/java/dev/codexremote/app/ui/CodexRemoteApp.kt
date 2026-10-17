@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.selection.selectable
@@ -117,20 +118,23 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                 bottomBar = {
                     if (!WindowInsets.isImeVisible) {
                         Column(Modifier.background(MaterialTheme.colorScheme.background).navigationBarsPadding()) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             Row(Modifier.fillMaxWidth().selectableGroup()) {
                                 destinations.forEach { destination ->
                                     val selected = state.section == destination.section
                                     val color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
                                     Column(
                                         Modifier.weight(1f).heightIn(min = 56.dp)
-                                            .background(if (selected) MaterialTheme.colorScheme.surfaceContainer else Color.Transparent)
                                             .selectable(selected, role = Role.Tab, onClick = { viewModel.setSection(destination.section) })
                                             .padding(vertical = 6.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
                                     ) {
-                                        AppIcon(destination.icon, contentDescription = null, tint = color)
+                                        Box(Modifier.size(width = 36.dp, height = 26.dp)
+                                            .background(if (selected) MaterialTheme.colorScheme.surfaceContainer else Color.Transparent, MaterialTheme.shapes.small),
+                                            contentAlignment = Alignment.Center) {
+                                            AppIcon(destination.icon, contentDescription = null, tint = color)
+                                        }
                                         Text(stringResource(destination.label), style = MaterialTheme.typography.labelSmall, color = color)
                                     }
                                 }

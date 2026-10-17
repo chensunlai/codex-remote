@@ -3,12 +3,8 @@ package dev.codexremote.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -64,12 +60,10 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        HorizontalDivider()
-        Spacer(Modifier.height(8.dp))
-        Text("${service.name} · Codex", style = MaterialTheme.typography.titleMedium)
+        Text(service.name, style = MaterialTheme.typography.titleMedium)
         val current = status
         if (current != null) {
-            Text(current.optString("executable"), style = MonoTextStyle)
+            Text(current.optString("executable"), style = MonoTextStyle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val versions = current.optJSONArray("runningVersions")?.objects()?.map {
                 it.optString("version").takeIf { version -> version.isNotBlank() && version != "null" } ?: "未知"
             }?.distinct().orEmpty()
@@ -112,7 +106,7 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
     }
 
     confirmation?.let { details ->
-        AlertDialog(
+        CodexDialog(
             onDismissRequest = { confirmation = null },
             title = { Text("重启 Codex？") },
             text = {

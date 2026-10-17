@@ -1,7 +1,10 @@
 import { createAppServerInbox } from "./app-server-inbox.mjs";
 import { createConnectionTracker, createThreadConflictObserver } from "./app-server-state.mjs";
 import { applyTheme } from "./theme.mjs";
+import { applyFontScale } from "./font-settings.mjs";
 import { createClientCoordination } from "./client-coordination.mjs";
+import { watchFeatureGates } from "./feature-gates.mjs";
+import { installSettingsNavigation } from "./settings-navigation.mjs";
 
 const version = document.querySelector('meta[name="codex-extension-version"]')?.content;
 const scope = window.__codexRemoteStorageKey || document.querySelector('meta[name="codex-remote-storage-key"]')?.content || location.host;
@@ -14,6 +17,8 @@ const settingSubscribers = new Map();
 let initialized;
 let pageReady = false;
 let sequence = 0;
+let settingsNavigation;
+let chatFontSettings = { type: "chat-font-settings", chatFontSize: 13, chatCodeFontSize: 13 };
 const appServerInbox = createAppServerInbox({ isReady: () => pageReady && !!initialized, dispatch: receiveRpc });
 const connectionTracker = createConnectionTracker();
 const threadConflicts = createThreadConflictObserver(send);
@@ -34,14 +39,22 @@ function save(key, value) {
   if (value === undefined) localStorage.removeItem(prefix + key);
   else localStorage.setItem(prefix + key, JSON.stringify(value));
 }
-function nativeRequest(method, params = {}) {
+function nativeRequest(method, params = {}, timeoutMs = 30_000) {
   const id = `native-${++sequence}`;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { nativePending.delete(id); reject(new Error(`Host request timed out: ${method}`)); }, 30_000);
+    const timer = timeoutMs == null ? null : setTimeout(() => { nativePending.delete(id); reject(new Error(`Host request timed out: ${method}`)); }, timeoutMs);
     nativePending.set(id, { resolve, reject, timer });
     send({ type: "host-request", id, method, params });
   });
 }
+// Native selection remains pending until the user chooses or cancels; uploads have HTTP timeouts.
+window.addEventListener("pagehide", () => {
+  for (const pending of nativePending.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error("Page closed"));
+  }
+  nativePending.clear();
+});
 function request(method, params = {}) {
   const id = `host-${++sequence}`;
   return new Promise((resolve, reject) => {
@@ -58,8 +71,8 @@ function project() {
 function initialMessages() {
   if (!pageReady || !initialized) return;
   deliver({ type: "codex-app-server-initialized", hostId: "local", transport: "stdio", appServerVersion: initialized.runningVersion, installedCodexVersion: initialized.runningVersion, isSnapshot: true });
-  deliver({ type: "persisted-atom-sync", state: load("atoms", {}) });
-  deliver({ type: "chat-font-settings", chatFontSize: null, chatCodeFontSize: null });
+  deliver({ type: "persisted-atom-sync", state: load("atoms", {}), canWritePrimaryWindowTabPersistence: true });
+  deliver(chatFontSettings);
   deliver({ type: "request-user-input-auto-resolution-snapshot", hostId: "local", pendingRequests: [] });
   const connection = connectionTracker.snapshot();
   if (connection) deliverConnection(connection);
@@ -84,6 +97,14 @@ function receiveRpc(message) {
 }
 function receiveNative(message) {
   if (message.type === "theme") applyTheme(message.theme);
+  else if (message.type === "font-scale") {
+    const settings = applyFontScale(message.scale);
+    if (settings) {
+      chatFontSettings = settings;
+      if (pageReady) deliver(chatFontSettings);
+    }
+  }
+  else if (message.type === "exit-settings") settingsNavigation?.exit();
   else if (message.type === "initialized") {
     initialized = message;
     coordination.connect(message.clientCoordination === true);
@@ -149,9 +170,17 @@ async function privateFetch(route, params = {}) {
       const { account } = await request("account/read", { refreshToken: false });
       return { accountId: null, userId: null, plan: account?.planType ?? null, email: account?.email ?? null, computeResidency: null, hasChatGptToken: account?.type === "chatgpt" };
     }
+    case "pick-file": {
+      const { files } = await nativeRequest("files/pick", { ...params, allowMultiple: false }, null);
+      return { file: files[0] ?? null };
+    }
+    case "pick-files": return nativeRequest("files/pick", params, null);
     case "read-file": return { contents: (await nativeRequest("fs/read", { path: params.path, encoding: "utf8" })).content };
     case "read-file-binary": return { contentsBase64: (await nativeRequest("fs/read", { path: params.path, encoding: "base64" })).content };
-    case "read-file-metadata": return nativeRequest("fs/stat", { path: params.path });
+    case "read-file-metadata": {
+      const info = await nativeRequest("fs/stat", { path: params.path });
+      return { sizeBytes: info.size, isFile: !info.isDirectory, mtimeMs: info.mtimeMs ?? null, createdAtMs: null };
+    }
     case "write-file": await nativeRequest("fs/write", { path: params.path, content: params.contents, encoding: "utf8" }); return {};
     case "ensure-directory": await nativeRequest("fs/mkdir", { path: params.path, recursive: true }); return {};
     case "workspace-directory-entries": return nativeRequest("fs/list", { path: params.path || project().rootPaths[0] });
@@ -276,6 +305,7 @@ async function install() {
   const adapters = await (await fetch(new URL("./adapters.json", import.meta.url))).json();
   const binding = adapters.versions[version];
   if (!binding || binding.contractVersion !== 1) throw new Error(`Unsupported official frontend version: ${version}`);
+  if (binding.featureGates) watchFeatureGates(binding.featureGates, window, error => log("warning", error.message));
   const runtime = await import(new URL(binding.bundle, document.baseURI).href);
   runtime[binding.initializeExport]();
   const RpcSession = runtime[binding.sessionExport];
@@ -299,12 +329,14 @@ async function install() {
       case "mcp-notification": send({ type: "notification", request: message.request }); break;
       case "mcp-response": send({ type: "response", response: message.response }); break;
       case "mcp-request-abandon": break; // Losing a renderer waiter must not cancel a remote turn.
-      case "persisted-atom-sync-request": deliver({ type: "persisted-atom-sync", state: load("atoms", {}) }); break;
+      case "persisted-atom-sync-request": deliver({ type: "persisted-atom-sync", state: load("atoms", {}), canWritePrimaryWindowTabPersistence: true }); break;
       case "persisted-atom-update": {
         const atoms = load("atoms", {});
-        if (message.deleted) delete atoms[message.key]; else atoms[message.key] = message.value;
+        const value = message.recordUpdate == null ? message.deleted ? undefined : message.value
+          : settingsNavigation.applyRecordUpdate(atoms[message.key] ?? atoms[message.recordUpdate.legacyStorageKey], message.recordUpdate);
+        if (value === undefined) delete atoms[message.key]; else atoms[message.key] = value;
         save("atoms", atoms);
-        deliver({ type: "persisted-atom-updated", key: message.key, value: message.value, deleted: !!message.deleted });
+        deliver({ type: "persisted-atom-updated", key: message.key, value, deleted: value === undefined });
         break;
       }
       case "persisted-atom-reset": save("atoms", {}); deliver({ type: "persisted-atom-sync", state: {} }); break;
@@ -340,6 +372,8 @@ async function install() {
       default: log("debug", `Unhandled frontend message: ${message.type}`);
     }
   }
+  if (binding.navigation) settingsNavigation = await installSettingsNavigation(binding.navigation,
+    inSettings => send({ type: "settings-navigation", inSettings }), deliver);
   window.__codexRemoteInstallReceiver(receiveNative);
   window.__codexRemoteInstallHost(handle);
   send({ type: "ready" });

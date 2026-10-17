@@ -20,11 +20,9 @@ import okhttp3.WebSocketListener
 import okio.BufferedSink
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.IOException
 import java.io.OutputStream
-import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -159,35 +157,15 @@ class GatewayApi {
             }
         }
 
-    suspend fun preview(serviceId: String, path: String): PreviewPayload =
+    suspend fun preview(serviceId: String, path: String): PreviewContent =
         withContext(Dispatchers.IO) {
             execute(
                 Request.Builder()
-                    .url(url("api/v1/services/$serviceId/fs/preview", mapOf("path" to path)))
-                    .authorized()
-                    .get()
-                    .build(),
+                    .url(url("api/v1/services/$serviceId/fs/download", mapOf("path" to path)))
+                    .authorized().get().build(),
             ).use { response ->
                 ensureSuccess(response)
-                val body = response.body
-                val declaredLength = body.contentLength()
-                val output = ByteArrayOutputStream(minOf(PREVIEW_RENDER_BYTES, 32 * 1024))
-                var remaining = PREVIEW_RENDER_BYTES
-                body.byteStream().use { input ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (remaining > 0) {
-                        val read = input.read(buffer, 0, minOf(buffer.size, remaining))
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        remaining -= read
-                    }
-                    val truncated = declaredLength > PREVIEW_RENDER_BYTES ||
-                        (declaredLength < 0 && remaining == 0 && input.read() >= 0)
-                    PreviewPayload(
-                        output.toString(StandardCharsets.UTF_8.name()),
-                        truncated,
-                    )
-                }
+                response.body.byteStream().use(::readPreview)
             }
         }
 
@@ -333,11 +311,8 @@ class GatewayApi {
     private companion object {
         val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
         val EMPTY_BODY = "{}".toRequestBody(JSON_MEDIA)
-        const val PREVIEW_RENDER_BYTES = 256 * 1024
     }
 }
-
-data class PreviewPayload(val content: String, val truncated: Boolean)
 
 class GatewayException(
     val statusCode: Int,

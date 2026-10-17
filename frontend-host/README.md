@@ -58,12 +58,15 @@ delivers objects to `window.codexRemoteReceive(message)`.
 | JS → Native | `{type:'host-request',id,method,params}` |
 | JS → Native | `{type:'log',level,message}` |
 | JS → Native | `{type:'thread-conflict',threadId,message,retryable:true}` |
+| JS → Native | `{type:'settings-navigation',inSettings:boolean}` |
 | JS ↔ Native | `{type:'coordination',message}` |
 | Native → JS | `{type:'initialized',result,runningVersion,home,workspace?,serviceName,clientCoordination}` |
 | Native → JS | `{type:'rpc-message',message}` |
 | Native → JS | `{type:'host-response',id,result or error}` |
 | Native → JS | `{type:'connection',state,message?}` |
 | Native → JS | `{type:'theme',theme:'dark' or 'light' or 'anthropic'}` |
+| Native → JS | `{type:'exit-settings'}` |
+| Native → JS | `{type:'font-scale',scale:number}` |
 
 Agent owns app-server `initialize`/`initialized`. `result` is its raw initialize
 result; `home` is the remote user's home and `result.codexHome` is the configured
@@ -99,6 +102,12 @@ Do not retry a mutation with an unknown outcome automatically. Gateway channel
 authentication and service/owner isolation also apply to coordination frames.
 Theme messages update CSS and the official theme attribute without reloading
 the page, changing the connection or submitting the current draft.
+Font-scale messages set the standard VS Code host font tokens and send the official
+`chat-font-settings` message for chat and code text (13 px at 100%). The latest
+value is replayed when the official UI becomes ready, including cold starts.
+Android sends the product of the App preference and system font scale. No official
+CSS selectors or components are overridden. Native and host surfaces use the
+same foreground mixes for subtle borders, secondary text and input backgrounds.
 
 Native host methods: `fs/read`, `fs/write`, `fs/list`, `fs/stat`, `fs/mkdir`,
 `clipboard/read`, `clipboard/write`, `open-url`, and `file/open`.
@@ -110,10 +119,27 @@ use browser storage scoped to the remote service. Capability RPC remains
 inside the page; app-server JSON-RPC, coordination JSON and native host requests cross the
 Android bridge.
 
+The App is the primary window for this storage scope. Its persisted-state sync
+advertises `canWritePrimaryWindowTabPersistence`, and record updates are merged
+by the official exported function before the complete value is saved and echoed.
+This preserves official composer drafts when the chat route unmounts for settings.
+
+Settings navigation reads the official current route through the version bindings
+in `adapters.json`; both additional bundles are checked against SHA-256 before
+import. Entering settings remembers the source route and state. Exiting calls the
+official `prepareNavigation` guard, then sends `navigate-to-route` to that source
+(or `/` when there is no source). Android maps its toolbar and system Back to this
+operation, with native modals and the keyboard taking priority. JavaScript confirm
+dialogs use the native theme and retain the official message. No official source,
+DOM structure or React component is rewritten. Subscriptions are disposed on
+`pagehide`; a replaced official scope discards the previous source.
+
 ## Validation and current limits
 
 ```sh
-node --test frontend-host/host.test.mjs scripts/import-official-frontend.test.mjs
+node --test frontend-host/*.test.mjs scripts/import-official-frontend.test.mjs
+node scripts/smoke-official-frontend.mjs --codex /path/to/codex \
+  --settings-return --model-settings --fixture stream --send CODEX_REMOTE_SETTINGS_TEST
 node scripts/smoke-official-frontend.mjs --codex /path/to/codex \
   --send 'Reply with exactly CODEX_REMOTE_FRONTEND_OK. Do not use any tools.' \
   --expect CODEX_REMOTE_FRONTEND_OK
@@ -134,6 +160,9 @@ asserts that the official frontend requests `thread/resume`; this tests the
 frontend recovery path, not a physical Gateway disconnect.
 `--fixture resume-conflict --reconnect` checks writer-error propagation and
 duplicate-connection suppression using a fixture on its own test thread.
+`--fonts --font-scale 1.15` checks startup and live chat/code font sizes, draft
+preservation and the absence of document reloads or extra thread/turn operations.
+`--artifacts <directory>` selects the output directory for screenshots.
 `--themes` checks all three palettes and saves screenshots while preserving an
 unsent draft and the same browser document.
 Conversation fixtures also check root viewport height and the composer position;
@@ -144,3 +173,25 @@ GitHub integration, voice, desktop windows and VS Code commands are not
 implemented. Unsupported host operations report errors instead of simulated
 success. A compatible plugin binding does not guarantee every Codex CLI version
 or every official menu is supported.
+
+## Phone attachments and previews
+
+The official `pick-file` / `pick-files` requests delegate to native `files/pick`.
+Android uses the system document picker (including image filters and multiple
+selection), uploads selected bytes using the existing Gateway filesystem API,
+and returns official `{label,path,fsPath}` descriptors containing remote paths.
+Cancellation returns an empty list (or `file: null`). Human selection has no host
+request timeout; HTTP uploads retain their network timeouts. Destroying the
+renderer cancels pending selection. Folder requests use the remote directory
+selector. `read-file-metadata` maps the native stat result to official `sizeBytes`
+and `isFile` fields. The composer and attachment state stay entirely official.
+
+Chat links using `openIn.open` and the native Files page share a binary-aware
+preview dialog. It reads raw download bytes, decodes supported raster images with
+a bounded bitmap size, and decodes UTF-8 only after rejecting binary data. No
+Gateway/Agent protocol change or official resource patch is required.
+
+Run `frontend:smoke -- --attachments --fixture stream --send ATTACHMENT_TEST` to
+check official attachment selection/cancellation, thumbnails, a fixture turn with
+both image and file inputs, and a Markdown preview link. Native instrumentation
+checks system picker cancellation, byte-preserving uploads and image rendering.

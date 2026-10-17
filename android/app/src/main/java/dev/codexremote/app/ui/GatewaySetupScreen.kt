@@ -19,7 +19,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -92,22 +91,20 @@ fun GatewayForm(
             }
             Spacer(Modifier.height(8.dp))
         }
-        OutlinedTextField(
+        CodexTextField(
             value = address,
             onValueChange = { address = it; onChange() },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("网关地址") },
-            placeholder = { Text("https://gateway.example.com") },
-            singleLine = true,
+            label = "网关地址",
+            placeholder = "https://gateway.example.com",
             enabled = !loading,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
         )
-        OutlinedTextField(
+        CodexTextField(
             value = token,
             onValueChange = { token = it; onChange() },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("访问令牌") },
-            singleLine = true,
+            label = "访问令牌",
             enabled = !loading,
             visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
@@ -126,11 +123,11 @@ fun GatewayForm(
         Button(
             onClick = { onSave(address, token) },
             enabled = !loading && address.isNotBlank() && token.isNotBlank(),
-            modifier = Modifier.fillMaxWidth().height(48.dp),
+            modifier = Modifier.height(48.dp).align(Alignment.End),
             shape = MaterialTheme.shapes.small,
         ) {
             if (loading) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                 Text("正在连接", Modifier.padding(start = 8.dp))
             } else {
                 Text(submitLabel)

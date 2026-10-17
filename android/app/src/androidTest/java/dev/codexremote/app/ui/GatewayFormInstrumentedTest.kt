@@ -40,14 +40,14 @@ class GatewayFormInstrumentedTest {
             SemanticsMatcher.expectValue(SemanticsProperties.ProgressBarRangeInfo, ProgressBarRangeInfo.Indeterminate),
             useUnmergedTree = true,
         ).assertWidthIsEqualTo(20.dp).assertHeightIsEqualTo(20.dp)
-        compose.onNodeWithText("网关地址").assertIsNotEnabled()
-        compose.onNodeWithText("访问令牌").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("网关地址").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("访问令牌").assertIsNotEnabled()
         compose.onNodeWithContentDescription("显示令牌").assertIsNotEnabled()
         compose.onNodeWithText("正在连接").assertIsNotEnabled()
 
         compose.runOnIdle { loading.value = false }
-        compose.onNodeWithText("网关地址").assertIsEnabled()
-        compose.onNodeWithText("访问令牌").assertIsEnabled()
+        compose.onNodeWithContentDescription("网关地址").assertIsEnabled()
+        compose.onNodeWithContentDescription("访问令牌").assertIsEnabled()
         compose.onNodeWithText("保存并测试").assertIsEnabled()
     }
 }

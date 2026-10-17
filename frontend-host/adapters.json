@@ -6,7 +6,25 @@
       "initializeExport": "Nst",
       "sessionExport": "kst",
       "targetExport": "jst",
-      "contractVersion": 1
+      "contractVersion": 1,
+      "featureGates": {
+        "1186680773": true,
+        "3693343337": true
+      },
+      "navigation": {
+        "state": {
+          "bundle": "assets/app-initial-c014f9ee4429.js",
+          "sha256": "aabbfa7c366706365a239b090ca1c657b6a0213d7287e54ef0a32d1b2e5ff6a0",
+          "contextExport": "s7t",
+          "locationExport": "D9t"
+        },
+        "actions": {
+          "bundle": "assets/app-initial-7a199c66e670.js",
+          "sha256": "59b909377a370e09cb8523ab99a1f4ff282a0126527bd339db31e6d9ac7c9c26",
+          "navigationExport": "tWt",
+          "recordUpdateExport": "WUt"
+        }
+      }
     },
     "26.1002.51308": {
       "bundle": "assets/app-initial-f98e01875506.js",
@@ -14,7 +32,25 @@
       "initializeExport": "Rat",
       "sessionExport": "Pat",
       "targetExport": "Iat",
-      "contractVersion": 1
+      "contractVersion": 1,
+      "featureGates": {
+        "1186680773": true,
+        "3693343337": true
+      },
+      "navigation": {
+        "state": {
+          "bundle": "assets/app-initial-d277996860bb.js",
+          "sha256": "1c843016a1334d3848e3ae4931ca2e9dbb649918d7ca7f8ea90ef09775aaf7c1",
+          "contextExport": "v6t",
+          "locationExport": "R8t"
+        },
+        "actions": {
+          "bundle": "assets/app-initial-bb656fdae302.js",
+          "sha256": "7fa31b080f992b22d7567fa801c2d526ff2c875b150b9f704baf1ca8e5976824",
+          "navigationExport": "tVt",
+          "recordUpdateExport": "WBt"
+        }
+      }
     }
   }
 }

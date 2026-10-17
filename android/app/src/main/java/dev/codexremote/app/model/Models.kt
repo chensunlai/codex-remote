@@ -1,5 +1,7 @@
 package dev.codexremote.app.model
 
+import dev.codexremote.app.data.PreviewContent
+
 enum class MainSection { SERVICES, SESSIONS, TERMINAL, FILES, SETTINGS }
 
 enum class AppTheme(val id: String) { DARK("dark"), LIGHT("light"), ANTHROPIC("anthropic") }
@@ -37,8 +39,7 @@ data class RemoteFile(
 data class FilePreview(
     val name: String,
     val path: String,
-    val content: String,
-    val truncated: Boolean,
+    val content: PreviewContent,
 )
 
 data class AppState(

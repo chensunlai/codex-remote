@@ -2,11 +2,10 @@ package dev.codexremote.app
 
 import android.app.Application
 import android.content.ContentResolver
-import android.database.Cursor
 import android.net.Uri
-import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.codexremote.app.data.documentMetadata
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.OfficialFrontendStore
 import dev.codexremote.app.data.SecretStore
@@ -169,7 +168,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun upload(resolver: ContentResolver, uri: Uri, remoteName: String? = null) {
         val serviceId = _state.value.selectedServiceId ?: return
-        val metadata = resolver.metadata(uri)
+        val metadata = resolver.documentMetadata(uri)
         val name = remoteName?.takeIf(String::isNotBlank) ?: metadata.first
         val remotePath = joinRemote(_state.value.remotePath, name)
         launchOperation("正在上传 " + name) {
@@ -223,8 +222,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     filePreview = FilePreview(
                         name = file.name,
                         path = file.path,
-                        content = payload.content,
-                        truncated = payload.truncated,
+                        content = payload,
                     ),
                 )
             }
@@ -241,7 +239,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() { terminalSessions.closeAll() }
 
     private fun applyMeta(meta: org.json.JSONObject) {
-        _state.update { it.copy(maxDownloadBytes = meta.optJSONObject("limits")?.optLong("maxDownloadBytes", 10L * 1024 * 1024) ?: 10L * 1024 * 1024) }
+        _state.update { it.copy(maxDownloadBytes = meta.optJSONObject("limits")?.optLong("downloadBytes", 10L * 1024 * 1024) ?: 10L * 1024 * 1024) }
     }
 
     private suspend fun loadServicesAndSelect() {
@@ -312,27 +310,6 @@ private fun normalizeGatewayUrl(value: String): String {
 
 private fun joinRemote(parent: String, name: String): String =
     if (parent == "/") "/" + name.trim('/') else parent.trimEnd('/') + "/" + name.trim('/')
-
-private fun ContentResolver.metadata(uri: Uri): Pair<String, Long> {
-    var name = "upload.bin"
-    var size = -1L
-    val cursor: Cursor? = query(
-        uri,
-        arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-        null,
-        null,
-        null,
-    )
-    cursor?.use {
-        if (it.moveToFirst()) {
-            val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            val sizeIndex = it.getColumnIndex(OpenableColumns.SIZE)
-            if (nameIndex >= 0) name = it.getString(nameIndex) ?: name
-            if (sizeIndex >= 0 && !it.isNull(sizeIndex)) size = it.getLong(sizeIndex)
-        }
-    }
-    return name to size
-}
 
 private fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return bytes.toString() + " B"

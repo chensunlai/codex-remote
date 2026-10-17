@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.HorizontalDivider
@@ -40,7 +39,7 @@ import dev.codexremote.app.model.RuntimeState
 
 @Composable
 fun AppIcon(imageVector: ImageVector, contentDescription: String?, modifier: Modifier = Modifier, tint: Color = LocalContentColor.current) {
-    Icon(imageVector, contentDescription, modifier.size(20.dp), tint)
+    Icon(imageVector, contentDescription, modifier.size(18.dp), tint)
 }
 
 /** Compact editor-style chrome, with Android's standard 48 dp action targets. */
@@ -58,7 +57,7 @@ fun CodexTopBar(
             }
             Row(verticalAlignment = Alignment.CenterVertically, content = actions)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     }
 }
 
@@ -72,12 +71,12 @@ fun ServiceSelector(
     var expanded by remember { mutableStateOf(false) }
     val selected = services.firstOrNull { it.id == selectedId }
     Box(modifier) {
-        OutlinedButton(
+        androidx.compose.material3.TextButton(
             onClick = { expanded = true },
             enabled = services.isNotEmpty(),
             modifier = Modifier.widthIn(min = 160.dp, max = 280.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
-            shape = MaterialTheme.shapes.small,
+            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+            shape = MaterialTheme.shapes.medium,
         ) {
             StatusDot(selected?.runtimeState ?: RuntimeState.DISCONNECTED)
             Text(
@@ -87,7 +86,7 @@ fun ServiceSelector(
             )
             AppIcon(CodexIcons.ChevronDown, contentDescription = null)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        CodexDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             services.forEach { service ->
                 DropdownMenuItem(
                     text = {
@@ -122,7 +121,7 @@ fun OptionMenu(
             onClick = { expanded = true },
             enabled = enabled && options.isNotEmpty(),
             modifier = Modifier.fillMaxWidth(),
-            shape = MaterialTheme.shapes.small,
+            shape = MaterialTheme.shapes.medium,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -130,7 +129,7 @@ fun OptionMenu(
             }
             AppIcon(CodexIcons.ChevronDown, contentDescription = null)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        CodexDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             options.forEach { (key, text) ->
                 DropdownMenuItem(
                     text = { Text(text) },

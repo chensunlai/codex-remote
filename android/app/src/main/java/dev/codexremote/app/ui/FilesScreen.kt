@@ -7,8 +7,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,14 +18,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -139,15 +134,14 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
 
     if (createDirectory) {
         var name by remember { mutableStateOf("") }
-        AlertDialog(
+        CodexDialog(
             onDismissRequest = { createDirectory = false },
             title = { Text("新建目录") },
             text = {
-                OutlinedTextField(
+                CodexTextField(
                     value = name,
                     onValueChange = { name = it.replace("/", "") },
-                    label = { Text("目录名") },
-                    singleLine = true,
+                    label = "目录名",
                 )
             },
             confirmButton = {
@@ -160,7 +154,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
         )
     }
     deleteTarget?.let { file ->
-        AlertDialog(
+        CodexDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除 ${file.name}") },
             text = { Text(file.path, style = MonoTextStyle) },
@@ -173,32 +167,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
         )
     }
     state.filePreview?.let { preview ->
-        AlertDialog(
-            onDismissRequest = viewModel::closePreview,
-            title = { Text(preview.name, maxLines = 1) },
-            text = {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 560.dp)
-                        .verticalScroll(rememberScrollState()),
-                ) {
-                    SelectionContainer {
-                        Text(preview.content, style = MonoTextStyle)
-                    }
-                    if (preview.truncated) {
-                        Text(
-                            "预览内容已截断",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 12.dp),
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = viewModel::closePreview) { Text("关闭") }
-            },
-        )
+        FilePreviewDialog(preview, viewModel::closePreview)
     }
 }
 
@@ -281,7 +250,7 @@ private fun FileRow(
                 IconButton(onClick = { menu = true }) {
                     AppIcon(CodexIcons.More, contentDescription = "文件菜单")
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                CodexDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     if (file.type != RemoteFileType.DIRECTORY) {
                         DropdownMenuItem(
                             text = { Text("下载") },

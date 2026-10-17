@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -81,7 +80,7 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
     }
 
     deleteTarget?.let { service ->
-        AlertDialog(
+        CodexDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除 " + service.name) },
             text = { Text("删除 Gateway 中保存的离线服务记录。") },

@@ -2,12 +2,12 @@
 :root {
   --host-background: #1e1e1e;
   --host-surface: #252526;
-  --host-raised: #2d2d30;
-  --host-hover: #37373d;
-  --host-input: #3c3c3c;
-  --host-border: #454545;
+  --host-raised: color-mix(in srgb, var(--host-foreground) 5%, var(--host-background));
+  --host-hover: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
+  --host-input: color-mix(in srgb, var(--host-foreground) 2.5%, var(--host-background));
+  --host-border: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
   --host-foreground: #d4d4d4;
-  --host-description: #b0b0b0;
+  --host-description: color-mix(in srgb, var(--host-foreground) 65%, var(--host-background));
   --host-disabled: #858585;
   --host-accent: #3794ff;
   --host-selection: #264f78;
@@ -142,12 +142,12 @@
 :root:not([data-codex-theme]):has(body.vscode-light) {
   --host-background: #ffffff;
   --host-surface: #f3f3f3;
-  --host-raised: #e8e8e8;
-  --host-hover: #e5e5e5;
-  --host-input: #ffffff;
-  --host-border: #cecece;
+  --host-raised: color-mix(in srgb, var(--host-foreground) 5%, var(--host-background));
+  --host-hover: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
+  --host-input: color-mix(in srgb, var(--host-foreground) 2.5%, var(--host-background));
+  --host-border: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
   --host-foreground: #333333;
-  --host-description: #616161;
+  --host-description: color-mix(in srgb, var(--host-foreground) 65%, var(--host-background));
   --host-disabled: #767676;
   --host-accent: #006ab1;
   --host-selection: #add6ff;
@@ -170,12 +170,12 @@
 :root[data-codex-theme="anthropic"] {
   --host-background: #faf9f5;
   --host-surface: #f0eee6;
-  --host-raised: #e8e5db;
-  --host-hover: #e6e2d7;
-  --host-input: #fffefa;
-  --host-border: #c7c2b5;
+  --host-raised: color-mix(in srgb, var(--host-foreground) 5%, var(--host-background));
+  --host-hover: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
+  --host-input: color-mix(in srgb, var(--host-foreground) 2.5%, var(--host-background));
+  --host-border: color-mix(in srgb, var(--host-foreground) 8%, var(--host-background));
   --host-foreground: #302f2b;
-  --host-description: #69665d;
+  --host-description: color-mix(in srgb, var(--host-foreground) 65%, var(--host-background));
   --host-disabled: #79766c;
   --host-accent: #c96442;
   --host-selection: #ead4c6;

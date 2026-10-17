@@ -1,31 +1,30 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
-
 package dev.codexremote.app.ui
 
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.UiPreferences
@@ -38,7 +37,7 @@ import kotlin.math.roundToInt
 fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
     Column(Modifier.fillMaxSize()) {
         CodexTopBar(
-            title = { Text("设置") },
+            title = { Text("App 设置") },
             navigationIcon = {
                 IconButton(onClick = { viewModel.setSection(MainSection.SERVICES) }) {
                     AppIcon(CodexIcons.ArrowBack, contentDescription = "返回服务器")
@@ -46,75 +45,64 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
             },
         )
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            Column(
-                Modifier
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .widthIn(max = 620.dp),
-            ) {
-                Text("网关", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(14.dp))
-                GatewayForm(
-                    initial = state.gatewayConfig,
-                    loading = state.connecting,
-                    error = null,
-                    showBrand = false,
-                    submitLabel = "保存并测试",
-                    onSave = viewModel::configureGateway,
-                )
-                Spacer(Modifier.height(20.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(20.dp))
-                Text("主题", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppTheme.entries.forEach { theme ->
-                        val active = state.theme == theme
-                        OutlinedButton(
-                            onClick = { viewModel.setTheme(theme) },
-                            modifier = Modifier.weight(1f).semantics { selected = active },
-                            shape = MaterialTheme.shapes.small,
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-                            border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (active) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.background,
-                                contentColor = MaterialTheme.colorScheme.onSurface,
-                            ),
-                        ) {
-                            Text(when (theme) {
-                                AppTheme.DARK -> "黑色"
-                                AppTheme.LIGHT -> "白色"
-                                AppTheme.ANTHROPIC -> "Anthropic"
-                            })
+            Column(Modifier.weight(1f, fill = false).widthIn(max = 620.dp)
+                .verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(24.dp)) {
+                CodexSettingsGroup("网关连接") {
+                    GatewayForm(initial = state.gatewayConfig, loading = state.connecting, error = null,
+                        showBrand = false, submitLabel = "保存并测试", onSave = viewModel::configureGateway)
+                }
+                CodexSettingsGroup("外观") {
+                    Text("主题", style = MaterialTheme.typography.bodyMedium)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        AppTheme.entries.forEach { theme ->
+                            val active = state.theme == theme
+                            OutlinedButton(onClick = { viewModel.setTheme(theme) },
+                                modifier = Modifier.weight(1f).semantics { selected = active },
+                                shape = MaterialTheme.shapes.small,
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp),
+                                border = BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.outlineVariant),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = if (active) MaterialTheme.colorScheme.surfaceContainerHighest else MaterialTheme.colorScheme.surfaceContainerLow,
+                                    contentColor = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                Text(when (theme) {
+                                    AppTheme.DARK -> "黑色"
+                                    AppTheme.LIGHT -> "白色"
+                                    AppTheme.ANTHROPIC -> "Anthropic"
+                                }, maxLines = 1)
+                            }
                         }
                     }
+                    Spacer(Modifier.height(2.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("字体大小", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { viewModel.updateFontScale(state.fontScale - UiPreferences.FONT_SCALE_STEP) },
+                                    enabled = state.fontScale > UiPreferences.MIN_FONT_SCALE) {
+                                    AppIcon(CodexIcons.Minus, "减小字体")
+                                }
+                                TextButton(onClick = { viewModel.updateFontScale(UiPreferences.DEFAULT_FONT_SCALE) },
+                                    modifier = Modifier.semantics { contentDescription = "重置字体大小" }) {
+                                    Text("${(state.fontScale * 100).roundToInt()}%")
+                                }
+                                IconButton(onClick = { viewModel.updateFontScale(state.fontScale + UiPreferences.FONT_SCALE_STEP) },
+                                    enabled = state.fontScale < UiPreferences.MAX_FONT_SCALE) {
+                                    AppIcon(CodexIcons.Add, "增大字体")
+                                }
+                            }
+                        }
+                    }
+                    Text("应用于界面、对话和终端", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Spacer(Modifier.height(20.dp))
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text("字体大小")
-                    Text("${(state.fontScale * 100).roundToInt()}%")
-                }
-                Slider(
-                    value = state.fontScale,
-                    onValueChange = viewModel::updateFontScale,
-                    valueRange = UiPreferences.MIN_FONT_SCALE..UiPreferences.MAX_FONT_SCALE,
-                    steps = UiPreferences.FONT_SCALE_SLIDER_STEPS,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text("Codex Remote", style = androidx.compose.material3.MaterialTheme.typography.bodyLarge)
                 state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
-                    Spacer(Modifier.height(20.dp))
-                    CodexManagementPanel(service, viewModel.gatewayApi)
+                    CodexSettingsGroup("Codex") { CodexManagementPanel(service, viewModel.gatewayApi) }
                 }
-                Spacer(Modifier.height(20.dp))
-                HorizontalDivider()
-                Spacer(Modifier.height(20.dp))
-                OutlinedButton(onClick = viewModel::clearGateway, modifier = Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.small) {
-                    AppIcon(CodexIcons.Logout, contentDescription = null)
-                    Text("移除此网关", Modifier.padding(start = 8.dp))
+                TextButton(onClick = viewModel::clearGateway, modifier = Modifier.align(Alignment.Start)) {
+                    AppIcon(CodexIcons.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("移除此网关", Modifier.padding(start = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }

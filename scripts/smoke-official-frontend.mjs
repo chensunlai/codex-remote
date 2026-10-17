@@ -1,6 +1,6 @@
 import { spawn, execFileSync } from "node:child_process";
 import { createServer } from "node:http";
-import { readFile, stat, readdir, mkdir, writeFile } from "node:fs/promises";
+import { readFile, stat, readdir, mkdir, writeFile, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import readline from "node:readline";
@@ -22,12 +22,22 @@ let initializeResult;
 let report;
 let reconnectChecks;
 let conversationLayout;
+const settingsReturnChecks = [];
+const attachmentChecks = [];
+const attachmentDirectory = args.includes("--attachments") ? await mkdtemp(path.join(os.tmpdir(), "codex-attachments-")) : null;
+const pickerRequests = [];
+let pickerFiles = [];
+if (attachmentDirectory) {
+  await writeFile(path.join(attachmentDirectory, "phone-photo.png"), Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWZkAAAAASUVORK5CYII=", "base64"));
+  await writeFile(path.join(attachmentDirectory, "phone-notes.txt"), "Phone attachment fixture\n");
+}
 const early = [];
 const logs = [];
 const outbound = [];
 const requestMethods = new Map();
 const createdThreads = new Set();
 const cleanupReplies = new Map();
+let attachmentInput;
 let fixtureTurn;
 let fixtureThread;
 const fixture = option("fixture", "");
@@ -36,10 +46,10 @@ async function fixtureMessage(message) {
   await page.evaluate(message => window.codexRemoteReceive({ type: "rpc-message", message }), message);
 }
 async function finishFixture() {
-  const item = { id: "fixture-agent-message", type: "agentMessage", text: "CODEX_REMOTE_FIXTURE_OK", phase: "final_answer" };
+  const item = { id: "fixture-agent-message", type: "agentMessage", text: "CODEX_REMOTE_FIXTURE_OK" + (attachmentDirectory ? `\n\n[预览图片](${path.join(attachmentDirectory, "phone-photo.png")})` : ""), phase: "final_answer" };
   await fixtureMessage({ method: "item/started", params: { threadId: fixtureThread, turnId: fixtureTurn, item: { ...item, text: "" } } });
   await fixtureMessage({ method: "item/agentMessage/delta", params: { threadId: fixtureThread, turnId: fixtureTurn, itemId: item.id, delta: "CODEX_REMOTE_" } });
-  await fixtureMessage({ method: "item/agentMessage/delta", params: { threadId: fixtureThread, turnId: fixtureTurn, itemId: item.id, delta: "FIXTURE_OK" } });
+  await fixtureMessage({ method: "item/agentMessage/delta", params: { threadId: fixtureThread, turnId: fixtureTurn, itemId: item.id, delta: item.text.slice("CODEX_REMOTE_".length) } });
   await fixtureMessage({ method: "item/completed", params: { threadId: fixtureThread, turnId: fixtureTurn, item } });
   await fixtureMessage({ method: "turn/completed", params: { threadId: fixtureThread, turn: { id: fixtureTurn, status: "completed", items: [item], error: null } } });
 }
@@ -76,10 +86,15 @@ try {
   page.on("console", message => { if (message.type() === "error" || message.type() === "warning") logs.push({ type: "console", message: message.text() }); });
   await page.exposeBinding("codexSmokeNative", async (_, raw) => {
     const message = JSON.parse(raw);
+    if (message.type === "settings-navigation") {
+      await page.evaluate(value => { window.__smokeInSettings = value; }, message.inSettings);
+      return;
+    }
     if (message.type === "log" || message.type === "thread-conflict") { logs.push(message); return; }
     if (message.type === "ready") {
       for (let attempt = 0; !initializeResult && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
       if (!initializeResult) throw new Error("app-server initialization timed out");
+      await page.evaluate(message => window.codexRemoteReceive(message), { type: "font-scale", scale: Number(option("font-scale", "1")) });
       await page.evaluate(message => window.codexRemoteReceive(message), { type: "initialized", result: initializeResult, runningVersion: version, home: os.homedir(), serviceName: "Local smoke" });
       nativeReady = true;
       for (const message of early.splice(0)) await page.evaluate(message => window.codexRemoteReceive({ type: "rpc-message", message }), message);
@@ -93,6 +108,7 @@ try {
         return;
       }
       if (fixture && request.method === "turn/start") {
+        if (attachmentDirectory) attachmentInput = request.params.input;
         fixtureThread = request.params.threadId;
         fixtureTurn = "codex-remote-fixture-turn";
         const turn = { id: fixtureTurn, status: "inProgress", items: [], error: null };
@@ -126,6 +142,8 @@ try {
       try {
         const params = message.params;
         switch (message.method) {
+          case "files/pick": pickerRequests.push(params); result = { files: pickerFiles }; break;
+          case "file/open": attachmentChecks.push({ opened: params.path }); result = {}; break;
           case "fs/read": result = { content: await readFile(params.path, params.encoding === "base64" ? "base64" : "utf8") }; break;
           case "fs/stat": { const info = await stat(params.path); result = { size: info.size, isDirectory: info.isDirectory(), mtimeMs: info.mtimeMs }; break; }
           case "fs/list": result = { entries: (await readdir(params.path, { withFileTypes: true })).map(entry => ({ name: entry.name, path: path.join(params.path, entry.name), isDirectory: entry.isDirectory() })) }; break;
@@ -142,6 +160,100 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(Number(option("wait", "12000")));
   await page.locator('[contenteditable="true"]').first().waitFor({ state: "visible", timeout: 15000 });
+  if (args.includes("--attachments")) {
+    const identity = await page.evaluate(() => window.__smokeDocumentId);
+    const composer = page.locator('[contenteditable="true"]').first();
+    await composer.fill("Unsent attachment draft");
+    const turns = outbound.filter(message => message.method === "turn/start").length;
+    const pick = async (name, files) => {
+      pickerFiles = files.map(label => ({ label, path: path.join(attachmentDirectory, label), fsPath: path.join(attachmentDirectory, label) }));
+      await page.getByRole("button", { name: "Add files and more", exact: true }).click();
+      await page.getByText(name, { exact: true }).last().click();
+      await page.waitForTimeout(1500);
+    };
+    await pick("Files and folders", []);
+    assert.equal(pickerRequests.length, 1, "cancel must reach the native picker");
+    assert.equal(await composer.innerText(), "Unsent attachment draft");
+    await pick("Files and folders", ["phone-photo.png"]);
+    await page.waitForFunction(() => [...document.images].some(image => image.src.startsWith("data:image/") && image.naturalWidth > 0));
+    await pick("Files and folders", ["phone-notes.txt"]);
+    await page.getByText("phone-notes.txt", { exact: true }).first().waitFor({ timeout: 5000 });
+    assert.equal(pickerRequests.length, 3);
+    assert.equal(await page.evaluate(() => window.__smokeDocumentId), identity);
+    assert.equal(outbound.filter(message => message.method === "turn/start").length, turns, "selecting attachments must not send a turn");
+    attachmentChecks.push({ cancelled: true, imageDecoded: true, fileAttached: true, noReload: true, noAutomaticSend: true });
+    const artifactDirectory = path.resolve(option("artifacts", path.join(repository, ".data/frontend-smoke")));
+    await mkdir(artifactDirectory, { recursive: true });
+    await page.screenshot({ path: path.join(artifactDirectory, "attachments.png"), fullPage: true });
+  }
+  async function checkSettingsReturn() {
+    const identity = await page.evaluate(() => window.__smokeDocumentId);
+    const readyCount = logs.filter(message => message.message?.startsWith("startup ")).length;
+    const turns = outbound.filter(message => ["turn/start", "turn/steer", "turn/interrupt"].includes(message.method)).length;
+    await page.evaluate(async () => {
+      const version = document.querySelector('meta[name="codex-extension-version"]').content;
+      const { navigation } = (await (await fetch("/host/adapters.json")).json()).versions[version];
+      const state = await import(new URL(navigation.state.bundle, document.baseURI).href);
+      window.__smokeRoute = () => state[navigation.state.contextExport]().scope.get(state[navigation.state.locationExport]);
+      // Simulate an unsaved settings section without writing remote config.
+      const dirty = state[version === "26.1007.21434" ? "BZ" : "oZ"];
+      const scope = state[navigation.state.contextExport]().scope;
+      window.__smokeSetDirty = value => scope.set(dirty, value);
+      window.__smokePreviousDirty = scope.get(dirty);
+    });
+    const composer = page.locator('[contenteditable="true"]').first();
+    await composer.pressSequentially("Unsent settings return draft");
+    await page.waitForTimeout(750);
+    const source = await page.evaluate(() => { const { pathname, search, hash, state } = window.__smokeRoute(); return { pathname, search, hash, state }; });
+    await page.evaluate(() => window.postMessage({ type: "navigate-to-route", path: "/settings/agent" }, location.origin));
+    await page.waitForFunction(() => window.__smokeInSettings === true);
+    await page.getByRole("button", { name: "General", exact: true }).click();
+    await page.waitForFunction(() => window.__smokeRoute().pathname !== "/settings/agent");
+    await page.evaluate(() => window.__smokeSetDirty(new Set(["smoke-unsaved-section"])));
+    let confirmations = 0;
+    const cancel = page.waitForEvent("dialog").then(async dialog => { confirmations++; await dialog.dismiss(); });
+    await Promise.all([cancel, page.evaluate(() => window.codexRemoteReceive({ type: "exit-settings" }))]);
+    assert.equal(await page.evaluate(() => window.__smokeInSettings), true, "Cancel must keep settings open");
+    const accept = page.waitForEvent("dialog").then(async dialog => { confirmations++; await dialog.accept(); });
+    await Promise.all([accept, page.evaluate(() => window.codexRemoteReceive({ type: "exit-settings" }))]);
+    await page.waitForFunction(() => window.__smokeInSettings === false);
+    await composer.waitFor();
+    await page.waitForFunction(() => document.querySelector('[contenteditable="true"]')?.textContent?.includes("Unsent settings return draft"), null, { timeout: 5000 });
+    assert.deepEqual(await page.evaluate(() => { const { pathname, search, hash, state } = window.__smokeRoute(); return { pathname, search, hash, state }; }), source);
+    assert.equal(await composer.innerText(), "Unsent settings return draft");
+    assert.equal(await page.evaluate(() => window.__smokeDocumentId), identity);
+    assert.equal(logs.filter(message => message.message?.startsWith("startup ")).length, readyCount);
+    assert.equal(outbound.filter(message => ["turn/start", "turn/steer", "turn/interrupt"].includes(message.method)).length, turns);
+    assert.equal(confirmations, 2, "The official leave guard must run for cancel and accept");
+    await page.evaluate(() => window.__smokeSetDirty(window.__smokePreviousDirty));
+    await composer.fill("");
+    settingsReturnChecks.push({ source, draftPreserved: true, documentPreserved: true, confirmations });
+  }
+  if (args.includes("--settings-return")) await checkSettingsReturn();
+  if (args.includes("--model-settings")) {
+    const openSettings = async () => {
+      await page.evaluate(() => window.postMessage({ type: "navigate-to-route", path: "/settings/agent" }, location.origin));
+      await page.getByText("Available reasoning efforts", { exact: true }).waitFor();
+      await page.getByRole("button", { name: /^\d+ selected$/ }).click();
+    };
+    await openSettings();
+    const max = page.getByRole("menuitemcheckbox", { name: "Max", exact: true });
+    const ultra = page.getByRole("menuitemcheckbox", { name: "Ultra", exact: true });
+    assert.equal(await ultra.getAttribute("aria-checked"), "true");
+    assert.equal(await max.getAttribute("aria-checked"), "false");
+    await max.click();
+    await page.keyboard.press("Escape");
+    const enabled = await page.evaluate(() => JSON.parse(Object.entries(localStorage).find(([key]) => key.endsWith("settings:enabled-reasoning-efforts"))[1]));
+    assert.ok(enabled.includes("max") && enabled.includes("ultra"));
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.locator('[contenteditable="true"]').first().waitFor();
+    await openSettings();
+    assert.equal(await max.getAttribute("aria-checked"), "true", "Model preferences must survive reload");
+    assert.equal(await ultra.getAttribute("aria-checked"), "true");
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => window.postMessage({ type: "navigate-to-route", path: "/" }, location.origin));
+    await page.locator('[contenteditable="true"]').first().waitFor();
+  }
   if (option("open", "")) {
     await page.getByText(option("open"), { exact: true }).first().click();
     await page.waitForTimeout(5000);
@@ -168,8 +280,42 @@ try {
     assert.ok(conversationLayout.viewportHeight - conversationLayout.composer.bottom <= 120, "Conversation composer must sit near the bottom, above the official footer");
     assert.ok(conversationLayout.composer.top >= conversationLayout.viewportHeight * 0.55, "A short conversation must leave its composer in the lower part of the viewport");
   }
-  const artifactDirectory = path.join(repository, ".data/frontend-smoke");
+  const artifactDirectory = path.resolve(option("artifacts", path.join(repository, ".data/frontend-smoke")));
+  if (args.includes("--settings-return") && option("send", "")) await checkSettingsReturn();
   await mkdir(artifactDirectory, { recursive: true });
+  const fontChecks = [];
+  if (args.includes("--fonts")) {
+    const composer = page.locator('[contenteditable="true"]').first();
+    const initialSize = await composer.evaluate(node => parseFloat(getComputedStyle(node).fontSize));
+    assert.ok(Math.abs(initialSize - 13 * Number(option("font-scale", "1"))) < 0.05, "Startup must preserve the font setting received before official UI readiness");
+    const identity = await page.evaluate(() => window.__smokeDocumentId);
+    const startups = logs.filter(message => message.message?.startsWith("startup ")).length;
+    const operations = outbound.filter(message => ["thread/resume", "turn/start", "turn/steer", "turn/interrupt"].includes(message.method)).length;
+    const previous = await composer.innerText();
+    await composer.fill("Unsent font size draft");
+    for (const scale of [0.85, 1, 1.3]) {
+      await page.evaluate(scale => window.codexRemoteReceive({ type: "font-scale", scale }), scale);
+      await page.waitForFunction(size => Math.abs(parseFloat(getComputedStyle(document.querySelector('[contenteditable="true"]')).fontSize) - size) < 0.05, 13 * scale);
+      const actual = await page.evaluate(() => ({
+        chat: getComputedStyle(document.querySelector('[contenteditable="true"]')).fontSize,
+        code: document.documentElement.style.getPropertyValue("--codex-chat-code-font-size-override"),
+        host: document.documentElement.style.getPropertyValue("--vscode-font-size"),
+      }));
+      assert.ok(Math.abs(parseFloat(actual.code) - 13 * scale) < 0.05);
+      assert.ok(Math.abs(parseFloat(actual.host) - 13 * scale) < 0.05);
+      assert.equal(await composer.innerText(), "Unsent font size draft");
+      assert.equal(await page.evaluate(() => window.__smokeDocumentId), identity);
+      fontChecks.push({ scale, ...actual });
+    }
+    assert.equal(logs.filter(message => message.message?.startsWith("startup ")).length, startups);
+    assert.equal(outbound.filter(message => ["thread/resume", "turn/start", "turn/steer", "turn/interrupt"].includes(message.method)).length, operations);
+    await page.evaluate(() => window.codexRemoteReceive({ type: "font-scale", scale: 1 }));
+    await page.waitForFunction(() => getComputedStyle(document.querySelector('[contenteditable="true"]')).fontSize === "13px");
+    // Let the official editor finish applying the new typography before the next edit.
+    await page.waitForTimeout(250);
+    await composer.fill(previous);
+    await page.waitForTimeout(750);
+  }
   const themeChecks = [];
   if (args.includes("--themes")) {
     const identity = await page.evaluate(() => window.__smokeDocumentId);
@@ -218,6 +364,14 @@ try {
     assert.ok(outbound.filter(message => message.method === "thread/resume").length > previousResumes, "Official recovery must resume the current thread");
     reconnectChecks = { duplicateConnectedTriggeredResume: false, recoveryPasses: 1, resumeRequests: outbound.filter(message => message.method === "thread/resume").length - previousResumes };
   }
+  if (attachmentDirectory && fixture) {
+    assert.ok(attachmentInput.some(item => item.type === "localImage" || item.type === "image"), "Official turn must include the selected photo");
+    assert.ok(JSON.stringify(attachmentInput).includes("phone-notes.txt"), "Official turn must reference the selected file");
+    await page.getByText("预览图片", { exact: true }).click();
+    await page.waitForTimeout(300);
+    assert.ok(attachmentChecks.some(check => check.opened === path.join(attachmentDirectory, "phone-photo.png")), "Preview links must call the native binary-aware viewer");
+    attachmentChecks.push({ sentImageAndFile: true, previewLinkOpened: true });
+  }
   const text = (await page.locator("body").innerText()).slice(0, 12000);
   if (fixture) {
     assert.ok(outbound.some(message => message.method === "turn/start"), "Official UI must send turn/start");
@@ -234,9 +388,9 @@ try {
   assert.deepEqual(logs.filter(message => message.type === "pageerror"), [], "Official UI must not have uncaught JavaScript errors");
   await page.screenshot({ path: path.join(artifactDirectory, "official-frontend.png"), fullPage: true });
   const theme = await page.evaluate(() => ({ className: document.body.className, color: getComputedStyle(document.body).color, background: getComputedStyle(document.body).backgroundColor, foregroundToken: getComputedStyle(document.body).getPropertyValue("--vscode-foreground") }));
-  report = { url: page.url(), fixture: fixture || null, theme, themeChecks, reconnectChecks, conversationLayout, text, createdThreads: [...createdThreads], outbound, logs: logs.slice(-100) };
+  report = { url: page.url(), fixture: fixture || null, theme, themeChecks, fontChecks, reconnectChecks, conversationLayout, settingsReturnChecks, attachmentChecks, text, createdThreads: [...createdThreads], outbound, logs: logs.slice(-100) };
 } catch (error) {
-  const artifactDirectory = path.join(repository, ".data/frontend-smoke");
+  const artifactDirectory = path.resolve(option("artifacts", path.join(repository, ".data/frontend-smoke")));
   await mkdir(artifactDirectory, { recursive: true });
   await writeFile(path.join(artifactDirectory, "failure.json"), JSON.stringify({ error: error.message, outbound, logs: logs.slice(-200), text: await page?.locator("body").innerText().catch(() => "") }, null, 2));
   throw error;
@@ -253,5 +407,6 @@ try {
   await browser.close();
   server.close();
   child.kill("SIGTERM");
+  if (attachmentDirectory) await rm(attachmentDirectory, { recursive: true, force: true });
 }
 console.log(JSON.stringify(report, null, 2));
