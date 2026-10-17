@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
@@ -99,6 +100,7 @@ fun GatewayForm(
             label = { Text("网关地址") },
             placeholder = { Text("https://gateway.example.com") },
             singleLine = true,
+            enabled = !loading,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
         )
         OutlinedTextField(
@@ -107,9 +109,10 @@ fun GatewayForm(
             modifier = Modifier.fillMaxWidth(),
             label = { Text("访问令牌") },
             singleLine = true,
+            enabled = !loading,
             visualTransformation = if (revealToken) VisualTransformation.None else PasswordVisualTransformation(),
             trailingIcon = {
-                IconButton(onClick = { revealToken = !revealToken }) {
+                IconButton(onClick = { revealToken = !revealToken }, enabled = !loading) {
                     Icon(
                         if (revealToken) CodexIcons.VisibilityOff else CodexIcons.Visibility,
                         contentDescription = if (revealToken) "隐藏令牌" else "显示令牌",
@@ -127,7 +130,8 @@ fun GatewayForm(
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
             if (loading) {
-                CircularProgressIndicator(Modifier.height(20.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                Text("正在连接", Modifier.padding(start = 8.dp))
             } else {
                 Text(submitLabel)
             }

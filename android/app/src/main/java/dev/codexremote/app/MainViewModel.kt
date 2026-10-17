@@ -16,6 +16,7 @@ import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.model.AppState
+import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
 import dev.codexremote.app.model.GatewayConfig
 import dev.codexremote.app.model.MainSection
@@ -23,6 +24,9 @@ import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,10 +43,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val api get() = gatewayApi
     internal val officialFrontends = OfficialFrontendStore(application)
     private val terminalSessions = TerminalSessionManager(api)
-    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale))
+    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme))
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var activeOperations = 0
     private var configurationGeneration = 0
+    private var connectionJob: Job? = null
+    private var operationScope = newOperationScope()
 
     init {
         secretStore.load()?.let { config ->
@@ -56,33 +62,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun configureGateway(address: String, token: String) {
-        configurationGeneration += 1
+        if (_state.value.connecting) return
         val generation = configurationGeneration
-        launchOperation("正在连接 Gateway") {
-            val config = GatewayConfig(normalizeGatewayUrl(address), token.trim())
-            require(config.token.isNotBlank()) { "访问令牌不能为空" }
-            val meta = api.testConfiguration(config)
-            if (generation != configurationGeneration) return@launchOperation
-            terminalSessions.closeAll()
-            api.configure(config)
-            secretStore.save(config)
-            _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale) }
-            applyMeta(meta)
-            loadServicesAndSelect()
+        _state.update { it.copy(connecting = true, error = null) }
+        connectionJob = viewModelScope.launch {
+            try {
+                val config = GatewayConfig(normalizeGatewayUrl(address), token.trim())
+                require(config.token.isNotBlank()) { "访问令牌不能为空" }
+                val meta = api.testConfiguration(config)
+                if (generation != configurationGeneration) return@launch
+                secretStore.save(config)
+                configurationGeneration += 1
+                resetOperations()
+                terminalSessions.closeAll()
+                api.configure(config)
+                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, theme = it.theme) }
+                applyMeta(meta)
+                launchOperation("正在刷新服务") { loadServicesAndSelect() }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (generation == configurationGeneration) _state.update { it.copy(error = error.message ?: error.toString()) }
+            } finally {
+                if (generation == configurationGeneration) _state.update { it.copy(connecting = false) }
+            }
         }
     }
 
     fun clearGateway() {
         configurationGeneration += 1
+        connectionJob?.cancel()
+        resetOperations()
         terminalSessions.closeAll()
         api.clear()
         secretStore.clear()
-        _state.value = AppState(fontScale = uiPreferences.fontScale)
+        _state.value = AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme)
     }
 
     fun setSection(section: MainSection) { _state.update { it.copy(section = section) } }
     fun clearError() { _state.update { it.copy(error = null) } }
     fun updateFontScale(value: Float) { _state.update { it.copy(fontScale = uiPreferences.setFontScale(value)) } }
+    fun setTheme(value: AppTheme) {
+        uiPreferences.setTheme(value)
+        _state.update { it.copy(theme = value) }
+    }
 
     fun refreshServices() { launchOperation("正在刷新服务") { loadServicesAndSelect() } }
 
@@ -246,7 +269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun launchOperation(label: String, block: suspend () -> Unit) {
         val generation = configurationGeneration
-        viewModelScope.launch {
+        operationScope.launch {
             activeOperations += 1
             _state.update { it.copy(loading = true, operation = label, error = null) }
             try { block() }
@@ -254,11 +277,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             catch (error: Exception) {
                 if (generation == configurationGeneration) _state.update { it.copy(error = error.message ?: error.toString()) }
             } finally {
-                activeOperations = (activeOperations - 1).coerceAtLeast(0)
-                _state.update { it.copy(loading = activeOperations > 0, operation = if (activeOperations > 0) it.operation else null) }
+                if (generation == configurationGeneration) {
+                    activeOperations = (activeOperations - 1).coerceAtLeast(0)
+                    _state.update { it.copy(loading = activeOperations > 0, operation = if (activeOperations > 0) it.operation else null) }
+                }
             }
         }
     }
+
+    private fun resetOperations() {
+        operationScope.coroutineContext[Job]?.cancel()
+        operationScope = newOperationScope()
+        activeOperations = 0
+    }
+
+    private fun newOperationScope() = CoroutineScope(
+        viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]),
+    )
 }
 
 private fun normalizeGatewayUrl(value: String): String {

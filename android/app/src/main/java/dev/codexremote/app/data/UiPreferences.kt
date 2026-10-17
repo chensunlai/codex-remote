@@ -2,6 +2,7 @@ package dev.codexremote.app.data
 
 import android.content.Context
 import androidx.core.content.edit
+import dev.codexremote.app.model.AppTheme
 import kotlin.math.roundToInt
 
 class UiPreferences(context: Context) {
@@ -9,6 +10,13 @@ class UiPreferences(context: Context) {
 
     val fontScale: Float
         get() = normalize(preferences.getFloat(FONT_SCALE, DEFAULT_FONT_SCALE))
+
+    val theme: AppTheme
+        get() = AppTheme.entries.firstOrNull { it.id == preferences.getString(THEME, null) } ?: AppTheme.DARK
+
+    fun setTheme(value: AppTheme) {
+        preferences.edit { putString(THEME, value.id) }
+    }
 
     fun setFontScale(value: Float): Float {
         val normalized = normalize(value)
@@ -30,5 +38,6 @@ class UiPreferences(context: Context) {
 
         private const val PREFERENCES = "ui_preferences"
         private const val FONT_SCALE = "font_scale"
+        private const val THEME = "theme"
     }
 }

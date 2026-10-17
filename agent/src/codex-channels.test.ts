@@ -56,6 +56,13 @@ if (args[0] === "update") {
     else if (message.method === "initialized") {}
     else if (message.method === "test.echo") send({ id: message.id, result: message, extra: "preserved" });
     else if (message.method === "test.fail") send({ id: message.id, error: { code: -32010, message: "original", data: { nested: true } }, extra: 123 });
+    else if (message.method === "thread/resume") {
+      const threadId = message.params.threadId;
+      if (threadId === "external-writer") send({ id: message.id, error: {
+        code: -32600, message: "thread external-writer already has an active writer", data: { threadId }
+      } });
+      else send({ id: message.id, result: { thread: { id: threadId, status: { type: "idle" } } } });
+    }
     else if (message.method === "test.never") {}
     else if (message.method === "process/spawn") {
       const handle = message.params.processHandle;
@@ -90,6 +97,72 @@ if (args[0] === "update") {
 }
 
 describe("Agent-owned raw Codex channels", () => {
+  it("preserves an external writer conflict without retrying or taking over the thread", async () => {
+    const f = await fixture();
+    const ready = await f.attach();
+    await f.send(ready, { id: "resume", method: "thread/resume", params: { threadId: "external-writer" } });
+    await eventually(() => f.rpc().some((message) => message.id === "resume"));
+    expect(f.rpc().find((message) => message.id === "resume")).toEqual({
+      id: "resume",
+      error: { code: -32600, message: "thread external-writer already has an active writer",
+        data: { threadId: "external-writer" } },
+    });
+    const restored = await f.attach("session-1", { epoch: ready.epoch, sequence: 0 });
+    expect(restored.epoch).toBe(ready.epoch);
+    expect(f.channels.status()).toEqual([{ channelId: "channel", version: "1.0.0", active: false, pendingRequests: 0 }]);
+    const requests = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(requests.map((message) => message.method)).toEqual(["initialize", "initialized", "thread/resume"]);
+  });
+
+  it("reuses the same app-server when a new page session resumes an already loaded thread", async () => {
+    const f = await fixture();
+    const first = await f.attach();
+    const resume = { id: 1, method: "thread/resume", params: { threadId: "owned-thread" } };
+    await f.send(first, resume);
+    await eventually(() => f.rpc().some((message) => message.id === 1));
+    f.channels.detach({ channelId: "channel", sessionId: "session-1" });
+    const second = await f.attach("session-2");
+    expect(second.epoch).toBe(first.epoch);
+    expect(second.resyncRequired).toBe(true);
+    await f.send(second, resume, "session-2");
+    await eventually(() => f.rpc().filter((message) => message.id === 1).length === 2);
+    expect(f.rpc().filter((message) => message.id === 1)).toEqual([
+      { id: 1, result: { thread: { id: "owned-thread", status: { type: "idle" } } } },
+      { id: 1, result: { thread: { id: "owned-thread", status: { type: "idle" } } } },
+    ]);
+    const requests = (await readFile(f.log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(requests.filter((message) => message.method === "initialize")).toHaveLength(1);
+    expect(requests.filter((message) => message.method === "thread/resume")).toHaveLength(2);
+  });
+
+  it("reclaims only the detached idle channel while another channel retains its turn and approval", async () => {
+    const f = await fixture({ idleMs: 25 });
+    const idle = await f.attach();
+    await f.send(idle, { id: 1, method: "thread/resume", params: { threadId: "idle-thread" } });
+    await eventually(() => f.rpc().some((message) => message.id === 1));
+    const active = await f.channels.attach({ channelId: "active", sessionId: "active-page" }) as Ready;
+    const sendActive = (messageId: string, message: RawRpc) => f.channels.send({ channelId: "active",
+      sessionId: "active-page", epoch: active.epoch, messageId, message });
+    const approval = { id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: "active-thread" } };
+    await sendActive("turn", { id: 2, method: "turn/start", params: { threadId: "active-thread" } });
+    await sendActive("approval", { id: 3, method: "test.emit", params: approval });
+    await eventually(() => f.channels.status().some((channel) => channel.pendingRequests === 1));
+    f.channels.disconnected();
+    await eventually(() => f.channels.status().length === 1);
+    expect(f.channels.status()).toEqual([{ channelId: "active", version: "1.0.0", active: true, pendingRequests: 1 }]);
+    const restoredActive = await f.channels.attach({ channelId: "active", sessionId: "active-page",
+      epoch: active.epoch, afterSequence: 0 }) as Ready;
+    expect(restoredActive.epoch).toBe(active.epoch);
+    expect(restoredActive.pendingRequests).toEqual([approval]);
+    const restoredIdle = await f.attach("session-1", { epoch: idle.epoch, sequence: 0 });
+    expect(restoredIdle.epoch).not.toBe(idle.epoch);
+    expect(restoredIdle.resyncRequired).toBe(true);
+    await sendActive("still-running", { id: 4, method: "test.echo" });
+    await eventually(() => f.rpc().some((message) => message.id === 4));
+    expect(f.channels.status().find((channel) => channel.channelId === "active"))
+      .toMatchObject({ active: true, pendingRequests: 1 });
+  });
+
   it("keeps process/spawn handles alive offline and requires restart confirmation until process/exited", async () => {
     const f = await fixture({ idleMs: 25 });
     const ready = await f.attach();

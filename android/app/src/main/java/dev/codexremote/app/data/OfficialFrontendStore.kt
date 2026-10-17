@@ -29,6 +29,18 @@ import java.util.zip.GZIPInputStream
 
 data class OfficialFrontend(val version: String, val directory: File, val slot: String)
 data class OfficialVersion(val version: String, val downloadUrl: String, val preRelease: Boolean)
+enum class FrontendInstallStage { CONNECTING, DOWNLOADING, EXTRACTING, VERIFYING }
+data class FrontendInstallProgress(
+    val version: String,
+    val stage: FrontendInstallStage,
+    val downloadedBytes: Long = 0,
+    val totalBytes: Long? = null,
+    val bytesPerSecond: Double = 0.0,
+) {
+    val fraction: Float? get() = totalBytes?.takeIf { it > 0 }?.let {
+        (downloadedBytes.toDouble() / it).coerceIn(0.0, 1.0).toFloat()
+    }
+}
 
 /** Two shared slots. Official resources stay outside the APK and are never edited. */
 class OfficialFrontendStore(private val context: Context) {
@@ -101,7 +113,7 @@ class OfficialFrontendStore(private val context: Context) {
         }
     }
 
-    suspend fun install(slot: String, version: OfficialVersion, progress: (String) -> Unit): OfficialFrontend =
+    suspend fun install(slot: String, version: OfficialVersion, progress: (FrontendInstallProgress) -> Unit): OfficialFrontend =
         downloadLock.withLock {
             withContext(Dispatchers.IO) {
                 requireSlot(slot)
@@ -110,70 +122,108 @@ class OfficialFrontendStore(private val context: Context) {
                 val versionsRoot = File(root, "versions").apply { mkdirs() }
                 val existing = File(versionsRoot, version.version)
                 if (File(existing, "frontend.json").isFile && File(existing, "index.html").isFile) {
-                    preferences.edit(commit = true) { putString("slot-$slot", version.version) }
+                    commitSlot(slot, version.version)
                     pruneVersions(versionsRoot)
                     return@withContext OfficialFrontend(version.version, existing, slot)
                 }
                 root.mkdirs()
                 val staging = File(root, ".install-${UUID.randomUUID()}").apply { mkdirs() }
+                val downloaded = File(root, ".download-${UUID.randomUUID()}.vsix")
                 try {
                     val url = java.net.URI(version.downloadUrl)
                     require(url.scheme == "https" && (url.host == "marketplace.visualstudio.com" ||
                         url.host.endsWith(".vsassets.io"))) { "非官方插件下载地址" }
-                    progress("正在下载 ${version.version}")
-                    val request = Request.Builder().url(version.downloadUrl).build()
+                    progress(FrontendInstallProgress(version.version, FrontendInstallStage.CONNECTING))
+                    // Count wire bytes against Content-Length. Decode gzip ourselves after downloading.
+                    val request = Request.Builder().url(version.downloadUrl).header("Accept-Encoding", "gzip").build()
+                    var downloadProgress = FrontendInstallProgress(version.version, FrontendInstallStage.DOWNLOADING)
                     withCall(request) { response ->
                         check(response.isSuccessful) { "插件下载失败：HTTP ${response.code}" }
+                        val total = response.body.contentLength().takeIf { it >= 0 }
+                        check(total == null || total <= 1024L * 1024 * 1024) { "插件包超过 1 GiB" }
+                        val started = System.nanoTime()
+                        var lastReported = 0L
+                        var received = 0L
+                        downloadProgress = downloadProgress.copy(totalBytes = total)
+                        progress(downloadProgress)
+                        response.body.byteStream().use { input ->
+                            downloaded.outputStream().buffered().use { output ->
+                                val buffer = ByteArray(64 * 1024)
+                                while (true) {
+                                    currentCoroutineContext().ensureActive()
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    received += count
+                                    check(received <= 1024L * 1024 * 1024) { "插件包超过 1 GiB" }
+                                    output.write(buffer, 0, count)
+                                    val now = System.nanoTime()
+                                    if (now - lastReported >= 250_000_000) {
+                                        downloadProgress = downloadProgress.copy(downloadedBytes = received,
+                                            bytesPerSecond = received * 1_000_000_000.0 / (now - started).coerceAtLeast(1))
+                                        progress(downloadProgress)
+                                        lastReported = now
+                                    }
+                                }
+                            }
+                        }
+                        check(total == null || received == total) { "插件包下载不完整，请重试" }
+                        downloadProgress = downloadProgress.copy(downloadedBytes = received, totalBytes = total ?: received,
+                            bytesPerSecond = received * 1_000_000_000.0 / (System.nanoTime() - started).coerceAtLeast(1))
+                        progress(downloadProgress)
+                    }
+                    progress(downloadProgress.copy(stage = FrontendInstallStage.EXTRACTING))
+                    run {
                         val manifest = StringBuilder()
                         var extracted = 0L
-                        val source = PushbackInputStream(response.body.byteStream().buffered(), 2)
-                        val first = source.read()
-                        val second = source.read()
-                        if (second >= 0) source.unread(second)
-                        if (first >= 0) source.unread(first)
-                        val archive = if (first == 0x1f && second == 0x8b) GZIPInputStream(source) else source
-                        ZipInputStream(archive).use { zip ->
-                            while (true) {
-                                currentCoroutineContext().ensureActive()
-                                val entry = zip.nextEntry ?: break
-                                if (entry.name == "extension/package.json") {
-                                    val bytes = java.io.ByteArrayOutputStream()
-                                    val buffer = ByteArray(8192)
-                                    while (true) {
-                                        val count = zip.read(buffer)
-                                        if (count < 0) break
-                                        check(bytes.size() + count <= 1024 * 1024) { "插件清单超过大小限制" }
-                                        bytes.write(buffer, 0, count)
-                                    }
-                                    manifest.append(bytes.toString("UTF-8"))
-                                } else if (entry.name.startsWith("extension/webview/")) {
-                                    val relative = entry.name.removePrefix("extension/webview/")
-                                    if (relative.isBlank()) { zip.closeEntry(); continue }
-                                    val target = File(staging, relative).canonicalFile
-                                    require(target.path.startsWith(staging.canonicalPath + File.separator)) { "插件资源路径无效" }
-                                    if (entry.isDirectory) target.mkdirs() else {
-                                        target.parentFile?.mkdirs()
-                                        target.outputStream().buffered().use { output ->
-                                            val buffer = ByteArray(64 * 1024)
-                                            while (true) {
-                                                currentCoroutineContext().ensureActive()
-                                                val count = zip.read(buffer)
-                                                if (count < 0) break
-                                                extracted += count
-                                                check(extracted <= 1024L * 1024 * 1024) { "插件资源超过 1 GiB" }
-                                                output.write(buffer, 0, count)
+                        PushbackInputStream(downloaded.inputStream().buffered(), 2).use { source ->
+                            val first = source.read()
+                            val second = source.read()
+                            if (second >= 0) source.unread(second)
+                            if (first >= 0) source.unread(first)
+                            val archive = if (first == 0x1f && second == 0x8b) GZIPInputStream(source) else source
+                            ZipInputStream(archive).use { zip ->
+                                while (true) {
+                                    currentCoroutineContext().ensureActive()
+                                    val entry = zip.nextEntry ?: break
+                                    if (entry.name == "extension/package.json") {
+                                        val bytes = java.io.ByteArrayOutputStream()
+                                        val buffer = ByteArray(8192)
+                                        while (true) {
+                                            val count = zip.read(buffer)
+                                            if (count < 0) break
+                                            check(bytes.size() + count <= 1024 * 1024) { "插件清单超过大小限制" }
+                                            bytes.write(buffer, 0, count)
+                                        }
+                                        manifest.append(bytes.toString("UTF-8"))
+                                    } else if (entry.name.startsWith("extension/webview/")) {
+                                        val relative = entry.name.removePrefix("extension/webview/")
+                                        if (relative.isBlank()) { zip.closeEntry(); continue }
+                                        val target = File(staging, relative).canonicalFile
+                                        require(target.path.startsWith(staging.canonicalPath + File.separator)) { "插件资源路径无效" }
+                                        if (entry.isDirectory) target.mkdirs() else {
+                                            target.parentFile?.mkdirs()
+                                            target.outputStream().buffered().use { output ->
+                                                val buffer = ByteArray(64 * 1024)
+                                                while (true) {
+                                                    currentCoroutineContext().ensureActive()
+                                                    val count = zip.read(buffer)
+                                                    if (count < 0) break
+                                                    extracted += count
+                                                    check(extracted <= 1024L * 1024 * 1024) { "插件资源超过 1 GiB" }
+                                                    output.write(buffer, 0, count)
+                                                }
                                             }
                                         }
                                     }
+                                    zip.closeEntry()
                                 }
-                                zip.closeEntry()
                             }
                         }
                         val metadata = JSONObject(manifest.toString())
                         check(metadata.getString("publisher").equals("openai", true) && metadata.getString("name") == "chatgpt"
                             && metadata.getString("version") == version.version) { "插件包版本或发布者不匹配" }
                     }
-                    progress("正在校验官方前端")
+                    progress(downloadProgress.copy(stage = FrontendInstallStage.VERIFYING))
                     currentCoroutineContext().ensureActive()
                     check(File(staging, "index.html").isFile) { "插件缺少前端入口" }
                     val bundle = File(staging, binding.getString("bundle"))
@@ -182,10 +232,11 @@ class OfficialFrontendStore(private val context: Context) {
                     currentCoroutineContext().ensureActive()
                     val target = File(versionsRoot, version.version)
                     check(staging.renameTo(target)) { "无法保存官方前端" }
-                    preferences.edit(commit = true) { putString("slot-$slot", version.version) }
+                    commitSlot(slot, version.version)
                     pruneVersions(versionsRoot)
                     OfficialFrontend(version.version, target, slot)
                 } finally {
+                    downloaded.delete()
                     staging.deleteRecursively()
                 }
             }
@@ -202,6 +253,18 @@ class OfficialFrontendStore(private val context: Context) {
     }
 
     private fun requireSlot(slot: String) = require(slot == "latest" || slot == "specified")
+
+    private fun commitSlot(slot: String, version: String) {
+        val key = "slot-$slot"
+        val previous = preferences.getString(key, null)
+        if (!preferences.edit().putString(key, version).commit()) {
+            // A failed commit may already have changed the in-memory value.
+            preferences.edit().apply {
+                if (previous == null) remove(key) else putString(key, previous)
+            }.commit()
+            error("无法保存前端版本，请检查可用存储空间后重试")
+        }
+    }
 
     private fun pruneVersions(directory: File) {
         val referenced = listOfNotNull(preferences.getString("slot-latest", null), preferences.getString("slot-specified", null)).toSet()

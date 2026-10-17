@@ -2,7 +2,10 @@ package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -19,9 +22,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 class GatewayApi {
     private val client = OkHttpClient.Builder()
@@ -30,11 +36,15 @@ class GatewayApi {
         .writeTimeout(90, TimeUnit.SECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
         .build()
+    private val configurationClient = client.newBuilder()
+        .callTimeout(20, TimeUnit.SECONDS)
+        .build()
 
     @Volatile
     private var config: GatewayConfig? = null
 
     fun configure(value: GatewayConfig) {
+        client.dispatcher.cancelAll()
         config = value.copy(baseUrl = value.baseUrl.trimEnd('/'))
     }
 
@@ -45,16 +55,31 @@ class GatewayApi {
 
     suspend fun meta(): JSONObject = data(request("GET", "api/v1/meta")) as JSONObject
 
-    suspend fun testConfiguration(candidate: GatewayConfig): JSONObject = withContext(Dispatchers.IO) {
+    suspend fun testConfiguration(candidate: GatewayConfig): JSONObject = suspendCancellableCoroutine { continuation ->
         val target = candidate.baseUrl.ensureTrailingSlash().toHttpUrl().newBuilder()
             .addPathSegments("api/v1/meta").build()
         val request = Request.Builder().url(target)
             .header("Authorization", "Bearer " + candidate.token)
             .header("Accept", "application/json").build()
-        execute(request).use { response ->
-            ensureSuccess(response)
-            data(parseObject(response)) as JSONObject
-        }
+        val call = configurationClient.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                try {
+                    val result = response.use {
+                        ensureSuccess(it)
+                        data(parseObject(it)) as JSONObject
+                    }
+                    if (continuation.isActive) continuation.resume(result)
+                } catch (error: Exception) {
+                    if (continuation.isActive) continuation.resumeWithException(error)
+                }
+            }
+        })
     }
 
     suspend fun services(): JSONArray = data(request("GET", "api/v1/services")) as JSONArray

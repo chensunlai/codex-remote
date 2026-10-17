@@ -34,6 +34,7 @@ internal class OfficialChatSession(
     private val serviceName: String,
     private val onStatus: (String?) -> Unit,
     private val onOpenFile: (String, String) -> Unit,
+    private val onThreadConflict: (String?) -> Unit,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -51,9 +52,16 @@ internal class OfficialChatSession(
     private var attachedBefore = false
     private var closed = false
     private var reconnect: Runnable? = null
+    private var theme = "dark"
     val bridge = Bridge()
 
     fun attach(webView: WebView) { view = webView }
+
+    fun setTheme(value: String) {
+        if (theme == value) return
+        theme = value
+        if (ready) deliver(JSONObject().put("type", "theme").put("theme", theme))
+    }
 
     fun pageStarted() {
         generation += 1
@@ -97,13 +105,21 @@ internal class OfficialChatSession(
         when (message.optString("type")) {
             "ready" -> {
                 ready = true
+                deliver(JSONObject().put("type", "theme").put("theme", theme))
                 pageQueue.toList().also { pageQueue.clear() }.forEach(::deliver)
                 if (socket == null) connect()
             }
             "rpc", "notification" -> sendRpc(message.getJSONObject("request"))
             "response" -> sendRpc(message.getJSONObject("response"))
             "host-request" -> handleHostRequest(message)
-            "log" -> if (message.optString("level") == "error") onStatus(message.optString("message"))
+            "thread-conflict" -> {
+                onStatus(null)
+                onThreadConflict(message.optString("threadId").takeIf { it.isNotBlank() && it != "null" })
+            }
+            "log" -> if (message.optString("level") == "error") {
+                val detail = message.optString("message")
+                if (!detail.contains("active writer", ignoreCase = true) && !detail.contains("live local writer", ignoreCase = true)) onStatus(detail)
+            }
         }
     }
 

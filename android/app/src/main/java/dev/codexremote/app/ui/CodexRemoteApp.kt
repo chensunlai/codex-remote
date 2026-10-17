@@ -55,7 +55,7 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
     if (!state.configured) {
         GatewaySetupScreen(
             initial = state.gatewayConfig,
-            loading = state.loading,
+            loading = state.connecting,
             error = state.error,
             onSave = viewModel::configureGateway,
             onClearError = viewModel::clearError,

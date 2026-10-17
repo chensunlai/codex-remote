@@ -2,6 +2,8 @@ package dev.codexremote.app.model
 
 enum class MainSection { SERVICES, SESSIONS, TERMINAL, FILES, SETTINGS }
 
+enum class AppTheme(val id: String) { DARK("dark"), LIGHT("light"), ANTHROPIC("anthropic") }
+
 data class GatewayConfig(
     val baseUrl: String,
     val token: String,
@@ -43,7 +45,9 @@ data class AppState(
     val configured: Boolean = false,
     val gatewayConfig: GatewayConfig? = null,
     val fontScale: Float = 1f,
+    val theme: AppTheme = AppTheme.DARK,
     val section: MainSection = MainSection.SESSIONS,
+    val connecting: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null,
     val services: List<RemoteService> = emptyList(),

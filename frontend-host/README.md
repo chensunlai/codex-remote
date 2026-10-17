@@ -27,7 +27,7 @@ symlinks, checks the publisher and registered RPC bundle hash, and writes to
 
 Android serves the official WebView resources at its per-service HTTPS origin.
 It injects `shim.js` before official module scripts, `host.mjs` as a module, and
-`theme.css`. `app-server-inbox.mjs` and `adapters.json` must be served alongside
+`theme.css`. The host's `.mjs` helpers and `adapters.json` must be served alongside
 the host. The document base points at the official WebView resource root.
 Required metadata:
 
@@ -36,9 +36,13 @@ Required metadata:
 - `codex-build-flavor`: `prod`.
 - `codex-remote-storage-key`: stable remote service scope.
 
-Set `body.vscode-dark` or `body.vscode-light`. Theme variables live on the HTML
+Set HTML `data-codex-theme` to `dark`, `light`, or `anthropic`, plus the matching
+`body.vscode-dark`/`body.vscode-light` class and `data-vscode-theme-kind` attribute
+(Anthropic uses the official light mode). Theme variables live on the HTML
 root because official CSS references them there. Root startup route `/` is the
 official sidebar entry; it can take several seconds to initialize.
+The native WebView must fill its available viewport. The host sets HTML, body
+and the mount root to `height: 100%`; official components retain their layout.
 
 ## Native bridge
 
@@ -53,10 +57,12 @@ delivers objects to `window.codexRemoteReceive(message)`.
 | JS → Native | `{type:'response',response:{id,result or error}}` |
 | JS → Native | `{type:'host-request',id,method,params}` |
 | JS → Native | `{type:'log',level,message}` |
+| JS → Native | `{type:'thread-conflict',threadId,message,retryable:true}` |
 | Native → JS | `{type:'initialized',result,runningVersion,home,workspace?,serviceName}` |
 | Native → JS | `{type:'rpc-message',message}` |
 | Native → JS | `{type:'host-response',id,result or error}` |
 | Native → JS | `{type:'connection',state,message?}` |
+| Native → JS | `{type:'theme',theme:'dark' or 'light' or 'anthropic'}` |
 
 Agent owns app-server `initialize`/`initialized`. `result` is its raw initialize
 result; `home` is the remote user's home and `result.codexHome` is the configured
@@ -68,6 +74,16 @@ requests and notifications wait for official UI readiness;
 client responses flow immediately so bootstrap requests can finish. Native
 only emits `resync-required` for a live view whose replay cursor is lost. The
 host reloads in that case; a cold attach must not cause a reload loop.
+The first connected event is a snapshot; duplicate connected events do not
+restart official thread recovery. A genuine reconnect triggers recovery once.
+Writer conflicts preserve the original app-server error and notify Native for
+an explanatory dialog. The host never takes over, forks, or retries a request;
+official history loading can independently attempt resume again. Repeated
+conflicts for the same thread produce one Native warning until resume succeeds
+or the page is reopened. The existing writer must release the thread before a
+manual retry can succeed.
+Theme messages update CSS and the official theme attribute without reloading
+the page, changing the connection or submitting the current draft.
 
 Native host methods: `fs/read`, `fs/write`, `fs/list`, `fs/stat`, `fs/mkdir`,
 `clipboard/read`, `clipboard/write`, `open-url`, and `file/open`.
@@ -101,6 +117,12 @@ system authentication/configuration are not deliberately modified.
 `--reconnect` emits disconnected/connected host events after the reply and
 asserts that the official frontend requests `thread/resume`; this tests the
 frontend recovery path, not a physical Gateway disconnect.
+`--fixture resume-conflict --reconnect` checks writer-error propagation and
+duplicate-connection suppression using a fixture on its own test thread.
+`--themes` checks all three palettes and saves screenshots while preserving an
+unsent draft and the same browser document.
+Conversation fixtures also check root viewport height and the composer position;
+`--height 621` exercises a short mobile viewport.
 
 Current supported scope is remote local chat. Git workers, cloud tasks,
 GitHub integration, voice, desktop windows and VS Code commands are not

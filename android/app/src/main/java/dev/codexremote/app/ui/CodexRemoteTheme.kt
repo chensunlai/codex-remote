@@ -1,6 +1,5 @@
 package dev.codexremote.app.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -18,12 +17,13 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.codexremote.app.data.UiPreferences
+import dev.codexremote.app.model.AppTheme
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF242424),
+    primary = Color(0xFF006AB1),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFE8E8E8),
-    onPrimaryContainer = Color(0xFF242424),
+    primaryContainer = Color(0xFFD5EAF9),
+    onPrimaryContainer = Color(0xFF003653),
     secondary = Color(0xFF5F6368),
     onSecondary = Color.White,
     secondaryContainer = Color(0xFFEDEDED),
@@ -36,10 +36,10 @@ private val LightColors = lightColorScheme(
     onError = Color.White,
     errorContainer = Color(0xFFFFDAD6),
     onErrorContainer = Color(0xFF410002),
-    background = Color(0xFFFAFAFA),
-    onBackground = Color(0xFF202020),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF202020),
+    background = Color(0xFFFFFFFF),
+    onBackground = Color(0xFF333333),
+    surface = Color(0xFFF3F3F3),
+    onSurface = Color(0xFF333333),
     surfaceContainerLowest = Color(0xFFFFFFFF),
     surfaceContainerLow = Color(0xFFF7F7F7),
     surfaceContainer = Color(0xFFF2F2F2),
@@ -59,10 +59,10 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFE8E8E8),
-    onPrimary = Color(0xFF242424),
-    primaryContainer = Color(0xFF3A3A3A),
-    onPrimaryContainer = Color(0xFFF2F2F2),
+    primary = Color(0xFF3794FF),
+    onPrimary = Color(0xFF061E35),
+    primaryContainer = Color(0xFF143D5A),
+    onPrimaryContainer = Color(0xFFD5EAF9),
     secondary = Color(0xFFC9C9C9),
     onSecondary = Color(0xFF282828),
     secondaryContainer = Color(0xFF383838),
@@ -76,9 +76,9 @@ private val DarkColors = darkColorScheme(
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Color(0xFFFFDAD6),
     background = Color(0xFF1E1E1E),
-    onBackground = Color(0xFFE8E8E8),
-    surface = Color(0xFF1E1E1E),
-    onSurface = Color(0xFFE8E8E8),
+    onBackground = Color(0xFFD4D4D4),
+    surface = Color(0xFF252526),
+    onSurface = Color(0xFFD4D4D4),
     surfaceContainerLowest = Color(0xFF181818),
     surfaceContainerLow = Color(0xFF242424),
     surfaceContainer = Color(0xFF292929),
@@ -94,6 +94,45 @@ private val DarkColors = darkColorScheme(
     inversePrimary = Color(0xFF242424),
     outline = Color(0xFF969696),
     outlineVariant = Color(0xFF505050),
+    scrim = Color.Black,
+)
+
+private val AnthropicColors = lightColorScheme(
+    primary = Color(0xFFC96442),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFF6DED3),
+    onPrimaryContainer = Color(0xFF672B16),
+    secondary = Color(0xFF6B665C),
+    onSecondary = Color.White,
+    secondaryContainer = Color(0xFFE8E3D7),
+    onSecondaryContainer = Color(0xFF3D382E),
+    tertiary = Color(0xFF7A7048),
+    onTertiary = Color.White,
+    tertiaryContainer = Color(0xFFF0E6C7),
+    onTertiaryContainer = Color(0xFF403719),
+    error = Color(0xFFB53B31),
+    onError = Color.White,
+    errorContainer = Color(0xFFF9DDD7),
+    onErrorContainer = Color(0xFF6C1F18),
+    background = Color(0xFFFAF9F5),
+    onBackground = Color(0xFF302F2B),
+    surface = Color(0xFFF0EEE6),
+    onSurface = Color(0xFF302F2B),
+    surfaceContainerLowest = Color(0xFFFFFFFF),
+    surfaceContainerLow = Color(0xFFF6F4ED),
+    surfaceContainer = Color(0xFFF0EEE6),
+    surfaceContainerHigh = Color(0xFFEAE7DD),
+    surfaceContainerHighest = Color(0xFFE3DFD3),
+    surfaceVariant = Color(0xFFE8E4D9),
+    onSurfaceVariant = Color(0xFF6B665C),
+    surfaceTint = Color.Transparent,
+    surfaceBright = Color(0xFFFAF9F5),
+    surfaceDim = Color(0xFFE3DFD3),
+    inverseSurface = Color(0xFF302F2B),
+    inverseOnSurface = Color(0xFFFAF9F5),
+    inversePrimary = Color(0xFFE8A389),
+    outline = Color(0xFF888276),
+    outlineVariant = Color(0xFFD9D5C9),
     scrim = Color.Black,
 )
 
@@ -129,11 +168,15 @@ val MonoTextStyle: TextStyle
     @Composable get() = BaseMonoTextStyle.scaled(LocalAppFontScale.current)
 
 @Composable
-fun CodexRemoteTheme(fontScale: Float = 1f, content: @Composable () -> Unit) {
+fun CodexRemoteTheme(fontScale: Float = 1f, theme: AppTheme = AppTheme.DARK, content: @Composable () -> Unit) {
     val scale = fontScale.coerceIn(UiPreferences.MIN_FONT_SCALE, UiPreferences.MAX_FONT_SCALE)
     CompositionLocalProvider(LocalAppFontScale provides scale) {
         MaterialTheme(
-            colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+            colorScheme = when (theme) {
+                AppTheme.DARK -> DarkColors
+                AppTheme.LIGHT -> LightColors
+                AppTheme.ANTHROPIC -> AnthropicColors
+            },
             typography = AppTypography.scaled(scale),
             shapes = AppShapes,
             content = content,

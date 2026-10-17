@@ -3,7 +3,7 @@
 package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
-import android.graphics.Color
+import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.MimeTypeMap
 import android.webkit.WebChromeClient
@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -30,6 +31,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -44,9 +46,11 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -55,13 +59,18 @@ import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.OfficialChatSession
 import dev.codexremote.app.data.OfficialFrontend
 import dev.codexremote.app.data.OfficialVersion
+import dev.codexremote.app.data.FrontendInstallProgress
+import dev.codexremote.app.data.FrontendInstallStage
 import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.objects
 import dev.codexremote.app.model.AppState
+import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.RuntimeState
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -87,24 +96,36 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
     var choices by remember { mutableStateOf<List<OfficialVersion>?>(null) }
     var workspace by remember(scopeKey) { mutableStateOf(store.workspace(scopeKey, service.home ?: "/")) }
     var chooseWorkspace by remember { mutableStateOf(false) }
+    var installProgress by remember(scopeKey) { mutableStateOf<FrontendInstallProgress?>(null) }
+    var installJob by remember(scopeKey) { mutableStateOf<Job?>(null) }
 
     fun install(slot: String, version: OfficialVersion? = null) {
         if (loading) return
         loading = true
         error = null
+        status = null
         frontend = null
-        jobs.launch {
-            runCatching {
+        installProgress = null
+        installJob = jobs.launch {
+            try {
                 val selected = version ?: store.versions().firstOrNull { !it.preRelease }
                     ?: error("官方暂无可用稳定版本")
-                store.install(slot, selected) { progress -> jobs.launch { status = progress } }
-            }.onSuccess {
+                val installed = store.install(slot, selected) { progress -> jobs.launch { if (loading) installProgress = progress } }
                 store.setMode(scopeKey, slot)
                 mode = slot
-                frontend = it
+                frontend = installed
                 status = null
-            }.onFailure { error = it.message; frontend = store.cached(mode) }
-            loading = false
+            } catch (cancelled: CancellationException) {
+                frontend = store.cached(mode)
+                throw cancelled
+            } catch (failure: Exception) {
+                error = failure.message
+                frontend = store.cached(mode)
+            } finally {
+                loading = false
+                installProgress = null
+                installJob = null
+            }
         }
     }
 
@@ -168,12 +189,12 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
             if (loading) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                FrontendDownloadPane(installProgress, onCancel = { installJob?.cancel() }, canCancel = installJob != null)
             } else {
                 frontend?.let { bundle ->
                     key(scopeKey, bundle.version, bundle.slot, workspace) {
                         OfficialWebView(bundle, scopeKey, store.clientId(scopeKey), service.id,
-                            service.home ?: "/", workspace, service.name, viewModel, { status = it }, Modifier.weight(1f))
+                            service.home ?: "/", workspace, service.name, state.theme, viewModel, { status = it }, Modifier.weight(1f))
                     }
                 } ?: Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("选择官方前端版本后打开会话。")
@@ -207,6 +228,40 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel) {
     }
 }
 
+@Composable
+private fun FrontendDownloadPane(progress: FrontendInstallProgress?, onCancel: () -> Unit, canCancel: Boolean) {
+    Column(Modifier.fillMaxWidth().padding(28.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        val stage = when (progress?.stage) {
+            FrontendInstallStage.CONNECTING -> "正在连接官方插件下载源"
+            FrontendInstallStage.DOWNLOADING -> "正在下载官方前端"
+            FrontendInstallStage.EXTRACTING -> "正在解压官方前端"
+            FrontendInstallStage.VERIFYING -> "正在校验官方前端"
+            null -> "正在查询官方版本"
+        }
+        Text(stage, style = MaterialTheme.typography.titleMedium)
+        progress?.let { Text(it.version, style = MaterialTheme.typography.bodyMedium) }
+        val fraction = progress?.takeIf { it.stage == FrontendInstallStage.DOWNLOADING }?.fraction
+        if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        else {
+            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+            Text("${(fraction * 100).toInt()}%", style = MaterialTheme.typography.labelLarge)
+        }
+        if (progress != null && progress.stage != FrontendInstallStage.CONNECTING) {
+            Text("${transferSize(progress.downloadedBytes)} / ${progress.totalBytes?.let(::transferSize) ?: "总大小未知"}")
+            if (progress.stage == FrontendInstallStage.DOWNLOADING) Text("${transferSize(progress.bytesPerSecond.toLong())}/s", style = MaterialTheme.typography.bodyMedium)
+        }
+        if (canCancel) TextButton(onClick = onCancel) { Text("取消下载") }
+    }
+}
+
+private fun transferSize(bytes: Long): String {
+    val units = arrayOf("B", "KiB", "MiB", "GiB")
+    var value = bytes.toDouble()
+    var unit = 0
+    while (value >= 1024 && unit < units.lastIndex) { value /= 1024; unit += 1 }
+    return if (unit == 0) "$bytes B" else java.lang.String.format(java.util.Locale.getDefault(), "%.1f %s", value, units[unit])
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun OfficialWebView(
@@ -217,14 +272,18 @@ private fun OfficialWebView(
     home: String,
     workspace: String,
     serviceName: String,
+    theme: AppTheme,
     viewModel: MainViewModel,
     onStatus: (String?) -> Unit,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
+    val currentTheme by rememberUpdatedState(theme)
+    val background = MaterialTheme.colorScheme.background.toArgb()
     var preview by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var conflict by remember { mutableStateOf(false) }
     val session = remember { OfficialChatSession(context.applicationContext, viewModel.gatewayApi, serviceId, clientId,
-        home, workspace, serviceName, onStatus, { path, content -> preview = path to content }) }
+        home, workspace, serviceName, onStatus, { path, content -> preview = path to content }, { conflict = true }) }
     val pageId = remember { UUID.randomUUID().toString() }
     val originHost = "s$scope.codex-remote.invalid"
     var browser by remember { mutableStateOf<WebView?>(null) }
@@ -237,10 +296,12 @@ private fun OfficialWebView(
             viewModel.officialFrontends.release(frontend)
         }
     }
-    AndroidView(modifier = modifier.fillMaxWidth(), factory = {
+    AndroidView(modifier = modifier.fillMaxSize(), factory = {
         WebView(context).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             browser = this
-            setBackgroundColor(Color.rgb(20, 20, 20))
+            setBackgroundColor(background)
+            session.setTheme(theme.id)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
@@ -290,7 +351,8 @@ private fun OfficialWebView(
                                 ByteArrayInputStream(html.replace("<!-- PROD_BASE_TAG_HERE -->", "<base href=\"https://$originHost/\">")
                                     .replace("<!-- PROD_CSP_TAG_HERE -->", "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob: data:; object-src 'none'; frame-src 'none'\">")
                                     .replace("<head>", "<head>$injection")
-                                    .replace("<body>", "<body class=\"vscode-dark\">").toByteArray())
+                                    .replace("<html", "<html data-codex-theme=\"${currentTheme.id}\"")
+                                    .replace("<body>", "<body class=\"${if (currentTheme == AppTheme.DARK) "vscode-dark" else "vscode-light"}\" data-vscode-theme-kind=\"${if (currentTheme == AppTheme.DARK) "vscode-dark" else "vscode-light"}\">").toByteArray())
                             }
                             else -> {
                                 val file = File(frontend.directory, path).canonicalFile
@@ -307,7 +369,17 @@ private fun OfficialWebView(
             session.attach(this)
             loadUrl("https://$originHost/")
         }
+    }, update = { browser ->
+        browser.setBackgroundColor(background)
+        session.setTheme(theme.id)
     })
+    if (conflict) AlertDialog(
+        onDismissRequest = { conflict = false },
+        title = { Text("会话正在被占用") },
+        text = { Text("另一个 Codex 实例仍持有此会话的写入权。请先在电脑端释放该会话，必要时退出持有它的 Codex 实例，再重新打开。任务完成并不一定会释放占用。") },
+        confirmButton = { TextButton(onClick = { conflict = false; browser?.reload() }) { Text("释放后重新打开") } },
+        dismissButton = { TextButton(onClick = { conflict = false }) { Text("关闭") } },
+    )
     preview?.let { (path, content) ->
         AlertDialog(onDismissRequest = { preview = null }, title = { Text(path.substringAfterLast('/')) },
             text = { SelectionContainer { Text(content, modifier = Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()), style = MonoTextStyle) } },

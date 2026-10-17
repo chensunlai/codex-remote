@@ -17,6 +17,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -26,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.model.AppState
+import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.MainSection
 import kotlin.math.roundToInt
 
@@ -51,7 +55,7 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                 Spacer(Modifier.height(14.dp))
                 GatewayForm(
                     initial = state.gatewayConfig,
-                    loading = state.loading,
+                    loading = state.connecting,
                     error = null,
                     showBrand = false,
                     submitLabel = "保存并测试",
@@ -59,6 +63,24 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                 )
                 Spacer(Modifier.height(28.dp))
                 HorizontalDivider()
+                Spacer(Modifier.height(20.dp))
+                Text("主题")
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    AppTheme.entries.forEachIndexed { index, theme ->
+                        SegmentedButton(
+                            selected = state.theme == theme,
+                            onClick = { viewModel.setTheme(theme) },
+                            shape = SegmentedButtonDefaults.itemShape(index, AppTheme.entries.size),
+                        ) {
+                            Text(when (theme) {
+                                AppTheme.DARK -> "黑色"
+                                AppTheme.LIGHT -> "白色"
+                                AppTheme.ANTHROPIC -> "Anthropic"
+                            })
+                        }
+                    }
+                }
                 Spacer(Modifier.height(20.dp))
                 Row(
                     Modifier.fillMaxWidth(),

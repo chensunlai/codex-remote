@@ -1,4 +1,6 @@
 import { createAppServerInbox } from "./app-server-inbox.mjs";
+import { createConnectionTracker, createThreadConflictObserver } from "./app-server-state.mjs";
+import { applyTheme } from "./theme.mjs";
 
 const version = document.querySelector('meta[name="codex-extension-version"]')?.content;
 const scope = window.__codexRemoteStorageKey || document.querySelector('meta[name="codex-remote-storage-key"]')?.content || location.host;
@@ -12,9 +14,12 @@ let initialized;
 let pageReady = false;
 let sequence = 0;
 const appServerInbox = createAppServerInbox({ isReady: () => pageReady && !!initialized, dispatch: receiveRpc });
+const connectionTracker = createConnectionTracker();
+const threadConflicts = createThreadConflictObserver(send);
 
 function send(message) {
   if (!window.CodexRemoteHost?.postMessage) throw new Error("Android host bridge is unavailable");
+  if (message.type === "rpc") threadConflicts.request(message.request);
   window.CodexRemoteHost.postMessage(JSON.stringify(message));
 }
 function log(level, message) { send({ type: "log", level, message }); }
@@ -54,13 +59,19 @@ function initialMessages() {
   deliver({ type: "persisted-atom-sync", state: load("atoms", {}) });
   deliver({ type: "chat-font-settings", chatFontSize: null, chatCodeFontSize: null });
   deliver({ type: "request-user-input-auto-resolution-snapshot", hostId: "local", pendingRequests: [] });
+  const connection = connectionTracker.snapshot();
+  if (connection) deliverConnection(connection);
   appServerInbox.flush();
+}
+function deliverConnection(connection) {
+  deliver({ type: "codex-app-server-connection-changed", hostId: "local", transport: "websocket", progress: null, ...connection });
 }
 function receiveRpc(message) {
   if (message.method) {
     if (message.id !== undefined) deliver({ type: "mcp-request", hostId: "local", request: message });
     else deliver({ type: "mcp-notification", hostId: "local", method: message.method, params: message.params });
   } else {
+    threadConflicts.response(message);
     const pending = rpcPending.get(message.id);
     if (pending) {
       rpcPending.delete(message.id);
@@ -70,7 +81,8 @@ function receiveRpc(message) {
   }
 }
 function receiveNative(message) {
-  if (message.type === "initialized") {
+  if (message.type === "theme") applyTheme(message.theme);
+  else if (message.type === "initialized") {
     initialized = message;
     if (typeof message.workspace === "string" && message.workspace.startsWith("/")) {
       save("workspace-root", message.workspace);
@@ -90,8 +102,9 @@ function receiveNative(message) {
     else pending.resolve(message.result);
   } else if (message.type === "connection") {
     if (message.state === "resync-required") { location.reload(); return; }
-    deliver({ type: "codex-app-server-connection-changed", hostId: "local", transport: "websocket", state: message.state, progress: null, error: message.message ?? null });
-    if (message.state === "connected") initialMessages();
+    const connection = connectionTracker.receive(message);
+    if (!connection) return;
+    if (pageReady && initialized) deliverConnection(connection);
     if (message.state === "error") deliver({ type: "codex-app-server-fatal-error", hostId: "local", errorMessage: message.message || "Connection failed" });
   }
 }
@@ -338,6 +351,7 @@ async function install() {
   send({ type: "ready" });
 }
 
+applyTheme(document.documentElement.dataset.codexTheme || (document.body.classList.contains("vscode-light") ? "light" : "dark"));
 install().catch(error => {
   log("error", `Host initialization failed: ${error.message}`);
   document.getElementById("root").textContent = `Codex frontend could not start: ${error.message}`;
