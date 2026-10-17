@@ -91,6 +91,36 @@ class GatewayApi {
     suspend fun restartCodex(serviceId: String, confirmed: Boolean): JSONObject =
         data(request("POST", "api/v2/services/$serviceId/codex/restart", JSONObject().put("confirmed", confirmed))) as JSONObject
 
+    suspend fun extensionStatus(serviceId: String): JSONObject =
+        data(request("GET", "api/v3/services/$serviceId/extension/status")) as JSONObject
+
+    suspend fun updateExtension(serviceId: String): JSONObject =
+        data(request("POST", "api/v3/services/$serviceId/extension/update", JSONObject())) as JSONObject
+
+    suspend fun applyExtension(serviceId: String, confirmed: Boolean): JSONObject =
+        data(request("POST", "api/v3/services/$serviceId/extension/apply", JSONObject().put("confirmed", confirmed))) as JSONObject
+
+    fun extensionChannel(
+        serviceId: String, clientId: String, rendererId: String, workspace: String,
+        after: Long, epoch: String?, listener: WebSocketListener,
+    ): WebSocket = client.newWebSocket(
+        Request.Builder().url(url("api/v3/services/$serviceId/extension", buildMap {
+            put("clientId", clientId)
+            put("rendererId", rendererId)
+            put("workspace", workspace)
+            put("after", after.toString())
+            epoch?.let { put("epoch", it) }
+        })).authorized().build(), listener,
+    )
+
+    /** Runs on WebView's resource thread. Never exposes the Gateway token to page JavaScript. */
+    internal fun extensionResource(serviceId: String, version: String, path: String): ByteArray =
+        execute(Request.Builder().url(url("api/v3/services/$serviceId/extension/resource",
+            mapOf("version" to version, "path" to path))).authorized().get().build()).use {
+            ensureSuccess(it)
+            it.body.bytes()
+        }
+
     fun codexChannel(
         serviceId: String,
         clientId: String,

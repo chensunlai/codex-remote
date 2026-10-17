@@ -13,6 +13,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Column
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.uploadAttachments
 import kotlinx.coroutines.CompletableDeferred
@@ -30,6 +33,7 @@ internal fun rememberOfficialFilePicker(
     val resolver = LocalContext.current.contentResolver
     var pending by remember { mutableStateOf<CompletableDeferred<List<Uri>>?>(null) }
     var directory by remember { mutableStateOf<CompletableDeferred<String?>?>(null) }
+    var kindChoice by remember { mutableStateOf<CompletableDeferred<String?>?>(null) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val data = result.data
         val uris = if (result.resultCode != Activity.RESULT_OK || data == null) emptyList() else {
@@ -40,14 +44,26 @@ internal fun rememberOfficialFilePicker(
         pending = null
     }
     DisposableEffect(Unit) {
-        onDispose { pending?.cancel(); directory?.cancel() }
+        onDispose { pending?.cancel(); directory?.cancel(); kindChoice?.cancel() }
     }
     if (visible && directory != null) RemoteDirectoryDialog(api, serviceId, workspace,
         onSelect = { directory?.complete(it); directory = null },
         onDismiss = { directory?.complete(null); directory = null })
-    return { params ->
-        check(pending == null && directory == null) { "文件选择器已打开" }
-        if (params.optString("kind") == "directory") {
+    if (visible && kindChoice != null) CodexDialog(onDismissRequest = { kindChoice?.complete(null) },
+        title = { Text("选择文件或目录") },
+        text = { Column {
+            TextButton(onClick = { kindChoice?.complete("file") }) { Text("手机文件或图片") }
+            TextButton(onClick = { kindChoice?.complete("directory") }) { Text("服务器目录") }
+        } }, confirmButton = { TextButton(onClick = { kindChoice?.complete(null) }) { Text("取消") } })
+    return pick@{ params ->
+        check(pending == null && directory == null && kindChoice == null) { "文件选择器已打开" }
+        val kind = if (params.optString("kind") == "mixed") {
+            val result = CompletableDeferred<String?>()
+            kindChoice = result
+            try { result.await() } finally { if (kindChoice === result) kindChoice = null }
+        } else params.optString("kind")
+        if (kind == null) return@pick JSONArray()
+        if (kind == "directory") {
             val selection = CompletableDeferred<String?>()
             directory = selection
             try {

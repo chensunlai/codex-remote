@@ -167,7 +167,7 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
         )
     }
     state.filePreview?.let { preview ->
-        FilePreviewDialog(preview, viewModel::closePreview)
+        FilePreviewDialog(preview, api = viewModel.gatewayApi, serviceId = state.selectedServiceId, onDismiss = viewModel::closePreview)
     }
 }
 

@@ -3,11 +3,13 @@
 package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
+import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.JsResult
 import android.webkit.MimeTypeMap
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -15,16 +17,17 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import dev.codexremote.app.data.ExtensionSurface
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,7 +48,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -53,45 +56,40 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import dev.codexremote.app.BuildConfig
 import dev.codexremote.app.MainViewModel
-import dev.codexremote.app.data.OfficialChatSession
-import dev.codexremote.app.data.OfficialFrontend
-import dev.codexremote.app.data.OfficialVersion
-import dev.codexremote.app.data.FrontendInstallProgress
-import dev.codexremote.app.data.FrontendInstallStage
-import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.data.GatewayApi
+import dev.codexremote.app.data.OfficialChatSession
+import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.data.objects
-import dev.codexremote.app.model.FilePreview
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
+import dev.codexremote.app.model.FilePreview
 import dev.codexremote.app.model.MainSection
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
-import java.io.File
-import java.util.UUID
-
-private class OfficialSettingsNavigation {
-    var inSettings by mutableStateOf(false)
-    var exit: (() -> Unit)? = null
-}
 
 internal class OfficialSettingsConfirmation {
     var pending by mutableStateOf<Pair<String, JsResult>?>(null)
         private set
-
-    fun show(message: String, result: JsResult, visible: Boolean) {
+    private var surfaceId: String? = null
+    fun show(message: String, result: JsResult, visible: Boolean, surface: String? = null) {
         resolve(false)
+        surfaceId = surface
         if (visible) pending = message to result else result.cancel()
     }
-
+    fun cancelSurface(surface: String) { if (surfaceId == surface) resolve(false) }
     fun resolve(leave: Boolean) {
         val result = pending?.second
         pending = null
+        surfaceId = null
         if (leave) result?.confirm() else result?.cancel()
     }
 }
@@ -99,18 +97,13 @@ internal class OfficialSettingsConfirmation {
 @Composable
 internal fun OfficialSettingsConfirmationDialog(confirmation: OfficialSettingsConfirmation, visible: Boolean) {
     confirmation.pending?.takeIf { visible }?.let { (message, _) ->
-        CodexDialog(onDismissRequest = { confirmation.resolve(false) },
-            title = { Text("离开设置？") }, text = { Text(message) },
-            confirmButton = { TextButton(onClick = { confirmation.resolve(true) }) { Text("离开") } },
+        CodexDialog(onDismissRequest = { confirmation.resolve(false) }, title = { Text("离开设置？") },
+            text = { Text(message) }, confirmButton = { TextButton(onClick = { confirmation.resolve(true) }) { Text("离开") } },
             dismissButton = { TextButton(onClick = { confirmation.resolve(false) }) { Text("取消") } })
     }
 }
 
-@Composable
-internal fun OfficialSettingsBackHandler(visible: Boolean, inSettings: Boolean, modalOpen: Boolean, onBack: () -> Unit) {
-    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
-    BackHandler(enabled = visible && inSettings && !modalOpen && !keyboardVisible, onBack = onBack)
-}
+private fun JSONObject.version(name: String): String? = optString(name).takeIf { it.isNotBlank() && it != "null" }
 
 @Composable
 fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true) {
@@ -123,185 +116,155 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     val scopeKey = frontendScope(config, service.id)
     val store = viewModel.officialFrontends
     val jobs = rememberCoroutineScope()
-    var mode by remember(scopeKey) { mutableStateOf(store.mode(scopeKey)) }
-    var frontend by remember(scopeKey, mode) { mutableStateOf(store.cached(mode)) }
-    var loading by remember(scopeKey) { mutableStateOf(false) }
+    var extension by remember(scopeKey) { mutableStateOf<JSONObject?>(null) }
+    var requestInProgress by remember(scopeKey) { mutableStateOf(false) }
     var status by remember(scopeKey) { mutableStateOf<String?>(null) }
     var error by remember(scopeKey) { mutableStateOf<String?>(null) }
-    var chooseMode by remember { mutableStateOf(false) }
-    var choices by remember { mutableStateOf<List<OfficialVersion>?>(null) }
+    var menu by remember(scopeKey) { mutableStateOf(false) }
+    var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
     var workspace by remember(scopeKey) { mutableStateOf(store.workspace(scopeKey, service.home ?: "/")) }
-    var chooseWorkspace by remember { mutableStateOf(false) }
-    var installProgress by remember(scopeKey) { mutableStateOf<FrontendInstallProgress?>(null) }
-    var installJob by remember(scopeKey) { mutableStateOf<Job?>(null) }
-    val settingsNavigation = remember(scopeKey, frontend?.version, frontend?.slot, workspace) { OfficialSettingsNavigation() }
+    var chooseWorkspace by remember(scopeKey) { mutableStateOf(false) }
+    var panelBack by remember(scopeKey) { mutableStateOf<(() -> Unit)?>(null) }
+    var rendererGeneration by remember(scopeKey) { mutableStateOf(0) }
+    val installedVersion = extension?.version("version")
+    val stagedVersion = extension?.version("stagedVersion")
+    val updating = extension?.optBoolean("updating") == true
+    val busy = requestInProgress || updating
 
-    fun install(slot: String, version: OfficialVersion? = null) {
-        if (loading) return
-        loading = true
+    suspend fun presentStagedUpdate() {
+        if (extension?.version("stagedVersion") == null) return
+        if ((extension?.optInt("hosts", 0) ?: 0) > 0) {
+            applyConfirmation = true
+            return
+        }
+        val alreadyBusy = requestInProgress
+        requestInProgress = true
+        try {
+            extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = false)
+            if (extension?.optBoolean("confirmationRequired") == true) applyConfirmation = true
+            else status = "官方前端已更新"
+        } finally { requestInProgress = alreadyBusy }
+    }
+
+    fun update() {
+        if (busy) return
+        requestInProgress = true
         error = null
-        status = null
-        frontend = null
-        installProgress = null
-        installJob = jobs.launch {
-            try {
-                val selected = version ?: store.versions().firstOrNull { !it.preRelease }
-                    ?: error("官方暂无可用稳定版本")
-                val installed = store.install(slot, selected) { progress -> jobs.launch { if (loading) installProgress = progress } }
-                store.setMode(scopeKey, slot)
-                mode = slot
-                frontend = installed
-                status = null
-            } catch (cancelled: CancellationException) {
-                frontend = store.cached(mode)
-                throw cancelled
-            } catch (failure: Exception) {
-                error = failure.message
-                frontend = store.cached(mode)
-            } finally {
-                loading = false
-                installProgress = null
-                installJob = null
-            }
-        }
-    }
-
-    fun chooseSpecifiedVersion() {
         jobs.launch {
-            loading = true
-            runCatching { store.versions() }.onSuccess { choices = it }.onFailure { error = it.message }
-            loading = false
+            try {
+                extension = viewModel.gatewayApi.updateExtension(service.id)
+                error = extension?.version("error")
+                if (error == null && extension?.version("stagedVersion") != null && extension?.optBoolean("updating") != true) presentStagedUpdate()
+                else if (extension?.optBoolean("updating") != true && error == null) status = "已是最新正式版"
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { error = failure.message }
+            finally { requestInProgress = false }
         }
-    }
-
-    fun selectSlot(slot: String) {
-        val cached = store.cached(slot)
-        if (cached != null) {
-            store.setMode(scopeKey, slot)
-            mode = slot
-            frontend = cached
-            error = null
-            status = null
-        } else if (slot == "latest") install(slot)
-        else chooseSpecifiedVersion()
     }
 
     LaunchedEffect(scopeKey) {
-        if (frontend == null && mode == "latest") install("latest")
+        try { extension = viewModel.gatewayApi.extensionStatus(service.id); error = extension?.version("error") }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { error = failure.message }
+    }
+    LaunchedEffect(scopeKey) {
+        // collect keeps completion/application alive when the updating flag becomes false.
+        snapshotFlow { extension?.optBoolean("updating") == true }.collect { running ->
+            if (!running) return@collect
+            try {
+                while (extension?.optBoolean("updating") == true) {
+                    delay(1000)
+                    try { extension = viewModel.gatewayApi.extensionStatus(service.id) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) { error = failure.message; delay(2000) }
+                }
+                error = extension?.version("error")
+                if (error == null && extension?.version("stagedVersion") != null) presentStagedUpdate()
+                else if (error == null) status = "已是最新正式版"
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { error = failure.message }
+        }
     }
 
     Scaffold(topBar = {
-        CodexTopBar(
-            title = {
-                Text(service.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
-            navigationIcon = {
-                IconButton(onClick = {
-                    if (settingsNavigation.inSettings) settingsNavigation.exit?.invoke()
-                    else viewModel.setSection(MainSection.SERVICES)
-                }) {
-                    AppIcon(CodexIcons.ArrowBack, contentDescription = if (settingsNavigation.inSettings) "退出插件设置" else "切换服务器")
-                }
-            },
-            actions = {
-                IconButton(onClick = { chooseWorkspace = true }, enabled = !loading) {
+        CodexTopBar(title = { Text(service.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            navigationIcon = { IconButton(onClick = { panelBack?.invoke() ?: viewModel.setSection(MainSection.SERVICES) }) {
+                AppIcon(CodexIcons.ArrowBack, contentDescription = if (panelBack != null) "返回对话" else "切换服务器")
+            } }, actions = {
+                IconButton(onClick = { chooseWorkspace = true }, enabled = !requestInProgress) {
                     AppIcon(CodexIcons.FolderOpen, contentDescription = "选择工作目录")
                 }
                 Box {
-                    IconButton(onClick = { chooseMode = true }) {
-                        AppIcon(CodexIcons.More, contentDescription = "更多选项")
-                    }
-                    CodexDropdownMenu(expanded = chooseMode, onDismissRequest = { chooseMode = false }) {
-                        Text("官方前端 · ${frontend?.version ?: "未下载"}",
-                            style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                        DropdownMenuItem(text = { Text("最新") }, enabled = !loading,
-                            trailingIcon = { if (mode == "latest") AppIcon(CodexIcons.Check, null) },
-                            onClick = { chooseMode = false; selectSlot("latest") })
-                        DropdownMenuItem(text = { Text("指定版本") }, enabled = !loading,
-                            trailingIcon = { if (mode == "specified") AppIcon(CodexIcons.Check, null) },
-                            onClick = { chooseMode = false; selectSlot("specified") })
-                        DropdownMenuItem(text = { Text("检查并下载最新稳定版") }, enabled = !loading,
-                            onClick = { chooseMode = false; install("latest") })
-                        DropdownMenuItem(text = { Text("更换指定版本") }, enabled = !loading,
-                            onClick = { chooseMode = false; chooseSpecifiedVersion() })
-                        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        DropdownMenuItem(text = { Text("App 设置") },
-                            leadingIcon = { AppIcon(CodexIcons.Settings, null) },
-                            onClick = { chooseMode = false; viewModel.setSection(MainSection.SETTINGS) })
+                    IconButton(onClick = { menu = true }) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
+                    CodexDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        Text("官方前端 · ${installedVersion ?: "未安装"}", style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                        DropdownMenuItem(text = { Text("检查并更新前端") }, enabled = !busy,
+                            onClick = { menu = false; update() })
+                        DropdownMenuItem(text = { Text("App 设置") }, leadingIcon = { AppIcon(CodexIcons.Settings, null) },
+                            onClick = { menu = false; viewModel.setSection(MainSection.SETTINGS) })
                     }
                 }
-            },
-        )
+            })
     }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
-            if (loading) {
-                FrontendDownloadPane(installProgress, onCancel = { installJob?.cancel() }, canCancel = installJob != null)
-            } else {
-                frontend?.let { bundle ->
-                    key(scopeKey, bundle.version, bundle.slot, workspace) {
-                        OfficialWebView(bundle, scopeKey, store.clientId(scopeKey), service.id,
-                            service.home ?: "/", workspace, service.name, state.theme, state.fontScale, visible,
-                            chooseMode || choices != null || chooseWorkspace, settingsNavigation,
-                            viewModel, { status = it }, Modifier.weight(1f))
-                    }
-                } ?: Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("选择官方前端版本后打开会话。")
-                    TextButton(onClick = { install("latest") }) { Text("下载最新稳定版") }
+            if (busy) FrontendDownloadPane(extension?.optJSONObject("progress"))
+            if (installedVersion != null) {
+                key(scopeKey, installedVersion, workspace, rendererGeneration) {
+                    OfficialWebView(scopeKey, store.clientId(scopeKey), service.id, service.home ?: "/", workspace,
+                        state.theme, state.fontScale, visible, viewModel, { status = it },
+                        { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
+                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation, Modifier.weight(1f))
                 }
+            } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
+                TextButton(onClick = ::update) { Text("检查并更新前端") }
             }
         }
     }
-
     if (visible && chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
         onSelect = { path -> store.setWorkspace(scopeKey, path); workspace = path; chooseWorkspace = false },
         onDismiss = { chooseWorkspace = false })
-
-    choices?.takeIf { visible }?.let { versions ->
-        CodexDialog(
-            onDismissRequest = { choices = null },
-            title = { Text("指定官方前端版本") },
-            text = {
-                val supported = remember { store.supportedVersions() }
-                LazyColumn(Modifier.heightIn(max = 440.dp)) {
-                    items(versions.sortedWith(compareBy<OfficialVersion> { it.version !in supported }.thenBy { it.preRelease }), key = { it.version }) { version ->
-                        TextButton(onClick = { choices = null; install("specified", version) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(version.version + (if (version.preRelease) " · 预发布" else "") +
-                                (if (version.version !in supported) " · 尚未适配" else ""))
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { choices = null }) { Text("取消") } },
-        )
-    }
+    if (visible && applyConfirmation && stagedVersion != null) CodexDialog(
+        onDismissRequest = { applyConfirmation = false }, title = { Text("应用官方前端更新？") },
+        text = { Text("版本 $stagedVersion 已准备好。应用更新将重新启动服务器上的扩展宿主，现有连接和正在进行的任务可能中断。") },
+        confirmButton = { TextButton(onClick = {
+            applyConfirmation = false
+            requestInProgress = true
+            jobs.launch {
+                try {
+                    extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = true)
+                    status = "官方前端已更新"
+                    error = null
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) { error = failure.message }
+                finally { requestInProgress = false }
+            }
+        }) { Text("应用并重启") } },
+        dismissButton = { TextButton(onClick = { applyConfirmation = false }) { Text("稍后") } },
+    )
 }
 
 @Composable
-private fun FrontendDownloadPane(progress: FrontendInstallProgress?, onCancel: () -> Unit, canCancel: Boolean) {
-    Column(Modifier.fillMaxWidth().padding(28.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        val stage = when (progress?.stage) {
-            FrontendInstallStage.CONNECTING -> "正在连接官方插件下载源"
-            FrontendInstallStage.DOWNLOADING -> "正在下载官方前端"
-            FrontendInstallStage.EXTRACTING -> "正在解压官方前端"
-            FrontendInstallStage.VERIFYING -> "正在校验官方前端"
-            null -> "正在查询官方版本"
+private fun FrontendDownloadPane(progress: JSONObject?) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        val stage = when (progress?.optString("stage")) {
+            "downloading" -> "正在下载官方插件"
+            "extracting" -> "正在解压官方插件"
+            "verifying" -> "正在校验官方插件"
+            "ready" -> "官方插件已准备好"
+            else -> "正在检查官方插件更新"
         }
-        Text(stage, style = MaterialTheme.typography.titleMedium)
-        progress?.let { Text(it.version, style = MaterialTheme.typography.bodyMedium) }
-        val fraction = progress?.takeIf { it.stage == FrontendInstallStage.DOWNLOADING }?.fraction
-        if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-        else {
-            LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
-            Text("${(fraction * 100).toInt()}%", style = MaterialTheme.typography.labelLarge)
-        }
-        if (progress != null && progress.stage != FrontendInstallStage.CONNECTING) {
-            Text("${transferSize(progress.downloadedBytes)} / ${progress.totalBytes?.let(::transferSize) ?: "总大小未知"}")
-            if (progress.stage == FrontendInstallStage.DOWNLOADING) Text("${transferSize(progress.bytesPerSecond.toLong())}/s", style = MaterialTheme.typography.bodyMedium)
-        }
-        if (canCancel) TextButton(onClick = onCancel) { Text("取消下载") }
+        Text(stage, style = MaterialTheme.typography.bodyMedium)
+        val bytes = progress?.optLong("downloadedBytes", 0) ?: 0
+        val total = progress?.takeIf { !it.isNull("totalBytes") }?.optLong("totalBytes", 0)?.takeIf { it > 0 }
+        if (total == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        else LinearProgressIndicator(progress = { (bytes.toDouble() / total).coerceIn(0.0, 1.0).toFloat() }, modifier = Modifier.fillMaxWidth())
+        if (progress?.optString("stage") == "downloading") Text(
+            "${transferSize(bytes)} / ${total?.let(::transferSize) ?: "总大小未知"} · ${transferSize(progress.optDouble("bytesPerSecond", 0.0).toLong())}/s",
+            style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -313,75 +276,149 @@ private fun transferSize(bytes: Long): String {
     return if (unit == 0) "$bytes B" else java.lang.String.format(java.util.Locale.getDefault(), "%.1f %s", value, units[unit])
 }
 
+private data class HostNotification(val method: String, val params: JSONObject, val result: CompletableDeferred<String?>)
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun OfficialWebView(
-    frontend: OfficialFrontend,
-    scope: String,
-    clientId: String,
-    serviceId: String,
-    home: String,
-    workspace: String,
-    serviceName: String,
-    theme: AppTheme,
-    fontScale: Float,
-    visible: Boolean,
-    nativeModalOpen: Boolean,
-    navigation: OfficialSettingsNavigation,
-    viewModel: MainViewModel,
-    onStatus: (String?) -> Unit,
-    modifier: Modifier,
+    scope: String, clientId: String, serviceId: String, home: String, workspace: String,
+    theme: AppTheme, fontScale: Float, visible: Boolean, viewModel: MainViewModel,
+    onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
+    nativeModalOpen: Boolean, modifier: Modifier,
 ) {
     val context = LocalContext.current
-    val effectiveFontScale = fontScale * LocalDensity.current.fontScale
-    val currentTheme by rememberUpdatedState(theme)
-    val currentVisible by rememberUpdatedState(visible)
-    val background = MaterialTheme.colorScheme.background.toArgb()
+    var panels by remember { mutableStateOf<List<ExtensionSurface>>(emptyList()) }
     var preview by remember { mutableStateOf<FilePreview?>(null) }
-    var conflict by remember { mutableStateOf(false) }
+    var notification by remember { mutableStateOf<HostNotification?>(null) }
+    var saveRequest by remember { mutableStateOf<Pair<JSONObject, CompletableDeferred<String?>>?>(null) }
+    var externalUrl by remember { mutableStateOf<Pair<String, CompletableDeferred<Boolean>>?>(null) }
     val confirmation = remember { OfficialSettingsConfirmation() }
     val pickFiles = rememberOfficialFilePicker(viewModel.gatewayApi, serviceId, home, workspace, visible, onStatus)
     val currentPickFiles by rememberUpdatedState(pickFiles)
-    val session = remember { OfficialChatSession(context.applicationContext, viewModel.gatewayApi, serviceId, clientId,
-        home, workspace, serviceName, onStatus, { preview = it }, { currentPickFiles(it) }, { conflict = true },
-        { navigation.inSettings = it }) }
-    val pageId = remember { UUID.randomUUID().toString() }
-    val originHost = "s$scope.codex-remote.invalid"
-    var browser by remember { mutableStateOf<WebView?>(null) }
+    val session = remember {
+        OfficialChatSession(context.applicationContext, viewModel.gatewayApi, viewModel.officialFrontends,
+            serviceId, scope, clientId, workspace, onStatus, { preview = it }, { currentPickFiles(it) },
+            { params ->
+                check(saveRequest == null) { "保存对话框已打开" }
+                val result = CompletableDeferred<String?>()
+                saveRequest = params to result
+                try { result.await() } finally { if (saveRequest?.second === result) saveRequest = null }
+            }, { method, params ->
+                check(notification == null) { "通知对话框已打开" }
+                val result = CompletableDeferred<String?>()
+                notification = HostNotification(method, params, result)
+                try { result.await() } finally { if (notification?.result === result) notification = null }
+            }, { url ->
+                check(externalUrl == null) { "链接对话框已打开" }
+                require(Uri.parse(url).scheme in listOf("http", "https")) { "不支持的链接类型" }
+                val result = CompletableDeferred<Boolean>()
+                externalUrl = url to result
+                try { result.await() } finally { if (externalUrl?.second === result) externalUrl = null }
+            }, { panels = it })
+    }
     DisposableEffect(session) {
-        navigation.exit = session::exitSettings
-        viewModel.officialFrontends.retain(frontend)
         onDispose {
             confirmation.resolve(false)
-            navigation.exit = null
+            saveRequest?.second?.cancel()
+            notification?.result?.cancel()
+            externalUrl?.second?.cancel()
             session.close()
-            browser?.destroy()
-            browser = null
-            viewModel.officialFrontends.release(frontend)
+            onPanelBackChanged(null)
         }
     }
     LaunchedEffect(visible) {
+        session.setVisible(visible)
         if (!visible) confirmation.resolve(false)
     }
-    OfficialSettingsBackHandler(visible, navigation.inSettings,
-        nativeModalOpen || conflict || preview != null || confirmation.pending != null, session::exitSettings)
-    AndroidView(modifier = modifier.fillMaxSize(), factory = {
+    if (!remember { WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) }) {
+        Text("请更新 Android System WebView 后使用官方前端。", modifier = modifier.padding(20.dp))
+        return
+    }
+    val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
+    val keyboard = LocalSoftwareKeyboardController.current
+    val topPanel = panels.lastOrNull()
+    val modalOpen = nativeModalOpen || preview != null || notification != null || saveRequest != null || externalUrl != null || confirmation.pending != null
+    LaunchedEffect(topPanel?.id, visible, keyboardVisible, modalOpen) {
+        onPanelBackChanged(if (visible && topPanel != null) ({
+            if (keyboardVisible) keyboard?.hide() else if (!modalOpen) session.closeSurface(topPanel.id)
+        }) else null)
+    }
+    BackHandler(enabled = visible && topPanel != null && !keyboardVisible && !modalOpen) {
+        topPanel?.let { session.closeSurface(it.id) }
+    }
+    Box(modifier.fillMaxSize()) {
+        OfficialSurfaceWebView(session, "main", serviceId, theme, fontScale, visible && panels.isEmpty(), confirmation, viewModel, onStatus, onRendererGone)
+        panels.forEachIndexed { index, panel -> key(panel.id) {
+            OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, confirmation, viewModel, onStatus, onRendererGone)
+        } }
+    }
+    OfficialSettingsConfirmationDialog(confirmation, visible)
+    notification?.takeIf { visible }?.let { item ->
+        val actions = item.params.optJSONArray("items") ?: item.params.optJSONArray("actions")
+        CodexDialog(onDismissRequest = { item.result.complete(null) }, title = { Text("Codex") },
+            text = { Text(item.params.optString("message")) },
+            confirmButton = {
+                if (actions == null || actions.length() == 0) TextButton(onClick = { item.result.complete(null) }) { Text("关闭") }
+                else for (i in 0 until actions.length()) {
+                    val action = actions.opt(i)
+                    val title = (action as? JSONObject)?.optString("title") ?: action.toString()
+                    TextButton(onClick = { item.result.complete(title) }) { Text(title) }
+                }
+            }, dismissButton = { if (actions != null && actions.length() > 0) TextButton(onClick = { item.result.complete(null) }) { Text("取消") } })
+    }
+    saveRequest?.takeIf { visible }?.let { (params, result) ->
+        var path by remember(result) { mutableStateOf(params.version("defaultUri")?.let { Uri.parse(it).path } ?: "$workspace/untitled") }
+        CodexDialog(onDismissRequest = { result.complete(null) }, title = { Text("保存到服务器") },
+            text = { CodexTextField(path, { path = it }, label = "绝对路径") },
+            confirmButton = { TextButton(onClick = { result.complete(Uri.fromFile(java.io.File(path)).toString()) }, enabled = path.startsWith('/') && !path.endsWith('/')) { Text("保存") } },
+            dismissButton = { TextButton(onClick = { result.complete(null) }) { Text("取消") } })
+    }
+    externalUrl?.takeIf { visible }?.let { (url, result) ->
+        CodexDialog(onDismissRequest = { result.complete(false) }, title = { Text("打开链接") },
+            text = { androidx.compose.foundation.text.selection.SelectionContainer { Text(url) } },
+            confirmButton = { TextButton(onClick = {
+                runCatching { session.openExternal(url) }.onSuccess { result.complete(it) }
+                    .onFailure { onStatus(it.message); result.complete(false) }
+            }) { Text("在浏览器打开") } },
+            dismissButton = { TextButton(onClick = { result.complete(false) }) { Text("取消") } })
+    }
+    preview?.takeIf { visible }?.let { FilePreviewDialog(it, onDismiss = { preview = null }, api = viewModel.gatewayApi, serviceId = serviceId) }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: String, serviceId: String,
+    theme: AppTheme, fontScale: Float, visible: Boolean, confirmation: OfficialSettingsConfirmation,
+    viewModel: MainViewModel, onStatus: (String?) -> Unit, onRendererGone: () -> Unit) {
+    val context = LocalContext.current
+    val effectiveFontScale = fontScale * LocalDensity.current.fontScale
+    val currentTheme by rememberUpdatedState(theme)
+    val currentScale by rememberUpdatedState(effectiveFontScale)
+    val currentVisible by rememberUpdatedState(visible)
+    val background = MaterialTheme.colorScheme.background.toArgb()
+    var browser by remember { mutableStateOf<WebView?>(null) }
+    var script by remember { mutableStateOf<ScriptHandler?>(null) }
+    DisposableEffect(session, surfaceId) { onDispose {
+        confirmation.cancelSurface(surfaceId)
+        script?.remove()
+        browser?.let { session.detachSurface(surfaceId, it); it.destroy() }
+    } }
+    AndroidView(modifier = Modifier.fillMaxSize(), factory = {
         WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             browser = this
             setBackgroundColor(background)
-            session.setTheme(theme.id)
-            session.setFontScale(effectiveFontScale)
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
-            addJavascriptInterface(session.bridge, "CodexRemoteHost")
+            addJavascriptInterface(session.bridge(surfaceId), "CodexExtensionBridge")
+            var originHost: String? = null
             webChromeClient = object : WebChromeClient() {
                 override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
-                    confirmation.show(message, result, currentVisible)
+                    confirmation.show(message, result, currentVisible, surfaceId)
                     return true
                 }
                 override fun onConsoleMessage(message: ConsoleMessage): Boolean {
@@ -390,77 +427,60 @@ private fun OfficialWebView(
                 }
             }
             webViewClient = object : WebViewClient() {
-                override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
-                    confirmation.resolve(false)
-                    session.pageStarted()
+                override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    session.close()
+                    script?.remove()
+                    script = null
+                    (view.parent as? ViewGroup)?.removeView(view)
+                    view.destroy()
+                    browser = null
+                    onRendererGone()
+                    return true
                 }
-
-                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.host != originHost
-
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (request.url.host == originHost) return false
+                    if (request.isForMainFrame && request.hasGesture()) session.requestExternal(request.url.toString())
+                    return true
+                }
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
                     if (request.url.host != originHost) return null
-                    val relative = request.url.path.orEmpty().trimStart('/')
                     return runCatching {
-                        val path = if (request.isForMainFrame) "index.html" else relative.ifBlank { "index.html" }
+                        val segments = request.url.pathSegments
+                        require(segments.size >= 3 && segments.first() == "extension") { "资源路径无效" }
+                        val version = segments[1]
+                        val path = segments.drop(2).joinToString("/")
                         val mime = when {
                             path.endsWith(".mjs") || path.endsWith(".js") -> "text/javascript"
-                            path.endsWith(".css") -> "text/css"
-                            path.endsWith(".json") -> "application/json"
-                            path.endsWith(".html") -> "text/html"
                             path.endsWith(".wasm") -> "application/wasm"
                             else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(path.substringAfterLast('.')) ?: "application/octet-stream"
                         }
-                        val stream = when {
-                            path.startsWith("__host/") -> context.assets.open(path.removePrefix("__host/"))
-                            path == "index.html" -> {
-                                val html = File(frontend.directory, path).readText()
-                                val injection = """
-                                    <meta name="codex-extension-version" content="${frontend.version}">
-                                    <meta name="codex-session-id" content="$pageId">
-                                    <meta name="codex-build-flavor" content="prod">
-                                    <meta name="codex-remote-storage-key" content="$scope">
-                                    <link rel="stylesheet" href="/__host/theme.css">
-                                    <script src="/__host/shim.js"></script>
-                                    <script type="module" src="/__host/host.mjs"></script>
-                                """.trimIndent()
-                                ByteArrayInputStream(html.replace("<!-- PROD_BASE_TAG_HERE -->", "<base href=\"https://$originHost/\">")
-                                    .replace("<!-- PROD_CSP_TAG_HERE -->", "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob: data:; object-src 'none'; frame-src 'none'\">")
-                                    .replace("<head>", "<head>$injection")
-                                    .replace("<html", "<html data-codex-theme=\"${currentTheme.id}\"")
-                                    .replace("<body>", "<body class=\"${if (currentTheme == AppTheme.DARK) "vscode-dark" else "vscode-light"}\" data-vscode-theme-kind=\"${if (currentTheme == AppTheme.DARK) "vscode-dark" else "vscode-light"}\">").toByteArray())
-                            }
-                            else -> {
-                                val file = File(frontend.directory, path).canonicalFile
-                                check(file.path.startsWith(frontend.directory.canonicalPath + File.separator))
-                                file.inputStream()
-                            }
-                        }
-                        WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Cache-Control" to "no-cache"), stream)
-                    }.getOrElse {
-                        WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
-                    }
+                        val bytes = viewModel.gatewayApi.extensionResource(serviceId, version, path)
+                        WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Cache-Control" to "private, max-age=31536000, immutable"), bytes.inputStream())
+                    }.getOrElse { WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0))) }
                 }
             }
-            session.attach(this)
-            loadUrl("https://$originHost/")
+            val bridgeSource = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
+            val themeCss = context.assets.open("theme.css").bufferedReader().use { it.readText() }
+            session.attachSurface(surfaceId, this) { origin, html, documentId ->
+                confirmation.cancelSurface(surfaceId)
+                originHost = Uri.parse(origin).host
+                script?.remove()
+                val config = JSONObject().put("documentId", documentId).put("theme", currentTheme.id)
+                    .put("fontScale", currentScale).put("themeCss", themeCss)
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    script = WebViewCompat.addDocumentStartJavaScript(this,
+                        "window.__codexExtensionConfig = $config;\n$bridgeSource", setOf(origin))
+                    // webview.html belongs to the official extension. Do not rewrite or inject into it.
+                    loadDataWithBaseURL("${origin.trimEnd('/')}/", html, "text/html", "UTF-8", null)
+                } else onStatus("当前 Android System WebView 不支持页面初始化，请更新系统 WebView 后重试。")
+            }
         }
-    }, update = { browser ->
-        if (!visible && browser.hasFocus()) browser.clearFocus()
-        browser.visibility = if (visible) View.VISIBLE else View.INVISIBLE
-        browser.setBackgroundColor(background)
-        session.setTheme(theme.id)
-        session.setFontScale(effectiveFontScale)
+    }, update = { webView ->
+        if (!visible && webView.hasFocus()) webView.clearFocus()
+        webView.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        webView.setBackgroundColor(background)
+        webView.evaluateJavascript("window.__codexExtensionHost?.setTheme(${JSONObject.quote(theme.id)}, $effectiveFontScale)", null)
     })
-    OfficialSettingsConfirmationDialog(confirmation, visible)
-    if (visible && conflict) CodexDialog(
-        onDismissRequest = { conflict = false },
-        title = { Text("会话正在被占用") },
-        text = { Text("另一个 Codex 实例仍持有此会话，当前未能通过官方客户端协调连接到它。请确认电脑端 VS Code 已打开此会话、Agent 与插件使用同一用户和 Codex 目录。独立 CLI 若未参与协调，需要先释放会话后再重新打开。") },
-        confirmButton = { TextButton(onClick = { conflict = false; browser?.reload() }) { Text("释放后重新打开") } },
-        dismissButton = { TextButton(onClick = { conflict = false }) { Text("关闭") } },
-    )
-    preview?.takeIf { visible }?.let { FilePreviewDialog(it, onDismiss = { preview = null }) }
-
 }
 
 @Composable

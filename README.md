@@ -5,34 +5,28 @@ Codex Remote 是一个自托管的 Android Codex 客户端，用于从手机访�
 ## 架构
 
 ```text
-Android App：服务器管理 + 官方插件 WebView + 宿主适配
-                       ↕ WSS
-                Gateway：认证与转发
-                       ↕ WSS（Agent 主动连接）
-                Agent：持有逻辑通道与进程
-                       ↕ stdio
-                Codex CLI app-server
+Android：原生界面 + 官方 WebView
+                  ↕ WSS
+Gateway：认证与公开宿主消息转发
+                  ↕ WSS（Agent 主动连接）
+Agent：Node.js 宿主 → 官方 extension.js → Codex App Server
 ```
 
-- **Android App**：直接运行 OpenAI 官方 VS Code 插件的前端资源，由宿主适配层提供远端通信、配置与文件操作；保留服务器切换、终端和文件管理。
-- **Gateway**：负责认证、服务发现和双向消息转发，默认端口为 `6767`；聊天使用 app-server 原始 JSON-RPC，不再经自定义聊天 REST 模型转换。
-- **Agent**：在目标服务器启动并持有自己的 stdio app-server，保存连接恢复所需的消息和待处理请求；通过同一用户下官方插件的本地 IPC 参与会话协调，不重启已有的 VS Code/CLI 进程。
+官方 WebView 与 `extension.js` 来自同一份 OpenAI.chatgpt 插件。Agent 提供公开的 VS Code 宿主 API，文件、子进程和客户端协调由官方扩展直接在服务器执行。手机提供文件选择、剪贴板、通知、预览和浏览器操作；Gateway 不解释官方消息内容。
 
-Agent 与 App 使用同一个访问令牌后，App 才能看到对应的服务。WebSocket 在建连时认证，Token 由 Android 原生网络层持有。
+Agent 与 App 使用同一个访问令牌后，App 才能看到对应服务。访问令牌由 Android 原生网络层持有。Gateway 默认端口为 `6767`。
 
 ## 功能
 
-官方前端负责会话、聊天、流式展示和审批交互。App 提供官方前端版本选择、服务器 Codex 管理、交互式终端和文件管理。文件预览和下载上限默认是 `10 MiB`。
+官方扩展负责会话、聊天、流式展示、模型选项与审批。App 保留服务器切换、工作目录选择、终端和文件管理。文件预览和下载上限默认是 `10 MiB`。
 
-退出聊天、锁屏、切换服务器或 App 被系统回收时，已经被后端接受的任务继续运行；审批和问题需要用户回来交互。重新连接时恢复当前状态与仍有效的待处理请求，提交结果不明的请求不会自动重复执行。
+切换 App 页面保留同一个聊天 WebView。手机后台、断网或彻底关闭时，Agent 不结束官方扩展，已接受的任务继续运行；需要用户回答时等待恢复连接。重连不自动重发结果不明的操作。手机页面被回收后重新加载官方页面，由官方扩展恢复状态。
 
-后台执行依赖 Agent 和其 app-server 持续运行。关闭 Agent、服务器重启或明确重启 Codex 会中断相应进程，不保证未完成任务继续；历史记录仍由 Codex 保存。无人连接且没有活动任务、未决调用或待处理请求的通道会在 60 秒后释放。
+后台运行依赖 Agent、扩展宿主与 App Server 持续运行。关闭 Agent、服务器重启、手动重启 Codex 或应用插件更新可能中断任务。官方设置等独立 WebView 面板显示在聊天页上层，底层聊天页面保持运行；原生返回箭头和系统返回可关闭上层面板，随后恢复切换服务器行为。系统键盘、原生弹窗与 JavaScript 确认窗口优先处理返回。
 
-Linux 上的会话共享使用官方 owner/follower 协议：电脑端插件持有会话时，手机通过官方客户端继续输入、停止、审批并接收流式状态。需要 Gateway、Agent、App 均升级到 1.0.2 或更新版本，电脑端插件保持运行，且 Agent 与插件使用同一用户及 Codex 目录。App 内切换工作、终端、文件、服务器和设置页面会保留聊天 WebView 与草稿；切换实际服务器、工作目录或前端版本时才重新建立对应页面。
+客户端协调使用服务器上官方扩展自身的实现。未参与官方协调的 CLI 仍可能报告 `already has an active writer`；App 不强制抢占其他写入者。
 
-进入官方插件设置后，App 左上角箭头和 Android 返回手势会回到进入前的页面，保留会话与草稿；切换设置分类不改变返回位置。未保存的设置会显示官方离开确认，取消后继续留在设置页。系统返回优先关闭键盘和原生弹窗；退出插件设置后，左上角箭头恢复切换服务器功能。
-
-如果仍提示 `already has an active writer`，说明现有写入者未能通过官方协调连接，例如未参与协调的独立 CLI，或官方插件未运行。一次 turn 完成不等于写入权已释放；这种情况下需先释放会话再重试。App 不会强制接管或结束其他客户端的会话。Agent 仅连接已有官方 IPC 路由，不自行创建路由；已读标记暂只在本客户端保存。
+新链路不导入官方页面的私有导出、不强制覆盖功能开关，也不自行解析 Codex 会话文件。代码编辑、编辑器上下文、代码跳转、登录回调和 Windows/WSL 不在移动宿主的支持范围内。用户需提前在服务器登录。
 
 ## 要求
 
@@ -40,7 +34,7 @@ Linux 上的会话共享使用官方 owner/follower 协议：电脑端插件持�
 - Agent 所在服务器：已单独安装并登录 Codex CLI
 - Android：Android 8.0（API 26）或更高版本
 
-Agent 安装包不包含 Codex CLI，也不自动安装、更新或托管另一套 CLI；使用系统中的 `codex` 或配置时指定的可执行文件。
+Agent 安装器包含官方扩展宿主和独立的 Node.js 24.18.0 运行时，保存在程序旁的 `runtime/`；无需安装系统 Node.js。Codex CLI 仍需单独安装并登录，Agent 使用系统中的 `codex` 或配置时指定的可执行文件。
 
 ## 快速开始
 
@@ -93,7 +87,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 1. 输入 Gateway 地址和访问令牌。
 2. 在“服务”页面选择在线服务。
-3. 在聊天页右上角“更多选项”中选择官方前端版本并下载。
+3. 在聊天页右上角“更多选项”中点击“检查并更新前端”，首次安装由此触发。
 4. 点击聊天页的文件夹按钮，在远端目录列表中选择工作目录，再打开或创建 Codex 会话。
 
 工作目录按服务器保存，默认使用该服务器的用户主目录。切换目录会重新加载官方前端，已被后端接受的任务继续运行。
@@ -106,26 +100,17 @@ Release APK 仅连接 HTTPS Gateway。
 - 聊天附件保存在所选服务器的 `~/.codex-remote-uploads/<随机目录>/原文件名`，避免覆盖同名文件。它们会留在服务器供后续会话引用，可在文件页手动清理。
 - 聊天中的本地图片链接和文件页使用同一个原生预览器：PNG、JPEG、WebP 等图片支持双指缩放；文本最多预览 256 KiB，其他二进制文件提示下载查看。预览受 Gateway 下载限制约束，App 额外限制图片数据不超过 20 MiB，并缩小过大位图以控制内存。
 
-### 官方前端版本
+### 官方前端更新与主题
 
-聊天页右上角“更多选项”提供两个前端版本选项：
+不提供版本选择。点击“检查并更新前端”后，Agent 从官方 Marketplace 检查并下载最新正式版的完整插件，手机加载对应版本的官方资源。插件可能包含较大的桌面二进制资源，下载进度、总大小和速度以 Agent 的实际传输为准。
 
-- **最新**：从 VS Code Marketplace 获取 OpenAI.chatgpt 最新稳定版本。
-- **指定版本**：从官方版本列表选择固定版本，列表会标识预发布及尚未适配的版本。
+更新全部手动触发，日常启动使用已安装版本。新包先校验并验证公开扩展生命周期；失败保留当前版本。有宿主正在运行时，应用更新前确认重启影响；选择“稍后”会保留待应用包，同一个按钮可继续应用。资源版本与宿主版本保持配套。
 
-App 全局共用“最新”和“指定版本”两个缓存槽，每台服务器保存所选模式；两个槽选择相同版本时共用资源。初次使用按需下载，已有缓存可直接切换；菜单中的“检查并下载最新稳定版”和“更换指定版本”用于手动替换相应缓存。前端资源由 App 从官方渠道获取，不随 APK 打包。
+设置页面提供黑色、白色和 Anthropic 暖色三种主题，同时应用于 Android 原生界面与官方 WebView。主题与字体缩放使用宿主的标准 VS Code CSS 变量及主题元数据，官方 JS/CSS 保持原样。
 
-下载官方前端时显示实际传输的百分比、已下载量、总大小和速度，并分别显示连接、下载、解压和校验阶段；下载源未提供总大小时明确显示未知。取消或失败会清理临时文件并保留已安装版本。
+模型列表、推理档位及功能开关由官方插件和后端决定。原先通过私有导出覆盖 Ultra、模型列表及设置路由的适配不进入新 App。连接与工作目录偏好继续保留，旧适配器内部状态不自行转换；升级前请保存未发送草稿。
 
-设置页面提供黑色、白色和 Anthropic 暖色三种主题，选择会保存并同时应用于 Android 原生界面与官方 WebView。黑白主题参考原有界面和 VS Code，暖色使用米白与陶土橙。主题由独立宿主提供标准 VS Code 主题变量，官方插件 JS/CSS 资源保持原样，可继续整包替换。
-
-原生页面采用单行工具栏、中性色按钮、外置标签输入框、弱边框分组及统一菜单和弹窗；版本信息和 App 设置收纳在聊天页的“更多选项”中，目录与服务器切换入口保留。主题色用于焦点等状态，普通操作与官方组件一样以正文色为主。手机操作仍保留至少 48 dp 的点击区域。
-
-App 设置中的字体步进调节同时应用于原生界面、终端和官方聊天。聊天字号通过官方 `chat-font-settings` 消息和标准 VS Code 宿主字体变量更新，包含 Android 系统字体缩放；修改时保留 WebView、连接和草稿。
-
-官方插件前端还依赖插件宿主接口。支持记录位于 [`frontend-host/adapters.json`](frontend-host/adapters.json)，包含版本、接口绑定和资源校验值。新插件版本可能需要更新宿主适配；尚未适配或校验不通过时会提示并保留已有缓存，不会声称任意前端与远端 CLI 都兼容。
-
-已适配版本通过官方 SDK 的本地覆盖接口开启 Ultra 功能开关（`1186680773`）和设置中的模型功能列表（`3693343337`），不修改官方前端资源。在官方设置的 Configuration → Model features → Available reasoning efforts 中可勾选 Max；Ultra 默认勾选，最终可用档位仍取决于服务器返回的模型能力。勾选项保存在 App 的本地 WebView 存储中，按服务器连接隔离。
+所有原生文件预览提供下载，网页链接提供“在浏览器打开”。
 
 ### 服务器 Codex 管理
 
@@ -134,7 +119,7 @@ App 设置中的字体步进调节同时应用于原生界面、终端和官方�
 | 按钮 | 行为与高亮条件 |
 | --- | --- |
 | 更新 | 执行配置的 Codex 可执行文件的 `update` 命令。有已知更新时高亮；CLI 未提供该命令时禁用。更新不自动重启已有 app-server。 |
-| 重启 | 重建该 Agent 启动的 app-server。磁盘版本与运行版本不同时高亮；存在活动任务、未决调用或待交互请求时先确认，确认后立即重启。 |
+| 重启 | 重建该 Agent 的扩展宿主及其 app-server。磁盘版本与运行版本不同时高亮；存在运行进程时先确认，确认后立即重启。 |
 
 更新和重启互斥，页面显示执行状态及输出。版本查询失败显示未知，不据此提示有更新。更新操作不提权、不调用全局包管理器，也不修改 Codex 的登录和配置目录；需要交互或不支持 `update` 的安装方式，请在服务器上自行更新后点击“重启”。
 
@@ -184,7 +169,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 ## 从源码构建
 
-要求 Node.js 22+。
+要求 Node.js 24.18.0+。打包 Agent 时会下载并校验对应架构的官方 Node.js 运行时，输出 Agent 二进制及 `codex-remote-agent-runtime-linux-<架构>.tar.gz`；手动部署时两者都需安装。开发时可通过 `CODEX_REMOTE_NODE_PATH` 指定 Node.js。
 
 ```bash
 npm ci
@@ -201,15 +186,10 @@ cd android
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-开发宿主适配时，可以导入本机已安装的官方扩展目录或下载好的官方 VSIX：
+验证完整官方扩展与真实页面（需安装 Playwright，可用 `CODEX_PLAYWRIGHT_MODULE` 指定其入口）：
 
 ```bash
-node scripts/import-official-frontend.mjs --source /path/to/OpenAI.chatgpt.vsix
-# 或使用扩展目录，并输出到一个新目录
-node scripts/import-official-frontend.mjs --source /path/to/openai.chatgpt-extension \
-  --output .data/official-frontends/dev
+npm run frontend:smoke -- --extension /path/to/openai.chatgpt-extension
 ```
 
-默认输出为 `.data/official-frontends/<插件版本>`。脚本校验发布者、版本适配记录和 bundle SHA-256，提取 WebView 资源并注入独立宿主入口；不会导入插件自带的 Codex 二进制。已有输出目录不会被覆盖。正式 Android 下载也使用同一份适配记录。
-
-安装 Playwright 后，可用 `npm run frontend:smoke -- --frontend .data/official-frontends/<插件版本> --model-settings` 验证模型设置入口、Max/Ultra 列表及勾选项在重新加载后的保留。此检查连接本机 app-server，但拦截配置写入和登录变更。
+测试宿主只实现公开 VS Code API，官方资源通过摘要验证保持不变。旧 `frontend-host/` 和导入脚本用于旧链路回归，不打包到新 Android App。
