@@ -128,19 +128,6 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
         }
     }
 
-    state.pendingRequests.firstOrNull()?.let { pending ->
-        PendingRequestDialog(
-            pending = pending,
-            onDecision = { viewModel.respondToRequest(pending.requestId, it) },
-            onAnswers = { viewModel.respondToInput(pending.requestId, it) },
-            onPermission = { permissions, session ->
-                viewModel.respondToPermission(pending.requestId, permissions, session)
-            },
-            onElicitation = { action, content ->
-                viewModel.respondToElicitation(pending.requestId, action, content)
-            },
-        )
-    }
 }
 
 @Composable
@@ -153,7 +140,7 @@ private fun MainContent(
     Box(modifier.fillMaxSize()) {
         when (state.section) {
             MainSection.SERVICES -> ServicesScreen(state, viewModel)
-            MainSection.SESSIONS -> SessionsScreen(state, viewModel)
+            MainSection.SESSIONS -> OfficialChatScreen(state, viewModel)
             MainSection.TERMINAL -> TerminalScreen(state, viewModel)
             MainSection.FILES -> FilesScreen(state, viewModel)
             MainSection.SETTINGS -> SettingsScreen(state, viewModel)

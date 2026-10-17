@@ -44,18 +44,6 @@ export interface GatewayEvent {
   payload: unknown;
 }
 
-export type JsonRpcId = number | string;
-
-export interface PendingServerRequest {
-  requestId: string;
-  rpcId: JsonRpcId;
-  ownerId: string;
-  serviceId: string;
-  method: string;
-  params: unknown;
-  createdAt: string;
-}
-
 export interface AgentRequestMessage {
   type: "request";
   id: string;

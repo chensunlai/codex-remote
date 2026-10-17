@@ -1,0 +1,20 @@
+{
+  "versions": {
+    "26.1007.21434": {
+      "bundle": "assets/app-initial-97d3534ad35f.js",
+      "sha256": "47e9e488122cf37a6564ed57d11f499d9ac062b2e49db729091fe3c163a64b49",
+      "initializeExport": "Nst",
+      "sessionExport": "kst",
+      "targetExport": "jst",
+      "contractVersion": 1
+    },
+    "26.1002.51308": {
+      "bundle": "assets/app-initial-f98e01875506.js",
+      "sha256": "3b764a42e5172e347f29ea33bb627feb7263c5e67a913ece6d2e8fe89dee8554",
+      "initializeExport": "Rat",
+      "sessionExport": "Pat",
+      "targetExport": "Iat",
+      "contractVersion": 1
+    }
+  }
+}

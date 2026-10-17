@@ -1,6 +1,6 @@
 {
   "name": "codex-remote",
-  "version": "0.5.6",
+  "version": "1.0.0",
   "private": true,
   "workspaces": [
     "server",
@@ -14,7 +14,10 @@
     "agent": "npm run start --workspace agent",
     "package:binaries": "node scripts/package-binaries.mjs",
     "sync:terminal": "node scripts/sync-terminal-assets.mjs",
-    "test": "npm run test --workspaces",
+    "frontend:import": "node scripts/import-official-frontend.mjs",
+    "frontend:smoke": "node scripts/smoke-official-frontend.mjs",
+    "test": "npm run test --workspaces && npm run test:frontend",
+    "test:frontend": "node --test frontend-host/host.test.mjs scripts/import-official-frontend.test.mjs",
     "typecheck": "npm run typecheck --workspaces"
   },
   "engines": {

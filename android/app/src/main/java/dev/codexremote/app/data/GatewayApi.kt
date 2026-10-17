@@ -1,11 +1,6 @@
 package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
-import dev.codexremote.app.model.CollaborationModeSelection
-import dev.codexremote.app.model.NewSessionOptions
-import dev.codexremote.app.model.PromptContext
-import dev.codexremote.app.model.PromptContextType
-import dev.codexremote.app.model.ThreadSettingsUpdate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl
@@ -50,7 +45,48 @@ class GatewayApi {
 
     suspend fun meta(): JSONObject = data(request("GET", "api/v1/meta")) as JSONObject
 
+    suspend fun testConfiguration(candidate: GatewayConfig): JSONObject = withContext(Dispatchers.IO) {
+        val target = candidate.baseUrl.ensureTrailingSlash().toHttpUrl().newBuilder()
+            .addPathSegments("api/v1/meta").build()
+        val request = Request.Builder().url(target)
+            .header("Authorization", "Bearer " + candidate.token)
+            .header("Accept", "application/json").build()
+        execute(request).use { response ->
+            ensureSuccess(response)
+            data(parseObject(response)) as JSONObject
+        }
+    }
+
     suspend fun services(): JSONArray = data(request("GET", "api/v1/services")) as JSONArray
+
+    suspend fun codexRuntime(serviceId: String): JSONObject =
+        data(request("GET", "api/v2/services/$serviceId/codex/runtime")) as JSONObject
+
+    suspend fun updateCodex(serviceId: String): JSONObject =
+        data(request("POST", "api/v2/services/$serviceId/codex/update", JSONObject())) as JSONObject
+
+    suspend fun restartCodex(serviceId: String, confirmed: Boolean): JSONObject =
+        data(request("POST", "api/v2/services/$serviceId/codex/restart", JSONObject().put("confirmed", confirmed))) as JSONObject
+
+    fun codexChannel(
+        serviceId: String,
+        clientId: String,
+        sessionId: String,
+        sequence: Long,
+        epoch: String?,
+        listener: WebSocketListener,
+    ): WebSocket {
+        val query = buildMap {
+            put("clientId", clientId)
+            put("sessionId", sessionId)
+            put("after", sequence.toString())
+            if (epoch != null) put("epoch", epoch)
+        }
+        return client.newWebSocket(
+            Request.Builder().url(url("api/v2/services/$serviceId/codex", query)).authorized().build(),
+            listener,
+        )
+    }
 
     suspend fun deleteService(serviceId: String) {
         request("DELETE", "api/v1/services/$serviceId")
@@ -58,258 +94,6 @@ class GatewayApi {
 
     suspend fun testService(serviceId: String): JSONObject =
         data(request("POST", "api/v1/services/$serviceId/test", JSONObject())) as JSONObject
-
-    suspend fun models(serviceId: String): JSONObject =
-        data(request("GET", "api/v1/services/$serviceId/models")) as JSONObject
-
-    suspend fun collaborationModes(serviceId: String): JSONObject =
-        data(request("GET", "api/v1/services/$serviceId/collaboration-modes")) as JSONObject
-
-    suspend fun rateLimits(serviceId: String): JSONObject =
-        data(request("GET", "api/v1/services/$serviceId/rate-limits")) as JSONObject
-
-    suspend fun searchFiles(serviceId: String, cwd: String, query: String): JSONObject =
-        data(
-            request(
-                "GET",
-                "api/v1/services/$serviceId/file-search",
-                query = mapOf("cwd" to cwd, "query" to query),
-            ),
-        ) as JSONObject
-
-    suspend fun sessions(
-        serviceId: String,
-        archived: Boolean = false,
-        searchTerm: String? = null,
-    ): JSONObject =
-        data(
-            request(
-                "GET",
-                "api/v1/services/$serviceId/sessions",
-                query = buildMap {
-                    put("limit", "100")
-                    put("archived", archived.toString())
-                    searchTerm?.trim()?.takeIf(String::isNotBlank)?.let { put("searchTerm", it) }
-                },
-            ),
-        ) as JSONObject
-
-    suspend fun skills(serviceId: String, cwd: String): JSONObject =
-        data(
-            request(
-                "GET",
-                "api/v1/services/$serviceId/skills",
-                query = mapOf("cwd" to cwd),
-            ),
-        ) as JSONObject
-
-    suspend fun createSession(serviceId: String, options: NewSessionOptions): JSONObject {
-        val body = JSONObject()
-            .put("cwd", options.cwd)
-            .put("approvalPolicy", options.approvalPolicy)
-            .putIfNotBlank("model", options.model)
-            .putIfNotBlank("effort", options.effort)
-        if (options.permissionProfile.isNullOrBlank()) {
-            body.put("sandbox", options.sandbox)
-                .put("networkAccess", options.networkAccess)
-        } else {
-            body.put("permissions", options.permissionProfile)
-        }
-        return data(request("POST", "api/v1/services/$serviceId/sessions", body)) as JSONObject
-    }
-
-    suspend fun thread(serviceId: String, threadId: String): JSONObject =
-        data(request("GET", "api/v1/services/$serviceId/sessions/$threadId")) as JSONObject
-
-    suspend fun resume(serviceId: String, threadId: String): JSONObject =
-        data(
-            request(
-                "POST",
-                "api/v1/services/$serviceId/sessions/$threadId/resume",
-                JSONObject(),
-            ),
-        ) as JSONObject
-
-    suspend fun forkSession(serviceId: String, threadId: String, name: String?): JSONObject =
-        data(
-            request(
-                "POST",
-                "api/v1/services/$serviceId/sessions/$threadId/fork",
-                JSONObject().putIfNotBlank("name", name),
-            ),
-        ) as JSONObject
-
-    suspend fun takeover(serviceId: String, threadId: String): JSONObject =
-        data(
-            request(
-                "POST",
-                "api/v1/services/$serviceId/sessions/$threadId/takeover",
-                JSONObject(),
-            ),
-        ) as JSONObject
-
-    suspend fun acquireLease(serviceId: String, threadId: String, clientId: String) {
-        request(
-            "PUT",
-            "api/v1/services/$serviceId/sessions/$threadId/lease",
-            JSONObject().put("clientId", clientId),
-        )
-    }
-
-    suspend fun leaveLease(serviceId: String, threadId: String, clientId: String) {
-        request(
-            "DELETE",
-            "api/v1/services/$serviceId/sessions/$threadId/lease",
-            query = mapOf("clientId" to clientId),
-        )
-    }
-
-    suspend fun releaseSession(serviceId: String, threadId: String) {
-        request(
-            "POST",
-            "api/v1/services/$serviceId/sessions/$threadId/release",
-            JSONObject(),
-        )
-    }
-
-    suspend fun permissionProfiles(serviceId: String, cwd: String?): JSONObject =
-        data(
-            request(
-                "GET",
-                "api/v1/services/$serviceId/permission-profiles",
-                query = cwd?.takeIf(String::isNotBlank)?.let { mapOf("cwd" to it) }.orEmpty(),
-            ),
-        ) as JSONObject
-
-    suspend fun updateThreadSettings(
-        serviceId: String,
-        threadId: String,
-        update: ThreadSettingsUpdate,
-    ) {
-        val body = JSONObject()
-            .putIfNotBlank("cwd", update.cwd)
-            .putIfNotBlank("model", update.model)
-            .putIfNotBlank("effort", update.effort)
-            .putIfNotBlank("approvalPolicy", update.approvalPolicy)
-            .putIfNotBlank("permissions", update.permissionProfile)
-            .putIfNotBlank("sandbox", update.sandbox)
-        update.networkAccess?.let { body.put("networkAccess", it) }
-        update.collaborationMode?.let { body.put("collaborationMode", it.toJson()) }
-        request("PUT", "api/v1/services/$serviceId/sessions/$threadId/settings", body)
-    }
-
-    suspend fun goal(serviceId: String, threadId: String): JSONObject =
-        data(request("GET", "api/v1/services/$serviceId/sessions/$threadId/goal")) as JSONObject
-
-    suspend fun setGoal(
-        serviceId: String,
-        threadId: String,
-        objective: String? = null,
-        status: String? = null,
-    ): JSONObject {
-        val body = JSONObject()
-            .putIfNotBlank("objective", objective)
-            .putIfNotBlank("status", status)
-        return data(
-            request("PUT", "api/v1/services/$serviceId/sessions/$threadId/goal", body),
-        ) as JSONObject
-    }
-
-    suspend fun clearGoal(serviceId: String, threadId: String) {
-        request("DELETE", "api/v1/services/$serviceId/sessions/$threadId/goal")
-    }
-
-    suspend fun renameSession(serviceId: String, threadId: String, name: String) {
-        request(
-            "PUT",
-            "api/v1/services/$serviceId/sessions/$threadId/name",
-            JSONObject().put("name", name),
-        )
-    }
-
-    suspend fun archiveSession(serviceId: String, threadId: String) {
-        request("POST", "api/v1/services/$serviceId/sessions/$threadId/archive", JSONObject())
-    }
-
-    suspend fun unarchiveSession(serviceId: String, threadId: String) {
-        request("POST", "api/v1/services/$serviceId/sessions/$threadId/unarchive", JSONObject())
-    }
-
-    suspend fun compactSession(serviceId: String, threadId: String) {
-        request("POST", "api/v1/services/$serviceId/sessions/$threadId/compact", JSONObject())
-    }
-
-    suspend fun reviewUncommitted(serviceId: String, threadId: String): JSONObject =
-        data(
-            request(
-                "POST",
-                "api/v1/services/$serviceId/sessions/$threadId/review",
-                JSONObject().put(
-                    "target",
-                    JSONObject().put("type", "uncommittedChanges"),
-                ),
-            ),
-        ) as JSONObject
-
-    suspend fun deleteSession(serviceId: String, threadId: String) {
-        request("DELETE", "api/v1/services/$serviceId/sessions/$threadId")
-    }
-
-    suspend fun sendTurn(
-        serviceId: String,
-        threadId: String,
-        text: String,
-        model: String?,
-        effort: String?,
-        context: List<PromptContext> = emptyList(),
-    ): JSONObject {
-        val body = JSONObject()
-            .put("text", text)
-            .put("context", context.toJson())
-            .putIfNotBlank("model", model)
-            .putIfNotBlank("effort", effort)
-        return data(
-            request("POST", "api/v1/services/$serviceId/sessions/$threadId/turns", body),
-        ) as JSONObject
-    }
-
-    suspend fun steer(
-        serviceId: String,
-        threadId: String,
-        turnId: String,
-        text: String,
-        context: List<PromptContext> = emptyList(),
-    ) {
-        request(
-            "POST",
-            "api/v1/services/$serviceId/sessions/$threadId/steer",
-            JSONObject()
-                .put("turnId", turnId)
-                .put("text", text)
-                .put("context", context.toJson()),
-        )
-    }
-
-    suspend fun interrupt(serviceId: String, threadId: String, turnId: String) {
-        request(
-            "POST",
-            "api/v1/services/$serviceId/sessions/$threadId/interrupt",
-            JSONObject().put("turnId", turnId),
-        )
-    }
-
-    suspend fun pendingRequests(serviceId: String?): JSONArray {
-        val query = serviceId?.let { mapOf("serviceId" to it) } ?: emptyMap()
-        return data(request("GET", "api/v1/requests", query = query)) as JSONArray
-    }
-
-    suspend fun respond(requestId: String, result: JSONObject) {
-        request(
-            "POST",
-            "api/v1/requests/$requestId/respond",
-            JSONObject().put("result", result),
-        )
-    }
 
     suspend fun home(serviceId: String): String =
         (data(request("GET", "api/v1/services/$serviceId/fs/home")) as JSONObject)
@@ -536,40 +320,5 @@ class GatewayException(
     override val message: String,
     val details: JSONObject? = null,
 ) : Exception(message)
-
-private fun JSONObject.putIfNotBlank(key: String, value: String?): JSONObject {
-    if (!value.isNullOrBlank()) put(key, value)
-    return this
-}
-
-private fun List<PromptContext>.toJson(): JSONArray = JSONArray().also { array ->
-    forEach { context ->
-        array.put(
-            JSONObject()
-                .put(
-                    "type",
-                    when (context.type) {
-                        PromptContextType.FILE -> "mention"
-                        PromptContextType.IMAGE -> "localImage"
-                        PromptContextType.SKILL -> "skill"
-                    },
-                )
-                .put("path", context.path)
-                .apply {
-                    if (context.type != PromptContextType.IMAGE) put("name", context.name)
-                },
-        )
-    }
-}
-
-private fun CollaborationModeSelection.toJson(): JSONObject = JSONObject()
-    .put("mode", mode)
-    .put(
-        "settings",
-        JSONObject()
-            .put("model", model)
-            .put("reasoning_effort", effort ?: JSONObject.NULL)
-            .put("developer_instructions", JSONObject.NULL),
-    )
 
 private fun String.ensureTrailingSlash(): String = if (endsWith('/')) this else "$this/"

@@ -19,6 +19,9 @@ let client: ProtocolClient | undefined;
 let stopping = false;
 let retryDelay = 1_000;
 
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
 process.stdout.write(
   [
     `服务名: ${config.name}`,
@@ -61,6 +64,3 @@ function shutdown(): void {
   client?.close();
   service.close();
 }
-
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);

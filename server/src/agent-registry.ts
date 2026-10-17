@@ -8,7 +8,6 @@ import type {
   AgentInboundMessage,
   AgentResponseMessage,
   AgentStreamMessage,
-  PendingServerRequest,
   ServiceView,
 } from "./domain.js";
 import { AppError, ConflictError, errorMessage } from "./errors.js";
@@ -35,6 +34,23 @@ interface TerminalEvent {
   terminalId: string;
   data?: string;
   exitCode?: number;
+}
+
+export interface CodexChannelEvent {
+  ownerId: string;
+  serviceId: string;
+  frame: {
+    channelId: string;
+    epoch: string;
+    sequence: number;
+    type: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface AgentDisconnectedEvent {
+  ownerId: string;
+  serviceId: string;
 }
 
 class AgentPeer {
@@ -221,7 +237,6 @@ class AgentPeer {
 
 export class AgentRegistry extends EventEmitter {
   private readonly peers = new Map<string, AgentPeer>();
-  private readonly pendingRequests = new Map<string, PendingServerRequest>();
   private readonly attachOperations = new Set<Promise<void>>();
   private closing = false;
 
@@ -393,27 +408,6 @@ export class AgentRegistry extends EventEmitter {
     return peer.request("fs.upload.finish", { streamId }, 90_000);
   }
 
-  listPending(ownerId: string, serviceId?: string): Omit<PendingServerRequest, "ownerId">[] {
-    return [...this.pendingRequests.values()]
-      .filter(
-        (request) => request.ownerId === ownerId && (!serviceId || request.serviceId === serviceId),
-      )
-      .map(({ ownerId: _ownerId, ...request }) => structuredClone(request));
-  }
-
-  async respond(ownerId: string, requestId: string, result: unknown): Promise<void> {
-    const pending = this.pendingRequests.get(requestId);
-    if (!pending || pending.ownerId !== ownerId) {
-      throw new ConflictError("该 Codex 请求已不再等待响应");
-    }
-    await this.request(pending.ownerId, pending.serviceId, "codex.respond", {
-      rpcId: pending.rpcId,
-      result,
-    });
-    this.pendingRequests.delete(requestId);
-    this.journal.publish(ownerId, "codex.request.resolved", { requestId }, pending.serviceId);
-  }
-
   disconnect(ownerId: string, serviceId: string): void {
     this.peers.get(this.key(ownerId, serviceId))?.close(4002, "服务已从 Gateway 移除");
   }
@@ -434,25 +428,20 @@ export class AgentRegistry extends EventEmitter {
 
   private handleEvent(peer: AgentPeer, message: AgentEventMessage): void {
     const payload = asRecord(message.payload);
-    if (message.event === "codex.notification") {
-      const method = typeof payload.method === "string" ? payload.method : "unknown";
-      this.journal.publish(peer.ownerId, `codex.${method}`, payload.params ?? {}, peer.serviceId);
-      return;
-    }
-    if (message.event === "codex.request") {
-      const requestId = randomUUID();
-      const pending: PendingServerRequest = {
-        requestId,
-        rpcId: normalizeRpcId(payload.rpcId),
+    if (message.event === "codex.channel") {
+      if (this.peers.get(this.key(peer.ownerId, peer.serviceId)) !== peer) return;
+      if (
+        typeof payload.channelId !== "string"
+        || typeof payload.epoch !== "string"
+        || !Number.isSafeInteger(payload.sequence)
+        || (payload.sequence as number) < 0
+        || typeof payload.type !== "string"
+      ) return;
+      this.emit("codex.channel", {
         ownerId: peer.ownerId,
         serviceId: peer.serviceId,
-        method: typeof payload.method === "string" ? payload.method : "unknown",
-        params: payload.params ?? {},
-        createdAt: new Date().toISOString(),
-      };
-      this.pendingRequests.set(requestId, pending);
-      const { ownerId: _ownerId, ...publicRequest } = pending;
-      this.journal.publish(peer.ownerId, "codex.request", publicRequest, peer.serviceId);
+        frame: payload as CodexChannelEvent["frame"],
+      } satisfies CodexChannelEvent);
       return;
     }
     if (message.event === "terminal.data" || message.event === "terminal.exit") {
@@ -469,18 +458,19 @@ export class AgentRegistry extends EventEmitter {
       this.emit("terminal", event);
       return;
     }
-    this.journal.publish(peer.ownerId, `agent.${message.event}`, message.payload, peer.serviceId);
+    if (message.event === "codex.runtime" || message.event === "agent.error") {
+      this.journal.publish(peer.ownerId, `agent.${message.event}`, message.payload, peer.serviceId);
+    }
   }
 
   private handleClose(peer: AgentPeer, message: string): void {
     const key = this.key(peer.ownerId, peer.serviceId);
     if (this.peers.get(key) !== peer) return;
     this.peers.delete(key);
-    for (const [id, request] of this.pendingRequests) {
-      if (request.ownerId === peer.ownerId && request.serviceId === peer.serviceId) {
-        this.pendingRequests.delete(id);
-      }
-    }
+    this.emit("disconnected", {
+      ownerId: peer.ownerId,
+      serviceId: peer.serviceId,
+    } satisfies AgentDisconnectedEvent);
     this.journal.publish(
       peer.ownerId,
       "service.status",
@@ -496,11 +486,6 @@ export class AgentRegistry extends EventEmitter {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
-}
-
-function normalizeRpcId(value: unknown): number | string {
-  if (typeof value === "number" || typeof value === "string") return value;
-  throw new Error("Agent sent an invalid Codex request id");
 }
 
 export type { TerminalEvent };

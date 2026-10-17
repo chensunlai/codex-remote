@@ -79,6 +79,8 @@ android {
         buildConfig = true
     }
 
+    sourceSets.getByName("main").assets.srcDir(rootProject.file("../frontend-host"))
+
     packaging.resources.excludes += setOf(
         "/META-INF/{AL2.0,LGPL2.1}",
         "/META-INF/DEPENDENCIES",
@@ -101,13 +103,7 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("com.composables:icons-lucide-cmp:2.2.1")
-    implementation("dev.chrisbanes.haze:haze:1.7.2")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
-    // 0.39.2 is the last release aligned with this project's Kotlin 2.3 and Compose 1.10 toolchain.
-    //noinspection NewerVersionAvailable
-    implementation("com.mikepenz:multiplatform-markdown-renderer:0.39.2")
-    //noinspection NewerVersionAvailable
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.39.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

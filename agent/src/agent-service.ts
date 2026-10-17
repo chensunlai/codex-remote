@@ -1,10 +1,11 @@
 import { homedir, hostname, platform, arch } from "node:os";
 import type { Readable } from "node:stream";
-import { CodexRuntime } from "./codex-runtime.js";
 import { FileService } from "./file-service.js";
 import type { GatewayStream } from "./protocol-client.js";
 import { TerminalService } from "./terminal-service.js";
 import { APP_VERSION } from "./version.js";
+import { CodexChannels } from "./codex-channels.js";
+import { CodexRuntimeControl } from "./codex-runtime-control.js";
 
 interface Transport {
   event: (event: string, payload: unknown) => Promise<void>;
@@ -14,27 +15,16 @@ interface Transport {
 export class AgentService {
   private transport: Transport | undefined;
   private readonly files = new FileService();
-  private readonly codex: CodexRuntime;
   private readonly terminals: TerminalService;
+  private readonly channels: CodexChannels;
+  private readonly runtimeControl: CodexRuntimeControl;
 
   constructor(codexExecutable: string) {
-    this.codex = new CodexRuntime(codexExecutable, {
-      notification: (message) => {
-        void this.emit("codex.notification", message);
-      },
-      request: (message) => {
-        void this.emit("codex.request", {
-          rpcId: message.id,
-          method: message.method,
-          params: message.params,
-        });
-      },
-      stderr: (message) => {
-        void this.emit("codex.stderr", { message });
-      },
-      closed: (message) => {
-        void this.emit("codex.closed", { message });
-      },
+    this.channels = new CodexChannels(codexExecutable, (frame) => {
+      void this.emit("codex.channel", frame).catch(() => {});
+    });
+    this.runtimeControl = new CodexRuntimeControl(codexExecutable, this.channels, () => {
+      void this.emit("codex.runtime", this.runtimeControl.snapshot()).catch(() => {});
     });
     this.terminals = new TerminalService({
       data: (terminalId, data) => {
@@ -48,6 +38,7 @@ export class AgentService {
 
   setTransport(transport?: Transport): void {
     this.transport = transport;
+    if (!transport) this.channels.disconnected();
   }
 
   async request(method: string, rawParams: unknown): Promise<unknown> {
@@ -61,26 +52,46 @@ export class AgentService {
           agentVersion: APP_VERSION,
           home: homedir(),
           capabilities: [
-            "codex-app-server",
-            "codex-daemon-preferred",
-            "codex-thread-takeover",
-            "codex-thread-release",
+            "codex-raw-channels",
+            "codex-runtime-control",
             "terminal",
             "files",
             "stream-transfer",
           ],
         };
-      case "codex.rpc": {
-        const rpcMethod = stringValue(params.method, "Codex RPC method");
-        return this.codex.request(rpcMethod, params.params ?? {});
-      }
-      case "codex.respond":
-        await this.codex.respond(rpcId(params.rpcId), params.result);
-        return {};
-      case "codex.takeover":
-        return this.codex.takeoverThread(stringValue(params.threadId, "threadId"));
-      case "codex.release":
-        return this.codex.releaseThread(stringValue(params.threadId, "threadId"));
+      case "codex.channel.attach":
+        return this.channels.attach({
+          channelId: stringValue(params.channelId, "channelId"),
+          sessionId: stringValue(params.sessionId, "sessionId"),
+          ...(params.afterSequence !== undefined ? { afterSequence: Number(params.afterSequence) } : {}),
+          ...(params.epoch !== undefined ? { epoch: stringValue(params.epoch, "epoch") } : {}),
+          ...(params.initialize !== undefined ? { initialize: params.initialize } : {}),
+        });
+      case "codex.channel.send":
+        return this.channels.send({
+          channelId: stringValue(params.channelId, "channelId"),
+          sessionId: stringValue(params.sessionId, "sessionId"),
+          epoch: stringValue(params.epoch, "epoch"),
+          messageId: stringValue(params.messageId, "messageId"),
+          message: params.message,
+        });
+      case "codex.channel.detach":
+        return this.channels.detach({
+          channelId: stringValue(params.channelId, "channelId"),
+          sessionId: stringValue(params.sessionId, "sessionId"),
+        });
+      case "codex.channel.ack":
+        return this.channels.ack({
+          channelId: stringValue(params.channelId, "channelId"),
+          sessionId: stringValue(params.sessionId, "sessionId"),
+          sequence: Number(params.sequence),
+        });
+      case "codex.runtime.status":
+        return this.runtimeControl.status();
+      case "codex.runtime.update":
+        return { operation: this.runtimeControl.update() };
+      case "codex.runtime.restart":
+        return this.runtimeControl.restart(params.confirmed === true);
       case "fs.home":
         return this.files.home();
       case "fs.list":
@@ -159,7 +170,7 @@ export class AgentService {
 
   close(): void {
     this.terminals.closeAll();
-    this.codex.close();
+    this.channels.close();
   }
 
   private emit(event: string, payload: unknown): Promise<void> {
@@ -185,9 +196,4 @@ function optionalString(value: unknown): string | undefined {
 
 function integer(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isInteger(value) ? value : fallback;
-}
-
-function rpcId(value: unknown): string | number {
-  if (typeof value === "string" || typeof value === "number") return value;
-  throw new Error("Codex RPC id 无效");
 }

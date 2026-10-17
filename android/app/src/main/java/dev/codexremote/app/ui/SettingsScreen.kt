@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,6 +43,7 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
             Column(
                 Modifier
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 12.dp)
                     .widthIn(max = 620.dp),
             ) {
@@ -72,6 +75,10 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text("Codex Remote", style = androidx.compose.material3.MaterialTheme.typography.bodyLarge)
+                state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
+                    Spacer(Modifier.height(20.dp))
+                    CodexManagementPanel(service, viewModel.gatewayApi)
+                }
                 Spacer(Modifier.height(20.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(20.dp))

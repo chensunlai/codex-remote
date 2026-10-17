@@ -1,18 +1,17 @@
 import { resolve } from "node:path";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import { z, type ZodType } from "zod";
-import type WebSocket from "ws";
 import { AgentRegistry, type TerminalEvent } from "./agent-registry.js";
 import type { ServerConfig } from "./config.js";
 import type { GatewayEvent } from "./domain.js";
 import { AppError, ConflictError, errorMessage } from "./errors.js";
 import { EventJournal } from "./event-journal.js";
 import { ServiceStore } from "./service-store.js";
-import { ThreadLeaseManager } from "./thread-lease-manager.js";
 import { TokenStore } from "./token-store.js";
 import { APP_VERSION } from "./version.js";
+import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -23,7 +22,6 @@ declare module "fastify" {
 export interface GatewayServices {
   agents: AgentRegistry;
   events: EventJournal;
-  leases: ThreadLeaseManager;
   services: ServiceStore;
   tokens: TokenStore;
 }
@@ -34,54 +32,9 @@ export interface BuiltGateway {
 }
 
 const serviceParams = z.object({ serviceId: z.string().uuid() });
-const threadParams = serviceParams.extend({ threadId: z.string().min(1).max(255) });
 const filePath = z.string().min(1).max(4096).refine((value) => value.startsWith("/"), {
   message: "远端路径必须是绝对路径",
 });
-const promptContext = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("mention"),
-    name: z.string().trim().min(1).max(255),
-    path: filePath,
-  }),
-  z.object({ type: z.literal("localImage"), path: filePath }),
-  z.object({
-    type: z.literal("skill"),
-    name: z.string().trim().min(1).max(255),
-    path: filePath,
-  }),
-]);
-const reviewTarget = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("uncommittedChanges") }),
-  z.object({ type: z.literal("baseBranch"), branch: z.string().trim().min(1).max(255) }),
-  z.object({
-    type: z.literal("commit"),
-    sha: z.string().trim().min(1).max(255),
-    title: z.string().trim().max(255).nullable().default(null),
-  }),
-  z.object({
-    type: z.literal("custom"),
-    instructions: z.string().trim().min(1).max(16 * 1024),
-  }),
-]);
-const approvalPolicy = z.enum(["untrusted", "on-request", "never"]);
-const sandboxMode = z.enum(["read-only", "workspace-write", "danger-full-access"]);
-const collaborationMode = z.object({
-  mode: z.enum(["plan", "default"]),
-  settings: z.object({
-    model: z.string().trim().min(1).max(255),
-    reasoning_effort: z.string().trim().min(1).max(32).nullable(),
-    developer_instructions: z.string().max(64 * 1024).nullable(),
-  }),
-});
-const goalStatus = z.enum([
-  "active",
-  "paused",
-  "blocked",
-  "usageLimited",
-  "budgetLimited",
-  "complete",
-]);
 
 export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> {
   const events = await EventJournal.open(resolve(config.dataDirectory, "events.jsonl"));
@@ -89,33 +42,7 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   const tokens = await TokenStore.open(resolve(config.dataDirectory, "tokens.json"));
   await tokens.import(config.apiTokens);
   const agents = new AgentRegistry(services, events);
-  const leases = new ThreadLeaseManager({
-    status: async ({ ownerId, serviceId, threadId }) => {
-      const result = await agents.request<Record<string, unknown>>(
-        ownerId,
-        serviceId,
-        "codex.rpc",
-        { method: "thread/read", params: { threadId } },
-      );
-      return threadStatus(result);
-    },
-    release: async ({ ownerId, serviceId, threadId }, force) => {
-      if (force) {
-        await agents.request(ownerId, serviceId, "codex.release", { threadId });
-      } else {
-        await agents.request(
-          ownerId,
-          serviceId,
-          "codex.rpc",
-          { method: "thread/unsubscribe", params: { threadId } },
-        );
-      }
-    },
-    changed: ({ ownerId, serviceId, threadId }, locked) => {
-      events.publish(ownerId, "session.occupancy/changed", { threadId, locked }, serviceId);
-    },
-  });
-  const builtServices = { agents, events, leases, services, tokens };
+  const builtServices = { agents, events, services, tokens };
 
   const app = Fastify({
     logger: {
@@ -124,7 +51,7 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
     },
     ...(config.tls ? { https: config.tls } : {}),
   });
-  await app.register(websocket, { options: { maxPayload: 2 * 1024 * 1024 } });
+  await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(multipart, {
     limits: { fileSize: config.maxUploadBytes, files: 1 },
   });
@@ -170,13 +97,12 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   registerMetaRoutes(app, config);
   registerAgentRoute(app, builtServices);
   registerServiceRoutes(app, builtServices);
-  registerCodexRoutes(app, builtServices);
+  registerCodexChannelRoutes(app, builtServices);
   registerFileRoutes(app, builtServices, config);
   registerTerminalRoute(app, builtServices);
   registerEventRoutes(app, builtServices);
 
   app.addHook("onClose", async () => {
-    leases.close();
     await agents.close();
   });
   return { app, services: builtServices };
@@ -198,16 +124,10 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
       capabilities: [
         "outbound-agent",
         "multi-token",
-        "codex-daemon",
-        "sessions",
-        "approvals",
         "terminal",
         "files",
-        "review",
-        "prompt-context",
-        "thread-settings",
-        "permission-profiles",
-        "thread-goals",
+        "codex-channel-v2",
+        "codex-runtime-management",
       ],
     },
   }));
@@ -253,496 +173,7 @@ function registerServiceRoutes(app: FastifyInstance, services: GatewayServices):
       serviceId,
       "service.describe",
     );
-    const models = await codexRpc(services, request, serviceId, "model/list", {
-      limit: 5,
-      includeHidden: false,
-    });
-    return { data: { description, models } };
-  });
-}
-
-function registerCodexRoutes(app: FastifyInstance, services: GatewayServices): void {
-  app.get("/api/v1/services/:serviceId/models", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "model/list", {
-        limit: 100,
-        includeHidden: false,
-      }),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/collaboration-modes", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "collaborationMode/list", {}),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/rate-limits", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "account/rateLimits/read", {}),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/file-search", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    const query = parse(
-      z.object({
-        cwd: filePath,
-        query: z.string().trim().max(255).default(""),
-      }),
-      request.query,
-    );
-    return {
-      data: await codexRpc(services, request, serviceId, "fuzzyFileSearch", {
-        query: query.query,
-        roots: [query.cwd],
-        cancellationToken: null,
-      }),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/sessions", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    const query = parse(
-      z.object({
-        cursor: z.string().optional(),
-        limit: z.coerce.number().int().min(1).max(100).default(100),
-        archived: z.stringbool().optional().default(false),
-        searchTerm: z.string().trim().min(1).max(255).optional(),
-      }),
-      request.query,
-    );
-    const [threads, loaded] = await Promise.all([
-      codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/list",
-        compact({
-          cursor: query.cursor,
-          limit: query.limit,
-          archived: query.archived,
-          searchTerm: query.searchTerm,
-          sortKey: "updated_at",
-          sortDirection: "desc",
-          sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
-        }),
-      ),
-      codexRpc(services, request, serviceId, "thread/loaded/list", { limit: 10_000 })
-        .catch(() => ({ data: [] })),
-    ]);
-    return {
-      data: withLoadedState(threads, loaded, (threadId) => services.leases.isLocked({
-        ownerId: request.ownerId,
-        serviceId,
-        threadId,
-      })),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions", async (request, reply) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    const body = parse(
-      z.object({
-        cwd: filePath,
-        model: z.string().min(1).max(255).optional(),
-        effort: z.string().trim().min(1).max(32).optional(),
-        approvalPolicy: approvalPolicy.default("on-request"),
-        sandbox: sandboxMode.default("workspace-write"),
-        permissions: z.string().trim().min(1).max(255).optional(),
-        networkAccess: z.boolean().default(true),
-      }),
-      request.body,
-    );
-    if (body.permissions && body.sandbox !== "workspace-write") {
-      throw new AppError(
-        400,
-        "VALIDATION_ERROR",
-        "permissions 不能与自定义 sandbox 同时设置",
-      );
-    }
-    const result = await codexRpc(
-      services,
-      request,
-      serviceId,
-      "thread/start",
-      compact({
-        cwd: body.cwd,
-        model: body.model,
-        approvalPolicy: body.approvalPolicy,
-        sandbox: body.permissions ? undefined : body.sandbox,
-        permissions: body.permissions,
-        serviceName: "codex_remote_android",
-        config: compact({
-          model_reasoning_effort: body.effort,
-          sandbox_workspace_write: !body.permissions && body.sandbox === "workspace-write"
-            ? { network_access: body.networkAccess }
-            : undefined,
-        }),
-      }),
-      90_000,
-    );
-    return reply.status(201).send({ data: result });
-  });
-
-  app.get("/api/v1/services/:serviceId/sessions/:threadId", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await readThreadWithTurns(services, request, serviceId, threadId),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/resume", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    try {
-      return {
-        data: await codexRpc(services, request, serviceId, "thread/resume", { threadId }),
-      };
-    } catch (error) {
-      if (!isThreadInUseError(error)) throw error;
-      throw new AppError(
-        409,
-        "THREAD_IN_USE",
-        "会话正在被另一个 Codex 使用",
-        { threadId },
-      );
-    }
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/fork", async (request, reply) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        name: z.string().trim().min(1).max(255).optional(),
-      }).default({}),
-      request.body,
-    );
-    const result = await codexRpc(
-      services,
-      request,
-      serviceId,
-      "thread/fork",
-      { threadId },
-      90_000,
-    );
-    let response = result;
-    if (body.name) {
-      const forkedThreadId = resultThreadId(result);
-      if (!forkedThreadId) {
-        throw new AppError(502, "CODEX_INVALID_RESPONSE", "Codex 未返回分支会话 ID");
-      }
-      await codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/name/set",
-        { threadId: forkedThreadId, name: body.name },
-      );
-      response = withThreadName(result, body.name);
-    }
-    return reply.status(201).send({ data: response });
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/takeover", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await services.agents.request(
-        request.ownerId,
-        serviceId,
-        "codex.takeover",
-        { threadId },
-        120_000,
-      ),
-    };
-  });
-
-  app.put("/api/v1/services/:serviceId/sessions/:threadId/lease", async (request, reply) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const { clientId } = parse(z.object({ clientId: z.string().uuid() }), request.body);
-    services.leases.acquire({ ownerId: request.ownerId, serviceId, threadId }, clientId);
-    return reply.status(204).send();
-  });
-
-  app.delete("/api/v1/services/:serviceId/sessions/:threadId/lease", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const { clientId } = parse(z.object({ clientId: z.string().uuid() }), request.query);
-    const releaseAt = services.leases.leave(
-      { ownerId: request.ownerId, serviceId, threadId },
-      clientId,
-    );
-    return { data: { releaseAt: releaseAt ?? null } };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/release", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    await services.leases.release({ ownerId: request.ownerId, serviceId, threadId }, true);
-    return { data: { released: true } };
-  });
-
-  app.get("/api/v1/services/:serviceId/permission-profiles", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    const query = parse(
-      z.object({
-        cwd: filePath.optional(),
-        cursor: z.string().min(1).max(2048).optional(),
-        limit: z.coerce.number().int().min(1).max(100).optional(),
-      }),
-      request.query,
-    );
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "permissionProfile/list",
-        compact(query),
-      ),
-    };
-  });
-
-  app.put("/api/v1/services/:serviceId/sessions/:threadId/settings", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        cwd: filePath.optional(),
-        model: z.string().trim().min(1).max(255).optional(),
-        effort: z.string().trim().min(1).max(32).optional(),
-        approvalPolicy: approvalPolicy.optional(),
-        permissions: z.string().trim().min(1).max(255).optional(),
-        sandbox: sandboxMode.optional(),
-        networkAccess: z.boolean().optional(),
-        collaborationMode: collaborationMode.optional(),
-      }).refine((value) => Object.values(value).some((item) => item !== undefined), {
-        message: "至少提供一项会话设置",
-      }),
-      request.body,
-    );
-    if (body.permissions && body.sandbox) {
-      throw new AppError(
-        400,
-        "VALIDATION_ERROR",
-        "permissions 不能与 sandbox 同时设置",
-      );
-    }
-    const sandboxPolicy = body.sandbox
-      ? toSandboxPolicy(body.sandbox, body.networkAccess ?? true, body.cwd)
-      : undefined;
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/settings/update",
-        compact({
-          threadId,
-          cwd: body.cwd,
-          model: body.model,
-          effort: body.effort,
-          approvalPolicy: body.approvalPolicy,
-          permissions: body.permissions,
-          sandboxPolicy,
-          collaborationMode: body.collaborationMode,
-        }),
-      ),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "thread/goal/get", { threadId }),
-    };
-  });
-
-  app.put("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        objective: z.string().trim().min(1).max(16 * 1024).optional(),
-        status: goalStatus.optional(),
-        tokenBudget: z.number().int().positive().nullable().optional(),
-      }).refine((value) => Object.values(value).some((item) => item !== undefined), {
-        message: "至少提供一项 Goal 设置",
-      }),
-      request.body,
-    );
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/goal/set",
-        compact({ threadId, ...body }),
-      ),
-    };
-  });
-
-  app.delete("/api/v1/services/:serviceId/sessions/:threadId/goal", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "thread/goal/clear", { threadId }),
-    };
-  });
-
-  app.put("/api/v1/services/:serviceId/sessions/:threadId/name", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const { name } = parse(z.object({ name: z.string().trim().min(1).max(255) }), request.body);
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/name/set",
-        { threadId, name },
-      ),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/archive", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "thread/archive", { threadId }),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/unarchive", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await codexRpc(services, request, serviceId, "thread/unarchive", { threadId }),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/compact", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "thread/compact/start",
-        { threadId },
-        90_000,
-      ),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/review", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        target: reviewTarget.default({ type: "uncommittedChanges" }),
-        delivery: z.enum(["inline", "detached"]).optional(),
-      }).default({ target: { type: "uncommittedChanges" } }),
-      request.body,
-    );
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "review/start",
-        compact({ threadId, target: body.target, delivery: body.delivery }),
-        90_000,
-      ),
-    };
-  });
-
-  app.get("/api/v1/services/:serviceId/skills", async (request) => {
-    const { serviceId } = parse(serviceParams, request.params);
-    const query = parse(z.object({ cwd: filePath }), request.query);
-    return {
-      data: await codexRpc(services, request, serviceId, "skills/list", {
-        cwds: [query.cwd],
-        forceReload: false,
-      }),
-    };
-  });
-
-  app.delete("/api/v1/services/:serviceId/sessions/:threadId", async (request, reply) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    await codexRpc(services, request, serviceId, "thread/delete", { threadId });
-    return reply.status(204).send();
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/turns", async (request, reply) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        text: z.string().min(1).max(1024 * 1024),
-        model: z.string().min(1).max(255).optional(),
-        effort: z.string().trim().min(1).max(32).optional(),
-        context: z.array(promptContext).max(24).default([]),
-      }),
-      request.body,
-    );
-    const result = await codexRpc(
-      services,
-      request,
-      serviceId,
-      "turn/start",
-      compact({
-        threadId,
-        input: [
-          { type: "text", text: body.text, text_elements: [] },
-          ...body.context,
-        ],
-        model: body.model,
-        effort: body.effort,
-      }),
-      90_000,
-    );
-    return reply.status(202).send({ data: result });
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/steer", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const body = parse(
-      z.object({
-        turnId: z.string().min(1).max(255),
-        text: z.string().min(1).max(1024 * 1024),
-        context: z.array(promptContext).max(24).default([]),
-      }),
-      request.body,
-    );
-    return {
-      data: await codexRpc(services, request, serviceId, "turn/steer", {
-        threadId,
-        expectedTurnId: body.turnId,
-        input: [
-          { type: "text", text: body.text, text_elements: [] },
-          ...body.context,
-        ],
-      }),
-    };
-  });
-
-  app.post("/api/v1/services/:serviceId/sessions/:threadId/interrupt", async (request) => {
-    const { serviceId, threadId } = parse(threadParams, request.params);
-    const { turnId } = parse(z.object({ turnId: z.string().min(1).max(255) }), request.body);
-    return {
-      data: await codexRpc(
-        services,
-        request,
-        serviceId,
-        "turn/interrupt",
-        { threadId, turnId },
-      ),
-    };
-  });
-
-  app.get("/api/v1/requests", async (request) => {
-    const query = parse(z.object({ serviceId: z.string().uuid().optional() }), request.query);
-    return { data: services.agents.listPending(request.ownerId, query.serviceId) };
-  });
-
-  app.post("/api/v1/requests/:requestId/respond", async (request, reply) => {
-    const { requestId } = parse(z.object({ requestId: z.string().uuid() }), request.params);
-    const { result } = parse(z.object({ result: z.unknown() }), request.body);
-    await services.agents.respond(request.ownerId, requestId, result);
-    return reply.status(204).send();
+    return { data: { description } };
   });
 }
 
@@ -973,163 +404,10 @@ function registerEventRoutes(app: FastifyInstance, services: GatewayServices): v
   });
 }
 
-function codexRpc(
-  services: GatewayServices,
-  request: FastifyRequest,
-  serviceId: string,
-  method: string,
-  params: unknown,
-  timeoutMs?: number,
-): Promise<unknown> {
-  return services.agents.request(
-    request.ownerId,
-    serviceId,
-    "codex.rpc",
-    { method, params },
-    timeoutMs,
-  );
-}
-
-function withLoadedState(
-  threads: unknown,
-  loaded: unknown,
-  isLeased: (threadId: string) => boolean,
-): unknown {
-  if (!threads || typeof threads !== "object" || Array.isArray(threads)) return threads;
-  const result = threads as Record<string, unknown>;
-  const data = Array.isArray(result.data) ? result.data : [];
-  const loadedIds = new Set(
-    loaded && typeof loaded === "object" && !Array.isArray(loaded)
-      && Array.isArray((loaded as Record<string, unknown>).data)
-      ? (loaded as { data: unknown[] }).data.filter(
-        (value): value is string => typeof value === "string",
-      )
-      : [],
-  );
-  return {
-    ...result,
-    data: data.map((value) => {
-      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-      const threadId = String((value as Record<string, unknown>).id);
-      return {
-        ...value as Record<string, unknown>,
-        locked: loadedIds.has(threadId) || isLeased(threadId),
-      };
-    }),
-  };
-}
-
-function threadStatus(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "notLoaded";
-  const thread = (value as Record<string, unknown>).thread;
-  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return "notLoaded";
-  const status = (thread as Record<string, unknown>).status;
-  if (!status || typeof status !== "object" || Array.isArray(status)) return "notLoaded";
-  const type = (status as Record<string, unknown>).type;
-  return typeof type === "string" ? type : "notLoaded";
-}
-
-function resultThreadId(value: unknown): string | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const thread = (value as Record<string, unknown>).thread;
-  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return null;
-  const id = (thread as Record<string, unknown>).id;
-  return typeof id === "string" && id.length > 0 ? id : null;
-}
-
-function withThreadName(value: unknown, name: string): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  const result = value as Record<string, unknown>;
-  const thread = result.thread;
-  if (!thread || typeof thread !== "object" || Array.isArray(thread)) return value;
-  return {
-    ...result,
-    thread: { ...thread as Record<string, unknown>, name },
-  };
-}
-
-function toSandboxPolicy(
-  sandbox: z.infer<typeof sandboxMode>,
-  networkAccess: boolean,
-  cwd?: string,
-): Record<string, unknown> {
-  switch (sandbox) {
-    case "danger-full-access":
-      return { type: "dangerFullAccess" };
-    case "read-only":
-      return { type: "readOnly", networkAccess };
-    case "workspace-write":
-      return {
-        type: "workspaceWrite",
-        writableRoots: cwd ? [cwd] : [],
-        networkAccess,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      };
-  }
-}
-
-async function readThreadWithTurns(
-  services: GatewayServices,
-  request: FastifyRequest,
-  serviceId: string,
-  threadId: string,
-): Promise<unknown> {
-  try {
-    return await codexRpc(services, request, serviceId, "thread/read", {
-      threadId,
-      includeTurns: true,
-    });
-  } catch (error) {
-    if (codexRpcCode(error) !== -32600) throw error;
-    const summary = await codexRpc(services, request, serviceId, "thread/read", { threadId });
-    return withEmptyTurns(summary);
-  }
-}
-
-function codexRpcCode(error: unknown): number | undefined {
-  if (error instanceof AppError && error.details && typeof error.details === "object") {
-    const rpcCode = (error.details as { rpcCode?: unknown }).rpcCode;
-    if (typeof rpcCode === "number") return rpcCode;
-  }
-  const match = errorMessage(error).match(/Codex RPC (-?\d+):/);
-  return match?.[1] ? Number(match[1]) : undefined;
-}
-
-function isThreadInUseError(error: unknown): boolean {
-  if (!(error instanceof AppError)) return false;
-  const details = (() => {
-    try {
-      return JSON.stringify(error.details ?? "");
-    } catch {
-      return "";
-    }
-  })();
-  const text = `${error.message} ${details}`;
-  return /thread.?in.?use|thread.?occupied|thread.?locked|rollout.?locked/i.test(text)
-    || /(?:thread|conversation|session).*(?:already|currently).*(?:loaded|running|active|in use|owned)/i
-      .test(text)
-    || /(?:another|other) (?:codex|client|process)/i.test(text);
-}
-
-function withEmptyTurns(result: unknown): unknown {
-  if (!result || typeof result !== "object" || Array.isArray(result)) return result;
-  const root = result as Record<string, unknown>;
-  if (!root.thread || typeof root.thread !== "object" || Array.isArray(root.thread)) return result;
-  return {
-    ...root,
-    thread: { ...(root.thread as Record<string, unknown>), turns: [] },
-  };
-}
-
 function parse<T>(schema: ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
   if (!result.success) {
     throw new AppError(400, "VALIDATION_ERROR", "请求参数无效", result.error.flatten());
   }
   return result.data;
-}
-
-function compact(value: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
