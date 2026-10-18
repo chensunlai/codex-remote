@@ -40,6 +40,7 @@ jobs:
       - name: Verify standalone WebSocket transport
         run: |
           node scripts/smoke-gateway-binary.mjs release/codex-remote-gateway-linux-x64
+          node scripts/smoke-gateway-binary.mjs release/codex-remote-gateway-linux-x64 --no-compression
           tar -xzf release/codex-remote-agent-runtime-linux-x64.tar.gz -C release
           CODEX_REMOTE_TEST_AGENT_BINARY=release/codex-remote-agent-linux-x64 npm test --workspace server -- src/extension-host.integration.test.ts
       - name: Restore Android signing key

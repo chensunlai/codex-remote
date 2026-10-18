@@ -4,13 +4,15 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once, EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createServer, createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import WebSocket from "ws";
 import { ChunkedTransport, WIRE_LIMIT } from "../transport/websocket.cjs";
 
 assert.ok(process.argv[2], "Usage: node scripts/smoke-gateway-binary.mjs <gateway-binary>");
+const compression = !process.argv.includes("--no-compression");
+const network = new WeakMap();
 const directory = await mkdtemp(join(tmpdir(), "gateway-binary-smoke-"));
 const token = randomUUID();
 const headers = { Authorization: `Bearer ${token}` };
@@ -51,6 +53,7 @@ try {
     if (message.id) void channels.get(agent).send({ type: "response", id: message.id, ok: true, result });
   };
   await channels.get(agent).ready;
+  assert.equal(agent.extensions.includes("permessage-deflate"), compression);
   await eventually(async () => {
     const { data } = await (await fetch(`${base}/api/v1/services`, { headers })).json();
     return data.some(service => service.id === serviceId && service.runtime.state === "connected");
@@ -59,9 +62,11 @@ try {
     clientId: randomUUID(), rendererId: randomUUID(), workspace: directory,
   })}`);
   assert.equal(JSON.parse(await nextMessage(renderer)).type, "ready");
+  assert.equal(renderer.extensions.includes("permessage-deflate"), compression);
   for (const size of [20, 32 - 0.01, 32, 60, 70]) {
     const body = "x".repeat(Math.floor(size * 1024 * 1024));
     const expected = digest(body);
+    const before = network.get(renderer).tcp.bytesRead;
     let received = nextMessage(renderer);
     // A paused reader fills native socket buffers and exercises real backpressure.
     // Bun's compatibility implementation previously duplicated accepted fragments here.
@@ -73,12 +78,15 @@ try {
     const message = JSON.parse(await received);
     assert.equal(message.type, "message");
     assert.equal(digest(message.payload[1]), expected);
+    const wireBytes = network.get(renderer).tcp.bytesRead - before;
+    if (compression) assert.ok(wireBytes < body.length / 10, `Compression inactive: ${wireBytes}`);
+    else assert.ok(wireBytes >= body.length);
     await channels.get(renderer).send({ type: "ack", sequence: message.sequence });
     received = nextMessage(renderer);
     await send("subsequent update");
     assert.equal(JSON.parse(await received).payload[1], "subsequent update");
     assert.equal(agent.readyState, WebSocket.OPEN);
-    console.log(`${size} MiB snapshot and subsequent update passed`);
+    console.log(`${size} MiB snapshot and subsequent update passed (${compression ? "compressed" : "plain"}: ${wireBytes} wire bytes)`);
   }
   assert.ok(maxWireBytes <= WIRE_LIMIT, `Unexpected network message size: ${maxWireBytes}`);
   // Verify the actual Bun server still rejects a single over-32 MiB wire message.
@@ -108,7 +116,12 @@ try {
 }
 
 function connect(path) {
-  const socket = new WebSocket(base.replace("http:", "ws:") + path, { headers, maxPayload: WIRE_LIMIT });
+  const metric = {};
+  const socket = new WebSocket(base.replace("http:", "ws:") + path, { headers, maxPayload: WIRE_LIMIT,
+    perMessageDeflate: compression,
+    createConnection(options) { metric.tcp = createConnection(options); return metric.tcp; },
+  });
+  network.set(socket, metric);
   // Awaited operations below report failures; retain a handler during cleanup.
   socket.on("error", () => {});
   sockets.push(socket);

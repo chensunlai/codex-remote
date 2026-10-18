@@ -13,6 +13,7 @@ function configureBunServer(bun, wireLimit) {
     const handlers = options.websocket;
     const server = serve.call(this, { ...options, websocket: {
       ...handlers,
+      perMessageDeflate: true,
       maxPayloadLength: wireLimit,
       backpressureLimit: wireLimit + HIGH_WATER,
       open(raw) {
@@ -67,7 +68,8 @@ function bindBunSocket(socket, state) {
       }
       await drain();
       if (state.closed || raw.readyState !== 1) throw new Error('WebSocket disconnected');
-      while (raw.send(data, options?.compress) === 0) await drain(true);
+      const compress = options?.compress ?? Buffer.byteLength(data) >= 1024;
+      while (raw.send(data, compress) === 0) await drain(true);
       // -1 means accepted into the native buffer: wait, never send it again.
       await drain();
     });

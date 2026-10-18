@@ -172,6 +172,8 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 管理员可在 App 的 Gateway 管理 → 参数中选择完整会话同步消息上限：`64 / 128 / 256 / 512 MiB`，默认 `128 MiB`。该设置保存于 Gateway 的 `gateway-settings.json`（`maxMessageBytes`），对新连接生效；调整后需要重连 App 和 Agent，实际链路按两端协商的较小上限执行。较高上限会增加手机重组及 WebView 解析时的内存占用。App 使用系统允许的大堆额度；配置上限不保证所有手机都能处理同等大小的消息，内存不足时会停止本次传输并提示。
 
+会话 WebSocket 链路启用标准 `permessage-deflate` 压缩，支持压缩的 Agent 和 App 自动协商；小于 `1 KiB` 的下发消息不压缩。分块阈值和消息上限仍按解压后的字节数计算。无需修改官方插件；不支持压缩的客户端仍可正常连接。
+
 Agent 保留最多 `48 MiB` 的未确认事件用于断线恢复，超过缓存范围时重新同步。中断的分片会被丢弃，未确认的用户操作不会自动重发。上述限制独立于文件上传、预览和下载限制。
 
 分块会话要求 App、Gateway、Agent 均升级至 `2.2.0` 或更新版本。旧连接入口保留；新版客户端遇到旧组件会提示升级。新 WebSocket 入口为 `/agent/v2/connect` 与 `/api/v4/services/:serviceId/extension`，现有 HTTP 资源接口沿用。

@@ -57,3 +57,11 @@ message; the stall deadline still applies. All endpoints must be updated togethe
 the 2.2.0 handshake's 1 MiB chunk setting is rejected explicitly.
 
 `fixtures/unicode.properties` is a shared JS/Kotlin byte-level test vector.
+
+WebSocket compression uses standard RFC 7692 `permessage-deflate`, independently
+of CRW1. Node ws and native Bun negotiate it at HTTP upgrade; existing Bun Agent
+and OkHttp App clients already offer it. Bun uses shared compression buffers,
+reset between messages; Node disables context takeover in both directions.
+Gateway skips compression below 1 KiB. Limits apply to decompressed messages;
+non-supporting peers fall back to the same uncompressed transport. No application
+payloads, message acknowledgements, or fragment headers change.

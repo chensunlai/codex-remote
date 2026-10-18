@@ -34,6 +34,23 @@ import kotlin.concurrent.thread
 class OfficialChatReconnectInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun standardCompressionPreservesFragmentedMessagesInBothDirections() {
+        Fixture(compression = true).use { fixture ->
+            val first = fixture.start()
+            val document = fixture.document.get()
+            first.generatedMessage(1, 34 * 1024 * 1024)
+            eventually(30_000) { fixture.evaluate("received[0]?.length") == (34 * 1024 * 1024).toString() }
+            val text = "图🙂".repeat(1_300_000)
+            fixture.post(text)
+            eventually { fixture.server.messages.size == 1 }
+            assertEquals(text, fixture.server.messages.single().getJSONArray("payload").getString(1))
+            assertTrue(first.compressedSent.get() >= 2)
+            assertTrue(first.compressedReceived.get() >= 2)
+            assertEquals(document, fixture.document.get())
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
     @Test fun largeConversationSnapshotReachesWebViewWithoutReloadingOrLosingDraft() {
         Fixture().use { fixture ->
             val first = fixture.start()
@@ -233,8 +250,8 @@ class OfficialChatReconnectInstrumentedTest {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private inner class Fixture : Closeable {
-        val server = SocketFixture()
+    private inner class Fixture(compression: Boolean = false) : Closeable {
+        val server = SocketFixture(compression)
         val document = AtomicReference<String>()
         val loads = AtomicInteger()
         val statuses = CopyOnWriteArrayList<String?>()
@@ -286,7 +303,7 @@ class OfficialChatReconnectInstrumentedTest {
         }
     }
 
-    private class SocketFixture : Closeable {
+    private class SocketFixture(private val compression: Boolean = false) : Closeable {
         private val listener = ServerSocket(0)
         val port: Int get() = listener.localPort
         val messages = CopyOnWriteArrayList<JSONObject>()
@@ -313,6 +330,8 @@ class OfficialChatReconnectInstrumentedTest {
             private val output = socket.getOutputStream()
             private val packets = CopyOnWriteArrayList<JSONObject>()
             val closeReceived = CountDownLatch(1)
+            val compressedReceived = AtomicInteger()
+            val compressedSent = AtomicInteger()
             @Volatile var autoDelivery = true
             private val fragments = FragmentDecoder(128 * 1024 * 1024)
             private var transferId = 0
@@ -329,8 +348,10 @@ class OfficialChatReconnectInstrumentedTest {
                     val key = headers.lines().first { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }.substringAfter(':').trim()
                     val accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
                         .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray()))
+                    if (compression) check(headers.contains("permessage-deflate"))
+                    val extension = if (compression) "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n" else ""
                     synchronized(output) {
-                        output.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n").toByteArray())
+                        output.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n${extension}\r\n").toByteArray())
                         output.flush()
                     }
                     frame(1, JSONObject().put("type", "transport-config").put("protocol", "crw1")
@@ -349,8 +370,13 @@ class OfficialChatReconnectInstrumentedTest {
                         }
                         require(length in 0..TRANSPORT_UPLOAD_BYTES.toLong())
                         val mask = if (size and 128 != 0) readExactly(4) else null
-                        val bytes = readExactly(length.toInt())
+                        var bytes = readExactly(length.toInt())
                         if (mask != null) bytes.indices.forEach { bytes[it] = (bytes[it].toInt() xor mask[it % 4].toInt()).toByte() }
+                        if (opcode and 64 != 0) {
+                            check(compression)
+                            bytes = inflate(bytes)
+                            compressedReceived.incrementAndGet()
+                        }
                         when (opcode and 15) {
                             1 -> {
                                 acceptPacket(JSONObject(String(bytes, Charsets.UTF_8)))
@@ -434,8 +460,11 @@ class OfficialChatReconnectInstrumentedTest {
             }
             fun abort() { socket.close() }
 
-            private fun frame(opcode: Int, bytes: ByteArray) = synchronized(output) {
-                output.write(128 or opcode)
+            private fun frame(opcode: Int, original: ByteArray) = synchronized(output) {
+                val compressed = compression && opcode in 1..2 && original.size >= 1024
+                val bytes = if (compressed) deflate(original) else original
+                if (compressed) compressedSent.incrementAndGet()
+                output.write(128 or opcode or if (compressed) 64 else 0)
                 if (bytes.size < 126) output.write(bytes.size)
                 else if (bytes.size <= 65535) {
                     output.write(126)
@@ -470,6 +499,38 @@ class OfficialChatReconnectInstrumentedTest {
             window.__codexExtensionHost={receive:function(value){window.received.push(value[1]);}};
             window.CodexFixture.ready(DOCUMENT_TOKEN);
             </script></head><body><input id="draft"></body></html>"""
+
+        // RFC 7692 raw DEFLATE messages omit the trailing SYNC_FLUSH marker.
+        fun deflate(bytes: ByteArray): ByteArray {
+            val codec = java.util.zip.Deflater(java.util.zip.Deflater.DEFAULT_COMPRESSION, true)
+            try {
+                codec.setInput(bytes)
+                val output = java.io.ByteArrayOutputStream()
+                val scratch = ByteArray(8192)
+                while (true) {
+                    val count = codec.deflate(scratch, 0, scratch.size, java.util.zip.Deflater.SYNC_FLUSH)
+                    output.write(scratch, 0, count)
+                    if (count < scratch.size) break
+                }
+                return output.toByteArray().let { it.copyOf(it.size - 4) }
+            } finally { codec.end() }
+        }
+
+        fun inflate(bytes: ByteArray): ByteArray {
+            val codec = java.util.zip.Inflater(true)
+            try {
+                codec.setInput(bytes + byteArrayOf(0, 0, -1, -1))
+                val output = java.io.ByteArrayOutputStream()
+                val scratch = ByteArray(8192)
+                while (!codec.needsInput()) {
+                    val count = codec.inflate(scratch)
+                    check(count > 0 || codec.needsInput())
+                    output.write(scratch, 0, count)
+                    check(output.size() <= TRANSPORT_WIRE_BYTES)
+                }
+                return output.toByteArray()
+            } finally { codec.end() }
+        }
 
         fun eventually(timeoutMillis: Long = 10_000, condition: () -> Boolean) {
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)

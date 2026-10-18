@@ -64,7 +64,9 @@ export async function buildGateway(config: ServerConfig, options: { runtime?: Ga
     ...(config.tls ? { https: config.tls } : {}),
   });
   // Official extension synchronization sends complete conversation snapshots.
-  await app.register(websocket, { options: { maxPayload: MAX_WEBSOCKET_BYTES } });
+  await app.register(websocket, { options: { maxPayload: MAX_WEBSOCKET_BYTES, perMessageDeflate: {
+    threshold: 1024, serverNoContextTakeover: true, clientNoContextTakeover: true,
+  } } });
   configureBunWebSocketServer(app.websocketServer);
   await app.register(multipart, {
     limits: { files: 1 },
