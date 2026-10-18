@@ -44,7 +44,7 @@ export class ProtocolClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url.toString(), {
         headers: { Authorization: `Bearer ${this.token}` },
-        maxPayload: 16 * 1024 * 1024,
+        maxPayload: 64 * 1024 * 1024,
         handshakeTimeout: 20_000,
       });
       this.socket = socket;

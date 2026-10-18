@@ -168,6 +168,8 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 切换 App 底部页面时保留聊天 WebView。短暂断线后，能够恢复原页面时会保留草稿；系统回收页面或宿主要求重新同步时，需要重新加载。结果不明的已发送操作不会自动重发，以免重复执行。
 
+官方前端会整条发送会话同步快照。Gateway 与 Agent 的 WebSocket 接收上限、Gateway 向 App 转发的消息上限为 `64 MiB`，Agent 保留最多 `48 MiB` 的未确认事件用于断线恢复。此上限独立于文件上传、预览和下载限制；大消息修复需要更新 Gateway 和 Agent。
+
 手机进入后台、断网或彻底关闭，都不会主动结束 Agent 上的官方扩展。**后端已接受的任务继续执行**；需要审批或补充信息时，等待用户恢复连接。Agent、扩展宿主和 App Server 必须持续运行，重启服务器或相关进程可能中断任务。
 
 官方设置等独立面板显示在聊天页上层。App 返回箭头和 Android 返回操作可关闭上层面板；键盘、原生弹窗和未保存设置的确认窗口优先处理返回。

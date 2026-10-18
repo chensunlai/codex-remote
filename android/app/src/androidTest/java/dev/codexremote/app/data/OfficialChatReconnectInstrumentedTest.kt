@@ -34,6 +34,22 @@ import kotlin.concurrent.thread
 class OfficialChatReconnectInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun largeConversationSnapshotReachesWebViewWithoutReloadingOrLosingDraft() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            fixture.evaluate("document.getElementById('draft').value='keep unsent draft'")
+            val before = fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])")
+            first.message(1, "x".repeat(20 * 1024 * 1024))
+            eventually { fixture.evaluate("received[0]?.length") == (20 * 1024 * 1024).toString() }
+            first.message(2, "next update")
+            eventually { fixture.evaluate("received[1]") == "\"next update\"" }
+            assertEquals(before, fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])"))
+            assertEquals(1, fixture.loads.get())
+            assertEquals(null, fixture.server.pollConnection(500))
+            assertEquals(0, fixture.server.messages.size)
+        }
+    }
+
     @Test fun serverCloseReconnectsPromptlyWithoutReloadingTheDocumentOrLosingTheDraft() {
         Fixture().use { fixture ->
             val first = fixture.start()
@@ -317,11 +333,13 @@ class OfficialChatReconnectInstrumentedTest {
             private fun frame(opcode: Int, bytes: ByteArray) = synchronized(output) {
                 output.write(128 or opcode)
                 if (bytes.size < 126) output.write(bytes.size)
-                else {
-                    require(bytes.size <= 65535)
+                else if (bytes.size <= 65535) {
                     output.write(126)
                     output.write(bytes.size shr 8)
                     output.write(bytes.size and 255)
+                } else {
+                    output.write(127)
+                    for (shift in 56 downTo 0 step 8) output.write(((bytes.size.toLong() ushr shift) and 255).toInt())
                 }
                 output.write(bytes)
                 output.flush()

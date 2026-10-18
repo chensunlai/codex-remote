@@ -60,7 +60,8 @@ export async function buildGateway(config: ServerConfig, options: { runtime?: Ga
     },
     ...(config.tls ? { https: config.tls } : {}),
   });
-  await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
+  // Official extension synchronization sends complete conversation snapshots.
+  await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
   await app.register(multipart, {
     limits: { files: 1 },
   });

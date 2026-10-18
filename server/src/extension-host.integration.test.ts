@@ -187,6 +187,30 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect((await logs()).split("task-accepted").length - 1).toBe(1);
   }, 30_000);
 
+  it("delivers and replays a conversation snapshot larger than 16 MiB without replacing its host", async () => {
+    const first = await connect();
+    const ready = await first.messages.next(message => message.type === "ready");
+    send(first.socket, ready.epoch, "large-snapshot", "large-snapshot");
+    const frame = await first.messages.next(message => message.type === "message");
+    const snapshot = unwire(frame.payload);
+    expect(snapshot.body.length).toBe(20 * 1024 * 1024);
+    expect(createHash("sha256").update(snapshot.body).digest("hex")).toBe(createHash("sha256").update("x".repeat(20 * 1024 * 1024)).digest("hex"));
+    // Disconnect before acknowledging the snapshot, as can happen on mobile.
+    const finished = closed(first.socket);
+    first.socket.close();
+    await finished;
+    const second = await connect({ epoch: ready.epoch, after: String(ready.sequence) });
+    const resumed = await second.messages.next(message => message.type === "ready");
+    expect(resumed.epoch).toBe(ready.epoch);
+    expect(resumed.resyncRequired).toBe(false);
+    const replay = resumed.frames.find((item: Json) => item.sequence === frame.sequence);
+    expect(unwire(replay.payload)).toEqual(snapshot);
+    second.socket.send(JSON.stringify({ type: "ack", sequence: resumed.sequence }));
+    send(second.socket, ready.epoch, "after-snapshot", "still connected");
+    expect(unwire((await second.messages.next(message => message.type === "message")).payload).echo).toBe("still connected");
+    expect((await gateway.services.agents.list(ownerId))[0]?.runtime.state).toBe("connected");
+  }, 30_000);
+
   const authorization = { Authorization: `Bearer ${TOKEN}` };
 
   async function connect(overrides: Record<string, string> = {}) {
@@ -271,6 +295,7 @@ exports.activate=context=>context.subscriptions.push(vscode.window.registerWebvi
   const image=view.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri,'webview','picture.png'));
   view.webview.html='<!doctype html><title>public-host-fixture</title><img src="'+image.toString()+'">';
   view.webview.onDidReceiveMessage(async message=>{
+    if(message==='large-snapshot'){view.webview.postMessage({body:'x'.repeat(20*1024*1024)});return;}
     if(message==='clipboard'){view.webview.postMessage({event:'clipboard-result',value:await vscode.env.clipboard.readText()});return;}
     if(message==='task'){
       const child=spawn(vscode.workspace.getConfiguration('chatgpt').get('cliExecutable'),['app-server'],{stdio:['pipe','pipe','pipe']});

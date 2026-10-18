@@ -8,8 +8,8 @@ import type { GatewayServices } from "./app.js";
 import type { AgentDisconnectedEvent, ExtensionViewEvent } from "./agent-registry.js";
 import { AppError, errorMessage } from "./errors.js";
 
-const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
-// Leave room for base64 expansion and the Agent response envelope within the 16 MiB transport limit.
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+// Resource downloads retain their existing, separate limit (including base64 headroom).
 const MAX_RESOURCE_BYTES = 12 * 1024 * 1024 - 4096;
 const gunzipAsync = promisify(gunzip);
 const serviceParams = z.object({ serviceId: z.string().uuid() });
@@ -165,7 +165,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       const data = JSON.stringify(message);
       const bytes = Buffer.byteLength(data);
       if (bytes > MAX_BUFFER_BYTES) {
-        socket.close(1009, "Extension view message exceeds 16 MiB");
+        socket.close(1009, "Extension view message exceeds 64 MiB");
       } else if (socket.bufferedAmount + bytes > MAX_BUFFER_BYTES) {
         socket.close(1013, "Extension view consumer is too slow; reconnect to resume");
       } else {

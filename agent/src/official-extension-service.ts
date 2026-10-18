@@ -43,7 +43,8 @@ interface ExtensionView {
   processes: Map<number, string | null>;
   stopping: boolean;
 }
-const maxFramesBytes = 8 * 1024 * 1024;
+// Leave room for HTML and other snapshot metadata within the 64 MiB transport.
+const maxFramesBytes = 48 * 1024 * 1024;
 const maxMessageBytes = 12 * 1024 * 1024;
 
 /** Keeps the official extension alive independently of Gateway/mobile sockets. */
