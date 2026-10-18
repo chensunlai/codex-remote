@@ -20,6 +20,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -97,13 +98,33 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     Text("应用于界面、对话和终端", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                GatewayAdministration(state, viewModel::refreshGatewayMetadata)
+                key(state.gatewayConfig, state.selectedServiceId) {
+                    CodexSettingsGroup("应用与 Agent 更新") {
+                        ProductUpdatePanel(state.gatewayConfig, state.services.firstOrNull { it.id == state.selectedServiceId })
+                    }
+                }
                 state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
-                    CodexSettingsGroup("Codex") { CodexManagementPanel(service, viewModel.gatewayApi) }
+                    key(state.gatewayConfig, service.id) {
+                        CodexSettingsGroup("Codex CLI") { CodexManagementPanel(service, viewModel.gatewayApi) }
+                    }
                 }
                 TextButton(onClick = viewModel::clearGateway, modifier = Modifier.align(Alignment.Start)) {
                     AppIcon(CodexIcons.Logout, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("移除此网关", Modifier.padding(start = 8.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun GatewayAdministration(state: AppState, onSettingsSaved: () -> Unit) {
+    val config = state.gatewayConfig
+    if (config != null && state.gatewayRole == "admin" && state.gatewayAdminSupported) {
+        key(config) {
+            CodexSettingsGroup("Gateway 管理") {
+                GatewayAdminPanel(config, state.gatewayTokenId, onSettingsSaved)
             }
         }
     }

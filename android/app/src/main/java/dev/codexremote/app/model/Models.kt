@@ -57,5 +57,9 @@ data class AppState(
     val remoteFiles: List<RemoteFile> = emptyList(),
     val filePreview: FilePreview? = null,
     val maxDownloadBytes: Long = 10L * 1024 * 1024,
+    val maxUploadBytes: Long = 10L * 1024 * 1024,
+    val gatewayRole: String? = null,
+    val gatewayTokenId: String? = null,
+    val gatewayAdminSupported: Boolean = false,
     val operation: String? = null,
 )

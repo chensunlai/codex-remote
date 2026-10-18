@@ -108,6 +108,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshServices() { launchOperation("正在刷新服务") { loadServicesAndSelect() } }
 
+    fun refreshGatewayMetadata() { launchOperation("正在刷新网关参数") { applyMeta(api.meta()) } }
+
     fun deleteService(serviceId: String) {
         launchOperation("正在删除服务") {
             terminalSessions.close(serviceId)
@@ -239,7 +241,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() { terminalSessions.closeAll() }
 
     private fun applyMeta(meta: org.json.JSONObject) {
-        _state.update { it.copy(maxDownloadBytes = meta.optJSONObject("limits")?.optLong("downloadBytes", 10L * 1024 * 1024) ?: 10L * 1024 * 1024) }
+        val limits = meta.optJSONObject("limits")
+        val auth = meta.optJSONObject("auth")
+        val capabilities = meta.optJSONArray("capabilities")
+        _state.update { it.copy(
+            maxDownloadBytes = limits?.optLong("downloadBytes", 10L * 1024 * 1024) ?: 10L * 1024 * 1024,
+            maxUploadBytes = limits?.optLong("uploadBytes", 10L * 1024 * 1024) ?: 10L * 1024 * 1024,
+            gatewayRole = auth?.optString("role"),
+            gatewayTokenId = auth?.optString("tokenId"),
+            gatewayAdminSupported = capabilities != null && (0 until capabilities.length()).any { index ->
+                capabilities.optString(index) == "gateway-admin-v1"
+            },
+        ) }
     }
 
     private suspend fun loadServicesAndSelect() {

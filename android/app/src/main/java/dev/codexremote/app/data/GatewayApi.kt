@@ -83,6 +83,33 @@ class GatewayApi {
 
     suspend fun services(): JSONArray = data(request("GET", "api/v1/services")) as JSONArray
 
+    suspend fun adminTokens(): JSONArray = data(request("GET", "api/v1/admin/tokens")) as JSONArray
+
+    suspend fun createAdminToken(label: String, role: String): JSONObject = data(request("POST", "api/v1/admin/tokens",
+        JSONObject().put("label", label).put("role", role))) as JSONObject
+
+    suspend fun revokeAdminToken(id: String) { request("DELETE", "api/v1/admin/tokens/$id") }
+
+    suspend fun adminSettings(): JSONObject = data(request("GET", "api/v1/admin/settings")) as JSONObject
+
+    suspend fun saveAdminSettings(uploadBytes: Long, downloadBytes: Long): JSONObject =
+        data(request("PUT", "api/v1/admin/settings", JSONObject()
+            .put("maxUploadBytes", uploadBytes).put("maxDownloadBytes", downloadBytes))) as JSONObject
+
+    suspend fun adminOverview(): JSONObject = data(request("GET", "api/v1/admin/overview")) as JSONObject
+
+    suspend fun adminServices(): JSONArray = data(request("GET", "api/v1/admin/services")) as JSONArray
+
+    suspend fun deleteAdminService(ownerId: String, serviceId: String) {
+        request("DELETE", "api/v1/admin/services/$ownerId/$serviceId")
+    }
+
+    suspend fun gatewayRuntime(checkUpdates: Boolean = false): JSONObject = data(request("GET", "api/v1/admin/runtime",
+        query = if (checkUpdates) mapOf("checkUpdates" to "true") else emptyMap())) as JSONObject
+
+    suspend fun gatewayOperation(update: Boolean): JSONObject = data(request("POST",
+        "api/v1/admin/${if (update) "update" else "restart"}", JSONObject().put("confirmed", true))) as JSONObject
+
     suspend fun codexRuntime(serviceId: String): JSONObject =
         data(request("GET", "api/v2/services/$serviceId/codex/runtime")) as JSONObject
 
@@ -292,13 +319,26 @@ class GatewayApi {
             "PUT" -> builder.put(requestBody ?: EMPTY_BODY)
             else -> error("Unsupported method: $method")
         }
-        execute(builder.build()).use { response ->
+        executeCancellable(builder.build()).use { response ->
             ensureSuccess(response)
             if (response.code == 204) JSONObject() else parseObject(response)
         }
     }
 
     private fun execute(request: Request): Response = client.newCall(request).execute()
+
+    private suspend fun executeCancellable(request: Request): Response = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resumeWithException(e)
+            }
+            override fun onResponse(call: Call, response: Response) {
+                continuation.resume(response) { _, abandoned, _ -> abandoned.close() }
+            }
+        })
+    }
 
     private fun parseObject(response: Response): JSONObject {
         val text = response.body.string()
