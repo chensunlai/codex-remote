@@ -24,6 +24,7 @@ import dev.codexremote.app.data.ExtensionSurface
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -33,6 +34,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -44,15 +46,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -121,6 +127,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     var status by remember(scopeKey) { mutableStateOf<String?>(null) }
     var error by remember(scopeKey) { mutableStateOf<String?>(null) }
     var menu by remember(scopeKey) { mutableStateOf(false) }
+    var mouseMode by remember(scopeKey) { mutableStateOf(false) }
     var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
     var workspace by remember(scopeKey) { mutableStateOf(store.workspace(scopeKey, service.home ?: "/")) }
     var chooseWorkspace by remember(scopeKey) { mutableStateOf(false) }
@@ -191,6 +198,12 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
             navigationIcon = { IconButton(onClick = { panelBack?.invoke() ?: viewModel.setSection(MainSection.SERVICES) }) {
                 AppIcon(CodexIcons.ArrowBack, contentDescription = if (panelBack != null) "返回对话" else "切换服务器")
             } }, actions = {
+                IconToggleButton(checked = mouseMode, onCheckedChange = { mouseMode = it },
+                    enabled = installedVersion != null,
+                    modifier = Modifier.semantics { stateDescription = if (mouseMode) "已开启" else "已关闭" }) {
+                    AppIcon(CodexIcons.MousePointer, contentDescription = "鼠标模式",
+                        tint = if (mouseMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 IconButton(onClick = { chooseWorkspace = true }, enabled = !requestInProgress) {
                     AppIcon(CodexIcons.FolderOpen, contentDescription = "选择工作目录")
                 }
@@ -214,7 +227,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
             if (installedVersion != null) {
                 key(scopeKey, installedVersion, workspace, rendererGeneration) {
                     OfficialWebView(scopeKey, store.clientId(scopeKey), service.id, service.home ?: "/", workspace,
-                        state.theme, state.fontScale, visible, viewModel, { status = it },
+                        state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
                         { panelBack = it }, menu || chooseWorkspace || applyConfirmation, Modifier.weight(1f))
                 }
@@ -282,11 +295,12 @@ private data class HostNotification(val method: String, val params: JSONObject, 
 @Composable
 private fun OfficialWebView(
     scope: String, clientId: String, serviceId: String, home: String, workspace: String,
-    theme: AppTheme, fontScale: Float, visible: Boolean, viewModel: MainViewModel,
+    theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, viewModel: MainViewModel,
     onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
     nativeModalOpen: Boolean, modifier: Modifier,
 ) {
     val context = LocalContext.current
+    val pointerContainers = remember { mutableStateMapOf<String, MouseModeWebViewContainer>() }
     var panels by remember { mutableStateOf<List<ExtensionSurface>>(emptyList()) }
     var preview by remember { mutableStateOf<FilePreview?>(null) }
     var notification by remember { mutableStateOf<HostNotification?>(null) }
@@ -346,11 +360,30 @@ private fun OfficialWebView(
     BackHandler(enabled = visible && topPanel != null && !keyboardVisible && !modalOpen) {
         topPanel?.let { session.closeSurface(it.id) }
     }
-    Box(modifier.fillMaxSize()) {
-        OfficialSurfaceWebView(session, "main", serviceId, theme, fontScale, visible && panels.isEmpty(), confirmation, viewModel, onStatus, onRendererGone)
-        panels.forEachIndexed { index, panel -> key(panel.id) {
-            OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, confirmation, viewModel, onStatus, onRendererGone)
-        } }
+    Column(modifier.fillMaxSize()) {
+        if (mouseMode) {
+            val target = pointerContainers[topPanel?.id ?: "main"]
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("滑动移动 · 轻点点击 · 双指滚动", style = MaterialTheme.typography.labelSmall)
+                    Text("用右侧箭头聚焦隐藏按钮，再移动指针点击", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { target?.navigateFocus(false) }, enabled = visible && target != null && !modalOpen) {
+                    AppIcon(CodexIcons.ChevronUp, "聚焦上一项")
+                }
+                IconButton(onClick = { target?.navigateFocus(true) }, enabled = visible && target != null && !modalOpen) {
+                    AppIcon(CodexIcons.ChevronDown, "聚焦下一项")
+                }
+            }
+        }
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            OfficialSurfaceWebView(session, "main", serviceId, theme, fontScale, visible && panels.isEmpty(), mouseMode && !modalOpen,
+                confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove("main") else pointerContainers["main"] = it })
+            panels.forEachIndexed { index, panel -> key(panel.id) {
+                OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, mouseMode && !modalOpen,
+                    confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove(panel.id) else pointerContainers[panel.id] = it })
+            } }
+        }
     }
     OfficialSettingsConfirmationDialog(confirmation, visible)
     notification?.takeIf { visible }?.let { item ->
@@ -388,8 +421,9 @@ private fun OfficialWebView(
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: String, serviceId: String,
-    theme: AppTheme, fontScale: Float, visible: Boolean, confirmation: OfficialSettingsConfirmation,
-    viewModel: MainViewModel, onStatus: (String?) -> Unit, onRendererGone: () -> Unit) {
+    theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, confirmation: OfficialSettingsConfirmation,
+    viewModel: MainViewModel, onStatus: (String?) -> Unit, onRendererGone: () -> Unit,
+    onPointerContainerChanged: (MouseModeWebViewContainer?) -> Unit) {
     val context = LocalContext.current
     val effectiveFontScale = fontScale * LocalDensity.current.fontScale
     val currentTheme by rememberUpdatedState(theme)
@@ -397,14 +431,17 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
     val currentVisible by rememberUpdatedState(visible)
     val background = MaterialTheme.colorScheme.background.toArgb()
     var browser by remember { mutableStateOf<WebView?>(null) }
+    var pointerContainer by remember { mutableStateOf<MouseModeWebViewContainer?>(null) }
     var script by remember { mutableStateOf<ScriptHandler?>(null) }
     DisposableEffect(session, surfaceId) { onDispose {
         confirmation.cancelSurface(surfaceId)
+        pointerContainer?.cancelPointer()
+        onPointerContainerChanged(null)
         script?.remove()
         browser?.let { session.detachSurface(surfaceId, it); it.destroy() }
     } }
     AndroidView(modifier = Modifier.fillMaxSize(), factory = {
-        WebView(context).apply {
+        MouseModeWebViewContainer(context, WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             browser = this
             setBackgroundColor(background)
@@ -429,6 +466,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             webViewClient = object : WebViewClient() {
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     session.close()
+                    pointerContainer?.cancelPointer()
                     script?.remove()
                     script = null
                     (view.parent as? ViewGroup)?.removeView(view)
@@ -463,6 +501,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             val themeCss = context.assets.open("theme.css").bufferedReader().use { it.readText() }
             session.attachSurface(surfaceId, this) { origin, html, documentId ->
                 confirmation.cancelSurface(surfaceId)
+                pointerContainer?.cancelPointer()
                 originHost = Uri.parse(origin).host
                 script?.remove()
                 val config = JSONObject().put("documentId", documentId).put("theme", currentTheme.id)
@@ -474,10 +513,12 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                     loadDataWithBaseURL("${origin.trimEnd('/')}/", html, "text/html", "UTF-8", null)
                 } else onStatus("当前 Android System WebView 不支持页面初始化，请更新系统 WebView 后重试。")
             }
-        }
-    }, update = { webView ->
+        }).also { pointerContainer = it; onPointerContainerChanged(it) }
+    }, update = { container ->
+        val webView = container.webView
+        container.mouseModeEnabled = mouseMode && visible
         if (!visible && webView.hasFocus()) webView.clearFocus()
-        webView.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        container.visibility = if (visible) View.VISIBLE else View.INVISIBLE
         webView.setBackgroundColor(background)
         webView.evaluateJavascript("window.__codexExtensionHost?.setTheme(${JSONObject.quote(theme.id)}, $effectiveFontScale)", null)
     })

@@ -47,6 +47,7 @@ object CodexIcons {
     val Messages: ImageVector = Lucide.MessagesSquare
     val MessageAdd: ImageVector = Lucide.MessageSquarePlus
     val More: ImageVector = Lucide.Ellipsis
+    val MousePointer: ImageVector = Lucide.MousePointer2
     val Network: ImageVector = Lucide.Network
     val Pause: ImageVector = Lucide.Pause
     val PencilLine: ImageVector = Lucide.PencilLine

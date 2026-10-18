@@ -24,7 +24,7 @@ const option = (name, fallback) => {
 if (args.includes("--fixture-cli")) await runFixture();
 else if (args.includes("--proxy-cli")) await runProxy();
 else if (args.includes("--help")) {
-  console.log("Usage: node scripts/smoke-official-extension.mjs [--extension DIR] [--artifacts DIR] [--send TEXT] [--expect TEXT] [--attachments] [--approval] [--settings] [--reload] [--timeout MS] [--codex EXECUTABLE]\n\nThe default backend is a safe local App Server fixture. --codex uses the logged-in real CLI; --send then makes a real model request. For real replies, request CODEX_REMOTE_EXTENSION_SMOKE_OK or set --expect. Playwright can be supplied with CODEX_PLAYWRIGHT_MODULE.");
+  console.log("Usage: node scripts/smoke-official-extension.mjs [--extension DIR] [--artifacts DIR] [--send TEXT] [--expect TEXT] [--attachments] [--mouse-input] [--approval] [--settings] [--reload] [--timeout MS] [--codex EXECUTABLE]\n\nThe default backend is a safe local App Server fixture. --codex uses the logged-in real CLI; --send then makes a real model request. For real replies, request CODEX_REMOTE_EXTENSION_SMOKE_OK or set --expect. --mouse-input requires --attachments and checks mobile focus navigation followed by a pointer-position touch. Playwright can be supplied with CODEX_PLAYWRIGHT_MODULE.");
 } else await runSmoke();
 
 async function runSmoke() {
@@ -35,7 +35,9 @@ async function runSmoke() {
   const realCodex = option("codex", "");
   const sendText = option("send", "");
   const approval = args.includes("--approval");
+  const mouseInput = args.includes("--mouse-input");
   assert.ok(!approval || (!realCodex && sendText), "--approval requires --send and the safe fixture backend");
+  assert.ok(!mouseInput || args.includes("--attachments"), "--mouse-input requires --attachments");
   const timeout = Number(option("timeout", "30000"));
   assert.ok(Number.isFinite(timeout) && timeout > 0, "--timeout must be positive milliseconds");
   const temporary = await mkdtemp(path.join(os.tmpdir(), "codex-extension-smoke-"));
@@ -175,7 +177,7 @@ async function runSmoke() {
     await withTimeout(initialHtml, timeout, "Official extension did not provide WebView HTML");
     const { chromium } = await import(process.env.CODEX_PLAYWRIGHT_MODULE || "playwright");
     browser = await chromium.launch({ headless: true });
-    context = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true });
+    context = await browser.newContext({ viewport: { width: 412, height: 915 }, hasTouch: true, ...(mouseInput ? { isMobile: true } : {}) });
     await context.exposeBinding("extensionSmokePostMessage", async (_source, surfaceId, payload) => {
       if (!runtime.connected) throw new Error("Extension host disconnected");
       runtime.send({ type: "message", surfaceId, payload });
@@ -246,11 +248,43 @@ async function runSmoke() {
       assert.equal(await composer.innerText(), "Unsent attachment draft", "Canceling picker must preserve draft");
       await pick([photo]);
       await page.waitForFunction(() => [...document.images].some(image => image.naturalWidth === 1 && image.naturalHeight === 1), null, { timeout });
+      let mouseInputCheck;
+      if (mouseInput) {
+        assert.equal(await page.evaluate(() => matchMedia("(hover: hover)").matches), false, "Phone fixture must report no physical hover capability");
+        const removePhoto = page.getByRole("button", { name: "Remove phone-photo.png", exact: true });
+        await removePhoto.waitFor({ state: "attached", timeout });
+        const isInteractive = () => removePhoto.evaluate(button => {
+          const style = getComputedStyle(button);
+          return style.pointerEvents !== "none" && Number(style.opacity) > 0;
+        });
+        assert.equal(await isInteractive(), false, "Official photo delete starts hidden on a phone");
+        const photoBounds = await page.getByRole("button", { name: "phone-photo.png", exact: true }).boundingBox();
+        assert.ok(photoBounds, "Official photo attachment must have bounds");
+        await page.mouse.move(photoBounds.x + photoBounds.width / 2, photoBounds.y + photoBounds.height / 2);
+        assert.equal(await isInteractive(), false, "Synthetic mouse movement must not bypass the official hover media query");
+        let focusSteps = 0;
+        for (; focusSteps < 80 && !(await isInteractive()); focusSteps++) await page.keyboard.press("Tab");
+        assert.ok(await isInteractive(), "Public Tab navigation must reveal the official photo delete button");
+        const deleteBounds = await removePhoto.boundingBox();
+        assert.ok(deleteBounds, "Revealed delete button must have bounds");
+        const x = deleteBounds.x + deleteBounds.width / 2;
+        const y = deleteBounds.y + deleteBounds.height / 2;
+        await page.mouse.move(x, y);
+        await page.touchscreen.tap(x, y);
+        await removePhoto.waitFor({ state: "detached", timeout });
+        assert.equal(await composer.innerText(), "Unsent attachment draft", "Removing the image must preserve the draft");
+        assert.equal(await page.evaluate(() => window.__extensionSmokeDocumentId), documentId, "Removing the image must preserve the document");
+        assert.equal((await readRequests(fixtureLog)).filter(request => request.method === "turn/start").length, 0, "Focus and pointer operations must not send a message");
+        mouseInputCheck = { hoverUnavailable: true, hoverStayedHidden: true, focusRevealedDelete: true, touchRemovedPhoto: true, focusSteps };
+        await pick([photo]);
+        await page.waitForFunction(() => [...document.images].some(image => image.naturalWidth === 1 && image.naturalHeight === 1), null, { timeout });
+      }
       await pick([notes]);
       await page.getByText("phone-notes.txt", { exact: true }).first().waitFor({ timeout });
       assert.equal(await page.evaluate(() => window.__extensionSmokeDocumentId), documentId, "Attachment selection must retain the document");
       assert.equal((await readRequests(fixtureLog)).filter(request => request.method === "turn/start").length, 0, "Attachment selection must not send a turn");
-      attachments = { pickerCancelled: true, photoDecoded: true, fileSelected: true, documentPreserved: true, noAutomaticSend: true };
+      attachments = { pickerCancelled: true, photoDecoded: true, fileSelected: true, documentPreserved: true, noAutomaticSend: true,
+        ...(mouseInputCheck ? { mouseInput: mouseInputCheck } : {}) };
       await page.screenshot({ path: path.join(artifactDirectory, "attachments.png"), fullPage: true });
     }
     let settings;
