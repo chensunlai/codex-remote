@@ -13,6 +13,7 @@ export interface ServerConfig {
   generatedApiToken?: string;
   maxUploadBytes: number;
   maxDownloadBytes: number;
+  maxMessageBytes?: number;
   tls?: { key: Buffer; cert: Buffer };
 }
 

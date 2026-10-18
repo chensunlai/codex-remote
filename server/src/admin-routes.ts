@@ -32,7 +32,7 @@ export function registerAdminRoutes(
         host: config.host,
         port: config.port,
         dataDirectory: config.dataDirectory,
-        limits: { uploadBytes: limits.maxUploadBytes, downloadBytes: limits.maxDownloadBytes },
+        limits: { uploadBytes: limits.maxUploadBytes, downloadBytes: limits.maxDownloadBytes, messageBytes: limits.maxMessageBytes },
         tokenCount: tokens.length,
         serviceCount: allServices.length,
         onlineServiceCount: allServices.filter((service) => services.agents.isOnline(service.ownerId, service.id)).length,
@@ -70,7 +70,11 @@ export function registerAdminRoutes(
 
     admin.get("/settings", async () => ({ data: settings.current }));
     admin.put("/settings", async (request) => ({
-      data: await settings.update(parse(gatewaySettingsSchema, request.body)),
+      data: await settings.update({
+        ...parse(gatewaySettingsSchema, request.body),
+        ...((request.body as Record<string, unknown>)?.maxMessageBytes === undefined
+          ? { maxMessageBytes: settings.current.maxMessageBytes } : {}),
+      }),
     }));
 
     admin.get("/runtime", async (request) => {

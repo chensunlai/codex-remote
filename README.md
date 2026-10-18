@@ -168,7 +168,13 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 切换 App 底部页面时保留聊天 WebView。短暂断线后，能够恢复原页面时会保留草稿；系统回收页面或宿主要求重新同步时，需要重新加载。结果不明的已发送操作不会自动重发，以免重复执行。
 
-官方前端会整条发送会话同步快照。Gateway 与 Agent 的 WebSocket 接收上限、Gateway 向 App 转发的消息上限为 `64 MiB`，Agent 保留最多 `48 MiB` 的未确认事件用于断线恢复。此上限独立于文件上传、预览和下载限制；大消息修复需要更新 Gateway 和 Agent。
+官方插件支持历史分页，但多端同步仍可能产生较大的状态快照。Agent ↔ Gateway ↔ App 在传输层透明分块：超过 `1 MiB` 的消息拆成二进制分片，收齐后才交给原有逻辑，单条 WebSocket 消息上限为 `16 MiB`。官方插件资源保持原样。
+
+管理员可在 App 的 Gateway 管理 → 参数中选择完整会话同步消息上限：`64 / 128 / 256 / 512 MiB`，默认 `128 MiB`。该设置保存于 Gateway 的 `gateway-settings.json`（`maxMessageBytes`），对新连接生效；调整后需要重连 App 和 Agent，实际链路按两端协商的较小上限执行。较高上限会增加手机重组及 WebView 解析时的内存占用。App 使用系统允许的大堆额度；配置上限不保证所有手机都能处理同等大小的消息，内存不足时会停止本次传输并提示。
+
+Agent 保留最多 `48 MiB` 的未确认事件用于断线恢复，超过缓存范围时重新同步。中断的分片会被丢弃，未确认的用户操作不会自动重发。上述限制独立于文件上传、预览和下载限制。
+
+分块会话要求 App、Gateway、Agent 均升级至 `2.2.0` 或更新版本。旧连接入口保留；新版客户端遇到旧组件会提示升级。新 WebSocket 入口为 `/agent/v2/connect` 与 `/api/v4/services/:serviceId/extension`，现有 HTTP 资源接口沿用。
 
 手机进入后台、断网或彻底关闭，都不会主动结束 Agent 上的官方扩展。**后端已接受的任务继续执行**；需要审批或补充信息时，等待用户恢复连接。Agent、扩展宿主和 App Server 必须持续运行，重启服务器或相关进程可能中断任务。
 

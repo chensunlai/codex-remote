@@ -50,6 +50,61 @@ class OfficialChatReconnectInstrumentedTest {
         }
     }
 
+    @Test fun snapshotAbove64MiBReachesWebViewAsOneMessage() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            val document = fixture.document.get()
+            first.generatedMessage(1, 70 * 1024 * 1024)
+            eventually(30_000) { fixture.evaluate("received[0]?.length") == (70 * 1024 * 1024).toString() }
+            first.message(2, "next")
+            eventually { fixture.evaluate("received[1]") == "\"next\"" }
+            assertEquals(document, fixture.document.get())
+            assertEquals(1, fixture.loads.get())
+            assertEquals(null, fixture.server.pollConnection(500))
+        }
+    }
+
+    @Test fun interruptedFragmentDoesNotAcknowledgeOrReplaceTheDocument() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            val before = fixture.document.get()
+            first.partialMessage()
+            Thread.sleep(200)
+            assertEquals("0", fixture.evaluate("received.length"))
+            first.abort()
+            val second = fixture.server.nextConnection()
+            second.ready()
+            second.message(1, "complete after reconnect")
+            eventually { fixture.evaluate("received[0]") == "\"complete after reconnect\"" }
+            assertEquals(before, fixture.document.get())
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
+    @Test fun largeOutboundMessageIsFragmentedAndDeliveredOnlyOnce() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            val text = "图🙂".repeat(400_000)
+            fixture.post(text)
+            eventually { fixture.server.messages.size == 1 }
+            assertEquals(text, fixture.server.messages.single().getJSONArray("payload").getString(1))
+            first.message(1, "after upload")
+            eventually { fixture.evaluate("received[0]") == "\"after upload\"" }
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
+    @Test fun oversizedTransferStopsWithoutAnAutomaticReconnectLoop() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            first.oversizedMessage()
+            eventually { fixture.statuses.any { it?.contains("传输已停止") == true } }
+            assertEquals(null, fixture.server.pollConnection(2_000))
+            assertEquals("0", fixture.evaluate("received.length"))
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
     @Test fun serverCloseReconnectsPromptlyWithoutReloadingTheDocumentOrLosingTheDraft() {
         Fixture().use { fixture ->
             val first = fixture.start()
@@ -259,6 +314,8 @@ class OfficialChatReconnectInstrumentedTest {
             private val packets = CopyOnWriteArrayList<JSONObject>()
             val closeReceived = CountDownLatch(1)
             @Volatile var autoDelivery = true
+            private val fragments = FragmentDecoder(128 * 1024 * 1024)
+            private var transferId = 0
             @Volatile private var sentClose = false
 
             fun serve() {
@@ -276,6 +333,8 @@ class OfficialChatReconnectInstrumentedTest {
                         output.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $accept\r\n\r\n").toByteArray())
                         output.flush()
                     }
+                    frame(1, JSONObject().put("type", "transport-config").put("protocol", "crw1")
+                        .put("chunkBytes", TRANSPORT_CHUNK_BYTES).put("maxMessageBytes", 128 * 1024 * 1024).toString().toByteArray())
                     accepted.put(this)
                     while (!socket.isClosed) {
                         val opcode = input.read()
@@ -294,13 +353,9 @@ class OfficialChatReconnectInstrumentedTest {
                         if (mask != null) bytes.indices.forEach { bytes[it] = (bytes[it].toInt() xor mask[it % 4].toInt()).toByte() }
                         when (opcode and 15) {
                             1 -> {
-                                val packet = JSONObject(String(bytes, Charsets.UTF_8))
-                                packets += packet
-                                if (packet.optString("type") == "message") {
-                                    messages += packet
-                                    if (autoDelivery) delivery(packet)
-                                }
+                                acceptPacket(JSONObject(String(bytes, Charsets.UTF_8)))
                             }
+                            2 -> fragments.binary(bytes)?.let { acceptPacket(JSONObject(it)) }
                             8 -> { closeReceived.countDown(); if (!sentClose) frame(8, bytes); break }
                             9 -> frame(10, bytes)
                         }
@@ -323,7 +378,56 @@ class OfficialChatReconnectInstrumentedTest {
                 .put("messageId", packet.getString("messageId")).put("accepted", true))
 
             fun awaitPacket(type: String) = eventually { packets.any { it.optString("type") == type } }
-            fun send(packet: JSONObject) = frame(1, packet.toString().toByteArray())
+            private fun acceptPacket(packet: JSONObject) {
+                packets += packet
+                if (packet.optString("type") == "message") {
+                    messages += packet
+                    if (autoDelivery) delivery(packet)
+                }
+            }
+            @Synchronized fun send(packet: JSONObject) {
+                awaitPacket("transport-ready")
+                val bytes = packet.toString().toByteArray()
+                if (bytes.size <= TRANSPORT_CHUNK_BYTES) frame(1, bytes)
+                else {
+                    val id = ++transferId
+                    var offset = 0
+                    while (offset < bytes.size) {
+                        val length = minOf(TRANSPORT_CHUNK_BYTES, bytes.size - offset)
+                        val part = java.nio.ByteBuffer.allocate(16 + length).putInt(0x43525731).putInt(id)
+                            .putInt(offset).putInt(bytes.size).put(bytes, offset, length).array()
+                        frame(2, part)
+                        offset += length
+                    }
+                }
+            }
+            @Synchronized fun generatedMessage(sequence: Int, size: Int) {
+                awaitPacket("transport-ready")
+                val prefix = """{"type":"message","viewId":"$VIEW_ID","epoch":"$EPOCH","sequence":$sequence,"surfaceId":"main","payload":["string","""".toByteArray()
+                val suffix = "\"]}".toByteArray()
+                val total = prefix.size + size + suffix.size
+                val id = ++transferId
+                var offset = 0
+                while (offset < total) {
+                    val count = minOf(TRANSPORT_CHUNK_BYTES, total - offset)
+                    val part = ByteArray(count + 16) { 'x'.code.toByte() }
+                    java.nio.ByteBuffer.wrap(part).putInt(0x43525731).putInt(id).putInt(offset).putInt(total)
+                    if (offset < prefix.size) prefix.copyInto(part, 16, offset, minOf(prefix.size, offset + count))
+                    val suffixStart = maxOf(offset, prefix.size + size)
+                    if (suffixStart < offset + count) suffix.copyInto(part, 16 + suffixStart - offset, suffixStart - prefix.size - size, offset + count - prefix.size - size)
+                    frame(2, part)
+                    offset += count
+                }
+            }
+            fun oversizedMessage() {
+                frame(2, java.nio.ByteBuffer.allocate(17).putInt(0x43525731).putInt(999).putInt(0)
+                    .putInt(129 * 1024 * 1024).put(1.toByte()).array())
+            }
+            fun partialMessage() {
+                val bytes = java.nio.ByteBuffer.allocate(16 + TRANSPORT_CHUNK_BYTES).putInt(0x43525731)
+                    .putInt(999).putInt(0).putInt(20 * 1024 * 1024).array()
+                frame(2, bytes)
+            }
             fun closeFromServer() {
                 sentClose = true
                 frame(8, byteArrayOf(3, 0xF4.toByte())) // 1012: service restart/reconnect

@@ -83,7 +83,7 @@ export async function loadAgentConfig(
 export function toAgentWebSocketUrl(config: AgentConfig): URL {
   const url = new URL(config.gatewayUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.pathname = "/agent/v1/connect";
+  url.pathname = "/agent/v2/connect";
   url.search = "";
   url.searchParams.set("serviceId", config.serviceId);
   url.searchParams.set("name", config.name);

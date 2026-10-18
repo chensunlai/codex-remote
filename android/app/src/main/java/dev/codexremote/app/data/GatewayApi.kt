@@ -92,9 +92,9 @@ class GatewayApi {
 
     suspend fun adminSettings(): JSONObject = data(request("GET", "api/v1/admin/settings")) as JSONObject
 
-    suspend fun saveAdminSettings(uploadBytes: Long, downloadBytes: Long): JSONObject =
+    suspend fun saveAdminSettings(uploadBytes: Long, downloadBytes: Long, messageBytes: Long): JSONObject =
         data(request("PUT", "api/v1/admin/settings", JSONObject()
-            .put("maxUploadBytes", uploadBytes).put("maxDownloadBytes", downloadBytes))) as JSONObject
+            .put("maxUploadBytes", uploadBytes).put("maxDownloadBytes", downloadBytes).put("maxMessageBytes", messageBytes))) as JSONObject
 
     suspend fun adminOverview(): JSONObject = data(request("GET", "api/v1/admin/overview")) as JSONObject
 
@@ -132,7 +132,7 @@ class GatewayApi {
         serviceId: String, clientId: String, rendererId: String, workspace: String,
         after: Long, epoch: String?, listener: WebSocketListener,
     ): WebSocket = client.newWebSocket(
-        Request.Builder().url(url("api/v3/services/$serviceId/extension", buildMap {
+        Request.Builder().url(url("api/v4/services/$serviceId/extension", buildMap {
             put("clientId", clientId)
             put("rendererId", rendererId)
             put("workspace", workspace)

@@ -1,3 +1,4 @@
+import { ChunkedTransport } from "../../transport/websocket.cjs";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -118,7 +119,7 @@ describe("Gateway and real Agent official extension host integration", () => {
     // Even a repeated accepted delivery ID must not execute the extension twice.
     send(first.socket, ready.epoch, "opaque-once", future);
     await first.messages.next(message => message.type === "delivery" && message.messageId === "opaque-once");
-    first.socket.send(JSON.stringify({ type: "message", epoch: ready.epoch, messageId: "binary-input", payload: ["bytes", "AP+J"] }));
+    packet(first.socket, { type: "message", epoch: ready.epoch, messageId: "binary-input", payload: ["bytes", "AP+J"] });
     const binaryEcho = await first.messages.next(message => message.type === "message");
     expect(unwire(binaryEcho.payload).echo).toEqual(Buffer.from([0, 255, 137]));
 
@@ -127,7 +128,7 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect(native.payload.method).toBe("clipboard.read");
     send(first.socket, ready.epoch, "task-once", "task");
     const started = await first.messages.next(message => message.type === "message" && unwire(message.payload).event === "task-started");
-    first.socket.send(JSON.stringify({ type: "ack", sequence: started.sequence }));
+    packet(first.socket, { type: "ack", sequence: started.sequence });
     const firstClosed = closed(first.socket);
     first.socket.close();
     await firstClosed;
@@ -139,7 +140,7 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect(resumed.resyncRequired).toBe(false);
     expect(resumed.pendingHostRequests).toEqual([native.payload]);
     expect(resumed.frames.some((frame: Json) => frame.type === "message" && unwire(frame.payload).event === "task-finished")).toBe(true);
-    second.socket.send(JSON.stringify({ type: "host-response", id: native.payload.id, result: "native clipboard" }));
+    packet(second.socket, { type: "host-response", id: native.payload.id, result: "native clipboard" });
     const nativeResult = await second.messages.next(message => message.type === "message" && unwire(message.payload).event === "clipboard-result");
     expect(unwire(nativeResult.payload)).toEqual({ event: "clipboard-result", value: "native clipboard" });
 
@@ -205,21 +206,55 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect(resumed.resyncRequired).toBe(false);
     const replay = resumed.frames.find((item: Json) => item.sequence === frame.sequence);
     expect(unwire(replay.payload)).toEqual(snapshot);
-    second.socket.send(JSON.stringify({ type: "ack", sequence: resumed.sequence }));
+    packet(second.socket, { type: "ack", sequence: resumed.sequence });
     send(second.socket, ready.epoch, "after-snapshot", "still connected");
     expect(unwire((await second.messages.next(message => message.type === "message")).payload).echo).toBe("still connected");
     expect((await gateway.services.agents.list(ownerId))[0]?.runtime.state).toBe("connected");
   }, 30_000);
 
+  it("transfers an opaque message larger than 64 MiB in both directions and keeps later updates ordered", async () => {
+    const channel = await connect();
+    const ready = await channel.messages.next(message => message.type === "ready");
+    const value = "你🙂".repeat(10 * 1024 * 1024);
+    send(channel.socket, ready.epoch, "above-64", value);
+    const response = unwire((await channel.messages.next(message => message.type === "message")).payload);
+    expect(createHash("sha256").update(response.echo).digest("hex")).toBe(createHash("sha256").update(value).digest("hex"));
+    send(channel.socket, ready.epoch, "after-large", "next");
+    expect(unwire((await channel.messages.next(message => message.type === "message")).payload).echo).toBe("next");
+  }, 60_000);
+
+  it("captures limits at handshake and chooses the lower Agent/Gateway limit", async () => {
+    const first = await connect();
+    await first.messages.next(message => message.type === "ready");
+    expect(transports.get(first.socket)!.maxMessageBytes).toBe(128 * 1024 * 1024);
+    async function settings(size: number) {
+      const reply = await fetch(`${baseUrl}/api/v1/admin/settings`, { method: "PUT", headers: { ...authorization, "content-type": "application/json" },
+        body: JSON.stringify({ maxUploadBytes: 1024, maxDownloadBytes: 1024, maxMessageBytes: size * 1024 * 1024 }) });
+      expect(reply.status).toBe(200);
+    }
+    await settings(64);
+    expect(transports.get(first.socket)!.maxMessageBytes).toBe(128 * 1024 * 1024);
+    const second = await connect({ rendererId: NEW_RENDERER });
+    await second.messages.next(message => message.type === "ready");
+    expect(transports.get(second.socket)!.maxMessageBytes).toBe(64 * 1024 * 1024);
+    await settings(512);
+    const third = await connect({ rendererId: "47d6cfd1-8933-4e5c-979a-77866113494c" });
+    await third.messages.next(message => message.type === "ready");
+    expect(transports.get(third.socket)!.maxMessageBytes).toBe(128 * 1024 * 1024);
+  });
+
   const authorization = { Authorization: `Bearer ${TOKEN}` };
 
   async function connect(overrides: Record<string, string> = {}) {
-    const url = new URL(`/api/v3/services/${serviceId}/extension`, baseUrl.replace("http:", "ws:"));
+    const url = new URL(`/api/v4/services/${serviceId}/extension`, baseUrl.replace("http:", "ws:"));
     for (const [key, value] of Object.entries({ clientId: CLIENT, rendererId: RENDERER, workspace: directory, ...overrides })) url.searchParams.set(key, value);
     const socket = new WebSocket(url, { headers: authorization });
     sockets.push(socket);
-    const messages = new Messages(socket);
+    const transport = new ChunkedTransport(socket);
+    transports.set(socket, transport);
+    const messages = new Messages(socket, transport);
     await new Promise<void>((done, reject) => { socket.once("open", done); socket.once("error", reject); });
+    await transport.ready;
     return { socket, messages };
   }
   async function logs(): Promise<string> { return readFile(join(directory, "task.log"), "utf8").catch(() => ""); }
@@ -247,13 +282,13 @@ function closed(socket: WebSocket): Promise<number> {
 class Messages {
   readonly pending: Json[] = [];
   private readonly waiters: Array<{ predicate: (message: Json) => boolean; done: (message: Json) => void }> = [];
-  constructor(socket: WebSocket) {
-    socket.on("message", data => {
+  constructor(socket: WebSocket, transport: ChunkedTransport) {
+    transport.onMessage = data => {
       const value = JSON.parse(data.toString()) as Json;
       const index = this.waiters.findIndex(waiter => waiter.predicate(value));
       if (index >= 0) this.waiters.splice(index, 1)[0]!.done(value);
       else this.pending.push(value);
-    });
+    };
   }
   next(predicate: (message: Json) => boolean): Promise<Json> {
     const index = this.pending.findIndex(predicate);
@@ -264,13 +299,15 @@ class Messages {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
         reject(new Error(`Expected extension message; queued ${JSON.stringify(this.pending)}`));
-      }, 7000);
+      }, 30000);
       this.waiters.push(waiter);
     });
   }
 }
+const transports = new WeakMap<WebSocket, ChunkedTransport>();
+function packet(socket: WebSocket, value: unknown) { void transports.get(socket)!.send(value); }
 function send(socket: WebSocket, epoch: string, messageId: string, value: unknown) {
-  socket.send(JSON.stringify({ type: "message", epoch, messageId, payload: wire(value) }));
+  packet(socket, { type: "message", epoch, messageId, payload: wire(value) });
 }
 function wire(value: unknown): unknown {
   if (value == null) return ["null", null];

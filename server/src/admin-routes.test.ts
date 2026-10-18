@@ -126,7 +126,25 @@ describe("Gateway administration", () => {
     expect(download).toHaveBeenCalled();
     await gateway.app.close();
     gateway = await buildGateway(config, { runtime });
-    expect((await gateway.app.inject({ url: "/api/v1/admin/settings", headers: headers() })).json().data).toEqual({ maxUploadBytes: 8, maxDownloadBytes: 8 });
+    expect((await gateway.app.inject({ url: "/api/v1/admin/settings", headers: headers() })).json().data).toEqual({ maxUploadBytes: 8, maxDownloadBytes: 8, maxMessageBytes: 128 * 1024 * 1024 });
+  });
+
+  it("persists all message limit choices and preserves the limit for older settings clients", async () => {
+    for (const size of [64, 128, 256, 512]) {
+      const response = await gateway.app.inject({ method: "PUT", url: "/api/v1/admin/settings", headers: headers(),
+        payload: { maxUploadBytes: 100, maxDownloadBytes: 200, maxMessageBytes: size * 1024 * 1024 } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().data.maxMessageBytes).toBe(size * 1024 * 1024);
+    }
+    const legacy = await gateway.app.inject({ method: "PUT", url: "/api/v1/admin/settings", headers: headers(), payload: { maxUploadBytes: 300, maxDownloadBytes: 400 } });
+    expect(legacy.json().data.maxMessageBytes).toBe(512 * 1024 * 1024);
+    for (const value of [0, 16 * 1024 * 1024, 129 * 1024 * 1024, 1024 * 1024 * 1024]) {
+      expect((await gateway.app.inject({ method: "PUT", url: "/api/v1/admin/settings", headers: headers(),
+        payload: { maxUploadBytes: 100, maxDownloadBytes: 200, maxMessageBytes: value } })).statusCode).toBe(400);
+    }
+    await gateway.app.close();
+    gateway = await buildGateway(config, { runtime });
+    expect((await gateway.app.inject({ url: "/api/v1/admin/settings", headers: headers() })).json().data.maxMessageBytes).toBe(512 * 1024 * 1024);
   });
 
   it("rejects invalid limits without changing saved settings", async () => {

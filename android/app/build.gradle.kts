@@ -79,6 +79,8 @@ android {
         buildConfig = true
     }
 
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("../transport/fixtures"))
+
     sourceSets.getByName("main").assets.srcDir(rootProject.file("../extension-webview-host"))
 
     packaging.resources.excludes += setOf(

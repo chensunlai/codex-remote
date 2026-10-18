@@ -43,9 +43,9 @@ interface ExtensionView {
   processes: Map<number, string | null>;
   stopping: boolean;
 }
-// Leave room for HTML and other snapshot metadata within the 64 MiB transport.
+// Replay storage is independent of the fragmented WebSocket message limit.
 const maxFramesBytes = 48 * 1024 * 1024;
-const maxMessageBytes = 12 * 1024 * 1024;
+const maxMessageBytes = 512 * 1024 * 1024;
 
 /** Keeps the official extension alive independently of Gateway/mobile sockets. */
 export class OfficialExtensionService {

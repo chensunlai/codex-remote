@@ -1,6 +1,6 @@
 {
   "name": "codex-remote",
-  "version": "2.1.3",
+  "version": "2.2.0",
   "private": true,
   "workspaces": [
     "server",

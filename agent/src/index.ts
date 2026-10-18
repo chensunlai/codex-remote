@@ -3,7 +3,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentService } from "./agent-service.js";
 import { loadAgentConfig, toAgentWebSocketUrl } from "./config.js";
-import { ProtocolClient } from "./protocol-client.js";
+import { ProtocolClient, FatalTransportError } from "./protocol-client.js";
 import { AgentSetupCancelledError } from "./setup-tui.js";
 import { errorMessage } from "./error-message.js";
 import { dirname, join } from "node:path";
@@ -46,6 +46,10 @@ while (!stopping) {
     await client.run();
     retryDelay = 1_000;
   } catch (error) {
+    if (error instanceof FatalTransportError) {
+      process.stderr.write(`传输已停止：${errorMessage(error)}。请更新组件或调整消息上限后重启 Agent。\n`);
+      break;
+    }
     process.stderr.write(
       `连接 Gateway 失败: ${errorMessage(error)}\n`,
     );
@@ -58,6 +62,9 @@ while (!stopping) {
     retryDelay = Math.min(retryDelay * 2, 30_000);
   }
 }
+
+// A fatal transport error stops reconnecting but must not terminate offline tasks.
+if (!stopping) client?.close();
 
 function shutdown(): void {
   if (stopping) return;

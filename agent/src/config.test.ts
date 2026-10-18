@@ -27,7 +27,7 @@ describe("Agent configuration", () => {
     });
     expect(socket.origin).toBe("wss://gateway.example.com");
     expect(socket.port).toBe("");
-    expect(socket.pathname).toBe("/agent/v1/connect");
+    expect(socket.pathname).toBe("/agent/v2/connect");
   });
 
   it("preserves service identity when connection settings are reconfigured", async () => {

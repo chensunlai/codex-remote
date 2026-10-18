@@ -2,12 +2,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { once, EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import WebSocket from "ws";
+import { ChunkedTransport, WIRE_LIMIT } from "../transport/websocket.cjs";
 
 assert.ok(process.argv[2], "Usage: node scripts/smoke-gateway-binary.mjs <gateway-binary>");
 const directory = await mkdtemp(join(tmpdir(), "gateway-binary-smoke-"));
@@ -27,6 +28,8 @@ let stderr = "";
 gateway.stderr.on("data", chunk => { stderr = (stderr + chunk).slice(-8192); });
 const exited = once(gateway, "exit");
 const sockets = [];
+const channels = new WeakMap();
+let maxWireBytes = 0;
 try {
   await eventually(async () => {
     if (gateway.exitCode !== null) throw new Error(`Gateway exited: ${stderr}`);
@@ -36,8 +39,8 @@ try {
   const epoch = randomUUID();
   let viewId;
   let sequence = 0;
-  const agent = connect(`/agent/v1/connect?${new URLSearchParams({ serviceId, name: "binary-smoke" })}`);
-  agent.on("message", raw => {
+  const agent = connect(`/agent/v2/connect?${new URLSearchParams({ serviceId, name: "binary-smoke" })}`);
+  channels.get(agent).onMessage = raw => {
     const message = JSON.parse(raw);
     let result = {};
     if (message.method === "service.describe") result = { hostname: "fixture", platform: "linux", arch: "x64", home: directory, capabilities: [] };
@@ -45,43 +48,47 @@ try {
       viewId = message.params.viewId;
       result = { viewId, epoch, sequence, version: "fixture", origin: "https://fixture.invalid", html: "fixture", frames: [], surfaces: [] };
     }
-    if (message.id) agent.send(JSON.stringify({ type: "response", id: message.id, ok: true, result }));
-  });
-  await once(agent, "open");
+    if (message.id) void channels.get(agent).send({ type: "response", id: message.id, ok: true, result });
+  };
+  await channels.get(agent).ready;
   await eventually(async () => {
     const { data } = await (await fetch(`${base}/api/v1/services`, { headers })).json();
     return data.some(service => service.id === serviceId && service.runtime.state === "connected");
   });
-  const renderer = connect(`/api/v3/services/${serviceId}/extension?${new URLSearchParams({
+  const renderer = connect(`/api/v4/services/${serviceId}/extension?${new URLSearchParams({
     clientId: randomUUID(), rendererId: randomUUID(), workspace: directory,
   })}`);
   assert.equal(JSON.parse(await nextMessage(renderer)).type, "ready");
-  for (const size of [20, 60]) {
+  for (const size of [20, 60, 70]) {
     const body = "x".repeat(size * 1024 * 1024);
     const expected = digest(body);
     let received = nextMessage(renderer);
-    send(body);
+    await send(body);
     const message = JSON.parse(await received);
     assert.equal(message.type, "message");
     assert.equal(digest(message.payload[1]), expected);
-    renderer.send(JSON.stringify({ type: "ack", sequence: message.sequence }));
+    await channels.get(renderer).send({ type: "ack", sequence: message.sequence });
     received = nextMessage(renderer);
-    send("subsequent update");
+    await send("subsequent update");
     assert.equal(JSON.parse(await received).payload[1], "subsequent update");
     assert.equal(agent.readyState, WebSocket.OPEN);
     console.log(`${size} MiB snapshot and subsequent update passed`);
   }
-  // The runtime limit must still reject oversize messages before parsing JSON.
-  const closed = once(agent, "close");
-  agent.send("x".repeat(65 * 1024 * 1024));
+  assert.ok(maxWireBytes <= 1024 * 1024 + 16, `Unexpected network message size: ${maxWireBytes}`);
+  // Verify the actual Bun server still rejects a single over-16 MiB wire message.
+  const legacy = new WebSocket(base.replace("http:", "ws:") + `/agent/v1/connect?${new URLSearchParams({ serviceId: randomUUID(), name: "wire-limit" })}`, { headers });
+  sockets.push(legacy); legacy.on("error", () => {});
+  await once(legacy, "open");
+  const closed = once(legacy, "close");
+  legacy.send("x".repeat(17 * 1024 * 1024));
   await Promise.race([closed, timeout(10_000)]);
   assert.equal((await fetch(`${base}/healthz`)).ok, true);
-  console.log("Over-64 MiB message rejected; Gateway remains healthy");
+  console.log(`Wire messages <= ${maxWireBytes} bytes; over-16 MiB rejected; Gateway healthy`);
 
   function send(body) {
-    agent.send(JSON.stringify({ type: "event", event: "extension.view", payload: {
+    return channels.get(agent).send({ type: "event", event: "extension.view", payload: {
       viewId, epoch, sequence: ++sequence, type: "message", payload: ["string", body],
-    } }));
+    } });
   }
 } finally {
   for (const socket of sockets) socket.terminate();
@@ -95,10 +102,16 @@ try {
 }
 
 function connect(path) {
-  const socket = new WebSocket(base.replace("http:", "ws:") + path, { headers, maxPayload: 64 * 1024 * 1024 });
+  const socket = new WebSocket(base.replace("http:", "ws:") + path, { headers, maxPayload: WIRE_LIMIT });
   // Awaited operations below report failures; retain a handler during cleanup.
   socket.on("error", () => {});
   sockets.push(socket);
+  socket.on("message", raw => { maxWireBytes = Math.max(maxWireBytes, raw.length); });
+  const transport = new ChunkedTransport(socket);
+  const messages = new EventEmitter();
+  transport.onMessage = text => messages.emit("complete", text);
+  transport.messages = messages;
+  channels.set(socket, transport);
   return socket;
 }
 
@@ -110,10 +123,11 @@ function nextMessage(socket) {
     const onError = error => finish(error);
     function finish(error, value) {
       clearTimeout(timer);
-      socket.off("message", onMessage).off("close", onClose).off("error", onError);
+      channels.get(socket).messages.off("complete", onMessage).off("close", onClose).off("error", onError);
       if (error) reject(error); else resolve(value);
     }
-    socket.once("message", onMessage).once("close", onClose).once("error", onError);
+    channels.get(socket).messages.once("complete", onMessage);
+    socket.once("close", onClose).once("error", onError);
   });
 }
 

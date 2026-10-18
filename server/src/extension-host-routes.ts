@@ -7,9 +7,10 @@ import { z } from "zod";
 import type { GatewayServices } from "./app.js";
 import type { AgentDisconnectedEvent, ExtensionViewEvent } from "./agent-registry.js";
 import { AppError, errorMessage } from "./errors.js";
-import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
+import { ChunkedTransport } from "../../transport/websocket.cjs";
+import type { GatewaySettingsStore } from "./gateway-settings.js";
 
-const MAX_BUFFER_BYTES = MAX_WEBSOCKET_BYTES;
+const LEGACY_BUFFER_BYTES = 16 * 1024 * 1024;
 // Resource downloads retain their existing, separate limit (including base64 headroom).
 const MAX_RESOURCE_BYTES = 12 * 1024 * 1024 - 4096;
 const gunzipAsync = promisify(gunzip);
@@ -67,7 +68,7 @@ interface Attachment {
   superseded: boolean;
 }
 
-export function registerExtensionHostRoutes(app: FastifyInstance, services: GatewayServices): void {
+export function registerExtensionHostRoutes(app: FastifyInstance, services: GatewayServices, settings: GatewaySettingsStore): void {
   const attachments = new Map<string, Attachment>();
   const base = "/api/v3/services/:serviceId/extension";
 
@@ -133,7 +134,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     return reply.send(response);
   });
 
-  app.get(base, { websocket: true }, (socket, request) => {
+  for (const path of [base, "/api/v4/services/:serviceId/extension"]) app.get(path, { websocket: true }, async (socket, request) => {
     const parsedParams = serviceParams.safeParse(request.params);
     const parsedQuery = viewQuery.safeParse(request.query);
     if (!parsedParams.success || !parsedQuery.success) {
@@ -143,6 +144,28 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     const { serviceId } = parsedParams.data;
     const { clientId, rendererId, workspace, after, epoch } = parsedQuery.data;
     const ownerId = request.ownerId;
+    let transport: ChunkedTransport | undefined;
+    let messageLimit = LEGACY_BUFFER_BYTES;
+    if (path.startsWith("/api/v4/")) {
+      try {
+        const agentLimit = services.agents.transportLimit(ownerId, serviceId);
+        if (agentLimit === undefined) {
+          socket.send(JSON.stringify({ type: "error", code: "UPGRADE_AGENT_REQUIRED", message: "请升级 Agent 以使用分块会话同步" }));
+          socket.close(4400, "Upgrade Agent for fragmented transport");
+          return;
+        }
+        messageLimit = Math.min(settings.current.maxMessageBytes, agentLimit);
+        transport = new ChunkedTransport(socket, { server: true, maxMessageBytes: messageLimit });
+        await transport.ready;
+        messageLimit = transport.maxMessageBytes;
+      } catch (error) {
+        if (socket.readyState === socket.OPEN) socket.close(1012, errorMessage(error).slice(0, 100));
+        return;
+      }
+      if (socket.readyState !== socket.OPEN) return;
+    }
+    const MAX_BUFFER_BYTES = messageLimit + (transport ? 4 * 1024 * 1024 : 0);
+
     const viewId = createHash("sha256")
       .update(JSON.stringify([ownerId, serviceId, clientId, workspace]))
       .digest("hex");
@@ -163,10 +186,14 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       && attachments.get(viewId) === attachment;
     const send = (message: unknown): void => {
       if (!current()) return;
+      if (transport) {
+        void transport.send(message).catch(() => { if (!transport.closed) socket.terminate(); });
+        return;
+      }
       const data = JSON.stringify(message);
       const bytes = Buffer.byteLength(data);
       if (bytes > MAX_BUFFER_BYTES) {
-        socket.close(1009, "Extension view message exceeds 64 MiB");
+        socket.close(1009, "Extension view message exceeds 16 MiB");
       } else if (socket.bufferedAmount + bytes > MAX_BUFFER_BYTES) {
         socket.close(1013, "Extension view consumer is too slow; reconnect to resume");
       } else {
@@ -250,7 +277,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       socket.close(1011, "Unable to attach extension view");
     });
 
-    socket.on("message", (raw, binary) => {
+    const receive = (raw: string | Buffer, binary = false): void => {
       if (!current()) return;
       if (binary) {
         socket.close(1003, "Extension view accepts JSON text messages only");
@@ -262,7 +289,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         parsed = incomingMessage.parse(JSON.parse(text));
       } catch {
         fail(new AppError(400, "INVALID_EXTENSION_MESSAGE", "Invalid extension view message"));
-        socket.close(1008, "Invalid extension view message");
+        socket.close(transport ? 4400 : 1008, "Invalid extension view message");
         return;
       }
       if (parsed.type === "ack") {
@@ -307,7 +334,9 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
           fail(error, parsed.type === "message" ? parsed.messageId : undefined);
         }
       });
-    });
+    };
+    if (transport) transport.onMessage = text => receive(text);
+    else socket.on("message", (raw, binary) => receive(Buffer.from(raw as Buffer), binary));
     socket.on("error", () => socket.terminate());
     socket.on("close", () => {
       closed = true;

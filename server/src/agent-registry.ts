@@ -1,3 +1,4 @@
+import type { ChunkedTransport } from "../../transport/websocket.cjs";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough, type Readable } from "node:stream";
@@ -18,6 +19,9 @@ interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
+  remaining: number;
+  started: number;
+  expire: () => void;
 }
 
 interface DownloadStream {
@@ -72,6 +76,7 @@ class AgentPeer {
   private alive = true;
   private closed = false;
   private readonly pingTimer: NodeJS.Timeout;
+  private transfers = 0;
 
   constructor(
     readonly ownerId: string,
@@ -81,8 +86,12 @@ class AgentPeer {
     private readonly socket: WebSocket,
     private readonly onEvent: (peer: AgentPeer, event: AgentEventMessage) => void,
     private readonly onClosed: (peer: AgentPeer, message: string) => void,
+    readonly transport?: ChunkedTransport,
   ) {
-    socket.on("message", (data, binary) => {
+    if (transport) {
+      transport.onMessage = text => this.handleMessage(text);
+      transport.onActivity = active => this.transferActivity(active);
+    } else socket.on("message", (data, binary) => {
       if (binary) return;
       this.handleMessage(data);
     });
@@ -107,17 +116,19 @@ class AgentPeer {
     }
     const id = randomUUID();
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const expire = () => {
         this.pending.delete(id);
         reject(new AppError(504, "AGENT_TIMEOUT", `${method} 在 ${timeoutMs}ms 内未响应`));
-      }, timeoutMs);
+      };
+      const timer = setTimeout(expire, timeoutMs);
+      if (this.transfers > 0) clearTimeout(timer);
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject,
-        timer,
+        timer, remaining: timeoutMs, started: Date.now(), expire,
       });
       void this.send({ type: "request", id, method, params }).catch((error: unknown) => {
-        clearTimeout(timer);
+        clearTimeout(this.pending.get(id)?.timer);
         this.pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
@@ -157,12 +168,12 @@ class AgentPeer {
     this.closeWithError(new Error(reason));
   }
 
-  private handleMessage(raw: RawData): void {
+  private handleMessage(raw: RawData | string): void {
     let message: AgentInboundMessage;
     try {
       message = JSON.parse(raw.toString()) as AgentInboundMessage;
     } catch {
-      this.socket.close(1003, "Invalid JSON");
+      this.socket.close(this.transport ? 4400 : 1003, "Invalid JSON");
       return;
     }
     if (message.type === "response") {
@@ -221,10 +232,26 @@ class AgentPeer {
     }
   }
 
+  private transferActivity(active: boolean): void {
+    const wasActive = this.transfers > 0;
+    this.transfers += active ? 1 : -1;
+    if (wasActive === (this.transfers > 0)) return;
+    for (const call of this.pending.values()) {
+      if (this.transfers > 0) {
+        clearTimeout(call.timer);
+        call.remaining = Math.max(1, call.remaining - (Date.now() - call.started));
+      } else {
+        call.started = Date.now();
+        call.timer = setTimeout(call.expire, call.remaining);
+      }
+    }
+  }
+
   private send(message: unknown): Promise<void> {
     if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new ConflictError("服务器 Agent 当前不在线"));
     }
+    if (this.transport) return this.transport.send(message);
     return new Promise((resolve, reject) => {
       this.socket.send(JSON.stringify(message), (error) => {
         if (error) reject(error);
@@ -237,6 +264,7 @@ class AgentPeer {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.pingTimer);
+    this.transport?.dispose();
     for (const call of this.pending.values()) {
       clearTimeout(call.timer);
       call.reject(error);
@@ -265,12 +293,13 @@ export class AgentRegistry extends EventEmitter {
     serviceId: string,
     name: string,
     socket: WebSocket,
+    transport?: ChunkedTransport,
   ): Promise<void> {
     if (this.closing) {
       socket.close(1012, "Gateway 正在关闭");
       return Promise.resolve();
     }
-    const operation = this.attachPeer(ownerId, serviceId, name, socket);
+    const operation = this.attachPeer(ownerId, serviceId, name, socket, transport);
     this.attachOperations.add(operation);
     void operation.then(
       () => this.attachOperations.delete(operation),
@@ -284,6 +313,7 @@ export class AgentRegistry extends EventEmitter {
     serviceId: string,
     name: string,
     socket: WebSocket,
+    transport?: ChunkedTransport,
   ): Promise<void> {
     const key = this.key(ownerId, serviceId);
     this.peers.get(key)?.close(4001, "同一服务建立了新连接");
@@ -296,6 +326,7 @@ export class AgentRegistry extends EventEmitter {
       socket,
       (source, event) => this.handleEvent(source, event),
       (source, message) => this.handleClose(source, message),
+      transport,
     );
     this.peers.set(key, peer);
     await this.services.register(ownerId, serviceId, name);
@@ -353,6 +384,10 @@ export class AgentRegistry extends EventEmitter {
 
   isOnline(ownerId: string, serviceId: string): boolean {
     return this.peers.has(this.key(ownerId, serviceId));
+  }
+
+  transportLimit(ownerId: string, serviceId: string): number | undefined {
+    return this.peer(ownerId, serviceId).transport?.maxMessageBytes;
   }
 
   async request<T = unknown>(

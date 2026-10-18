@@ -59,6 +59,7 @@ internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, o
     var runtime by remember { mutableStateOf<JSONObject?>(null) }
     var upload by remember { mutableStateOf("") }
     var download by remember { mutableStateOf("") }
+    var messageMiB by remember { mutableStateOf(128) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -85,6 +86,7 @@ internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, o
         services = nextServices
         upload = bytesToMiBInput(settings.getLong("maxUploadBytes"))
         download = bytesToMiBInput(settings.getLong("maxDownloadBytes"))
+        messageMiB = (settings.optLong("maxMessageBytes", 128L * 1024 * 1024) / (1024 * 1024)).toInt()
         runtime = nextRuntime
     }
 
@@ -172,11 +174,20 @@ internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, o
                 OutlinedTextField(value = download, onValueChange = { download = it }, label = { Text("下载 / 预览上限（MiB）") },
                     singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     enabled = !busy, modifier = Modifier.fillMaxWidth())
+                Text("会话同步消息上限", style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(64, 128, 256, 512).forEach { size ->
+                        if (messageMiB == size) Button(onClick = { messageMiB = size }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("$size") }
+                        else OutlinedButton(onClick = { messageMiB = size }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("$size") }
+                    }
+                }
+                Text("单位 MiB。保存后新连接生效，已有 App 和 Agent 连接需重连。较高上限允许更大的会话，但会增加手机内存占用。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Button(onClick = { act {
-                    api.saveAdminSettings(miBInputToBytes(upload), miBInputToBytes(download))
+                    api.saveAdminSettings(miBInputToBytes(upload), miBInputToBytes(download), messageMiB.toLong() * 1024 * 1024)
                     coroutineContext.ensureActive()
                     onSettingsSaved()
-                    notice = "文件限制已保存并生效"
+                    notice = "参数已保存；文件限制立即生效，会话同步上限在重连后生效"
                 } }, enabled = !busy && upload.isNotBlank() && download.isNotBlank(), shape = MaterialTheme.shapes.small) { Text("保存参数") }
             }
             "服务" -> {

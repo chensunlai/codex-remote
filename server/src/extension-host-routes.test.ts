@@ -51,6 +51,18 @@ describe("Official extension host relay", () => {
     delete process.env.LOG_LEVEL;
   });
 
+  it("asks for an Agent upgrade before negotiating a new renderer against a legacy Agent", async () => {
+    const url = new URL(`/api/v4/services/${SERVICE_ID}/extension`, baseUrl.replace("http:", "ws:"));
+    for (const [key, value] of Object.entries({ clientId: CLIENT_ID, rendererId: RENDERER_ID, workspace: WORKSPACE })) url.searchParams.set(key, value);
+    const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    sockets.push(socket);
+    const messages = new MessageQueue(socket);
+    const close = new Promise<number>(resolve => socket.once("close", resolve));
+    expect(await messages.next("error")).toMatchObject({ code: "UPGRADE_AGENT_REQUIRED" });
+    expect(await close).toBe(4400);
+    expect(calls.some(call => call.method === "extension.view.attach")).toBe(false);
+  });
+
   it("forwards opaque messages, host responses and visibility without journal entries", async () => {
     const { socket, messages } = await connectView();
     const ready = await messages.next("ready");

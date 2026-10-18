@@ -51,11 +51,13 @@ class GatewayAdminInstrumentedTest {
             compose.onNodeWithText("参数").performClick()
             compose.onNodeWithText("上传上限（MiB）").performTextReplacement("20")
             compose.onNodeWithText("下载 / 预览上限（MiB）").performTextReplacement("30")
+            compose.onNodeWithText("256", substring = false).performScrollTo().performClick()
             compose.onNodeWithText("保存参数").performScrollTo().performClick()
             compose.waitUntil(5_000) { saved == 1 }
             val settings = gateway.requests.single { it.method == "PUT" }
             assertEquals(20L * 1024 * 1024, JSONObject(settings.body).getLong("maxUploadBytes"))
             assertEquals(30L * 1024 * 1024, JSONObject(settings.body).getLong("maxDownloadBytes"))
+            assertEquals(256L * 1024 * 1024, JSONObject(settings.body).getLong("maxMessageBytes"))
             compose.onNodeWithText("访问令牌").performScrollTo().performClick()
             compose.onNodeWithText("创建令牌").performScrollTo().performClick()
             compose.onNodeWithText("名称").performTextReplacement("手机专用")

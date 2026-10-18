@@ -1,3 +1,4 @@
+import { ChunkedTransport, WIRE_LIMIT } from "../../transport/websocket.cjs";
 import type { Readable } from "node:stream";
 import WebSocket, { type RawData } from "ws";
 import { errorMessage } from "./error-message.js";
@@ -33,6 +34,7 @@ interface ProtocolHandlers {
 export class ProtocolClient {
   private socket: WebSocket | undefined;
   private closed = false;
+  private transport: ChunkedTransport | undefined;
 
   constructor(
     private readonly url: URL,
@@ -44,7 +46,7 @@ export class ProtocolClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(this.url.toString(), {
         headers: { Authorization: `Bearer ${this.token}` },
-        maxPayload: 64 * 1024 * 1024,
+        maxPayload: WIRE_LIMIT,
         handshakeTimeout: 20_000,
       });
       this.socket = socket;
@@ -52,18 +54,32 @@ export class ProtocolClient {
       socket.on("open", () => {
         opened = true;
         this.closed = false;
+        this.transport = new ChunkedTransport(socket, {
+          onMessage: text => this.handleMessage(text),
+          onFatal: (error, code) => reject(code === 4400 || code === 4409 ? new FatalTransportError(error.message) : error),
+        });
         process.stdout.write(`已连接 Gateway: ${this.url.origin}\n`);
       });
-      socket.on("message", (raw, binary) => {
-        if (binary) return;
-        this.handleMessage(raw);
-      });
+
       socket.on("error", (error) => {
         if (!opened) reject(new Error(errorMessage(error), { cause: error }));
+      });
+      socket.on("unexpected-response", (_request, response) => {
+        response.resume();
+        reject(response.statusCode === 404 || response.statusCode === 426
+          ? new FatalTransportError("Gateway 不支持分块传输，请升级 Gateway")
+          : new Error(`Gateway WebSocket HTTP ${response.statusCode}`));
+        socket.terminate();
       });
       socket.on("close", (code, reason) => {
         this.closed = true;
         this.socket = undefined;
+        this.transport?.dispose();
+        this.transport = undefined;
+        if (code === 4400 || code === 4409) {
+          reject(new FatalTransportError(reason.toString()));
+          return;
+        }
         if (opened) {
           process.stderr.write(
             `Gateway 连接已断开 (code=${code}, reason=${reason.toString() || "none"})\n`,
@@ -106,15 +122,16 @@ export class ProtocolClient {
 
   close(): void {
     this.closed = true;
+    this.transport?.dispose();
     this.socket?.close(1000, "Agent stopped");
   }
 
-  private handleMessage(raw: RawData): void {
+  private handleMessage(raw: RawData | string): void {
     let message: GatewayMessage;
     try {
       message = JSON.parse(raw.toString()) as GatewayMessage;
     } catch {
-      this.socket?.close(1003, "Invalid JSON");
+      this.socket?.close(4400, "Invalid JSON");
       return;
     }
     if (message.type === "request") {
@@ -160,13 +177,11 @@ export class ProtocolClient {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Gateway 连接未建立"));
     }
-    return new Promise((resolve, reject) => {
-      socket.send(JSON.stringify(message), (error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
+    if (!this.transport?.negotiated) return Promise.reject(new Error("Transport handshake incomplete"));
+    return this.transport.send(message);
   }
 }
+
+export class FatalTransportError extends Error {}
 
 export type { GatewayStream };

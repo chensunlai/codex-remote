@@ -18,6 +18,7 @@ import { registerAdminRoutes } from "./admin-routes.js";
 import { APP_VERSION } from "./version.js";
 import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
 import { registerExtensionHostRoutes } from "./extension-host-routes.js";
+import { ChunkedTransport } from "../../transport/websocket.cjs";
 import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
 
 declare module "fastify" {
@@ -136,10 +137,10 @@ export async function buildGateway(config: ServerConfig, options: { runtime?: Ga
 
   registerMetaRoutes(app, config, settings);
   registerAdminRoutes(app, builtServices, config, settings, runtime, revokeConnections);
-  registerAgentRoute(app, builtServices);
+  registerAgentRoute(app, builtServices, settings);
   registerServiceRoutes(app, builtServices);
   registerCodexChannelRoutes(app, builtServices);
-  registerExtensionHostRoutes(app, builtServices);
+  registerExtensionHostRoutes(app, builtServices, settings);
   registerFileRoutes(app, builtServices, settings);
   registerTerminalRoute(app, builtServices);
   registerEventRoutes(app, builtServices);
@@ -179,12 +180,12 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig, settings
   }));
 }
 
-function registerAgentRoute(app: FastifyInstance, services: GatewayServices): void {
+function registerAgentRoute(app: FastifyInstance, services: GatewayServices, settings: GatewaySettingsStore): void {
   const querySchema = z.object({
     serviceId: z.string().uuid(),
     name: z.string().trim().min(1).max(120),
   });
-  app.get("/agent/v1/connect", { websocket: true }, (socket, request) => {
+  for (const path of ["/agent/v1/connect", "/agent/v2/connect"]) app.get(path, { websocket: true }, (socket, request) => {
     let query: z.infer<typeof querySchema>;
     try {
       query = parse(querySchema, request.query);
@@ -192,9 +193,12 @@ function registerAgentRoute(app: FastifyInstance, services: GatewayServices): vo
       socket.close(1008, errorMessage(error));
       return;
     }
-    void services.agents
-      .attach(request.ownerId, query.serviceId, query.name, socket)
-      .catch((error: unknown) => socket.close(1011, errorMessage(error).slice(0, 120)));
+    const transport = path === "/agent/v2/connect"
+      ? new ChunkedTransport(socket, { server: true, maxMessageBytes: settings.current.maxMessageBytes }) : undefined;
+    void (transport?.ready ?? Promise.resolve()).then(() => {
+      if (socket.readyState !== socket.OPEN) return;
+      return services.agents.attach(request.ownerId, query.serviceId, query.name, socket, transport);
+    }).catch((error: unknown) => socket.close(1011, errorMessage(error).slice(0, 120)));
   });
 }
 

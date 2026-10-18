@@ -1,1 +1,1 @@
-export const MAX_WEBSOCKET_BYTES = 64 * 1024 * 1024;
+export const MAX_WEBSOCKET_BYTES = 16 * 1024 * 1024;

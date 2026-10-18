@@ -60,6 +60,7 @@ internal class OfficialChatSession(
     private val surfaceOrder = mutableListOf<String>()
     private var origin = ""
     private var socket: WebSocket? = null
+    private var wire: ChunkedSocket? = null
     private var connectionGeneration = 0
     private var sequence = 0L
     private var epoch: String? = null
@@ -103,7 +104,7 @@ internal class OfficialChatSession(
     }
 
     fun closeSurface(id: String) {
-        if (id != "main" && connected) socket?.send(JSONObject().put("type", "close-surface").put("surfaceId", id).toString())
+        if (id != "main" && connected) wire?.send(JSONObject().put("type", "close-surface").put("surfaceId", id).toString())
     }
 
     private fun publishSurfaces() = onSurfacesChanged(surfaceOrder.mapNotNull { id -> surfaces[id]?.let { ExtensionSurface(id, it.title) } })
@@ -149,7 +150,7 @@ internal class OfficialChatSession(
 
     fun setVisible(value: Boolean) {
         visible = value
-        if (connected) socket?.send(JSONObject().put("type", "visibility").put("visible", value).toString())
+        if (connected) wire?.send(JSONObject().put("type", "visibility").put("visible", value).toString())
     }
 
     fun close() {
@@ -157,6 +158,7 @@ internal class OfficialChatSession(
         connectionGeneration += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null
+        wire?.dispose()
         socket?.close(1000, "Renderer closed")
         socket = null
         surfaces.values.forEach { it.view = null; it.loader = null; it.queue.clear() }
@@ -172,37 +174,47 @@ internal class OfficialChatSession(
         if (closed || socket != null) return
         val attempt = ++connectionGeneration
         onStatus("正在连接官方扩展")
-        socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch,
-            object : WebSocketListener() {
+        val listener = object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     // OkHttp invokes these callbacks in wire order. Parse large snapshots away from the UI thread.
                     val parsed = runCatching { JSONObject(text) }
                     main.post {
                         if (!closed && attempt == connectionGeneration) {
-                            parsed.mapCatching(::receive).onFailure { onStatus("扩展连接错误：${it.message}") }
+                            parsed.mapCatching(::receive).onFailure {
+                                disconnected(attempt, "扩展连接错误：${it.message}", retry = false)
+                                webSocket.close(4400, "Invalid extension message")
+                            }
                         }
                     }
                 }
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     webSocket.close(if (code == 1005) 1000 else code, reason)
-                    main.post { disconnected(attempt, "$code ${reason.take(160)}") }
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4400, 4409)) }
                 }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    main.post { disconnected(attempt, response?.let { "HTTP ${it.code} ${t.message}" } ?: t.message) }
+                    main.post { disconnected(attempt, if (response?.code in listOf(404, 426)) "请升级 Gateway 以支持分块传输" else response?.let { "HTTP ${it.code} ${t.message}" } ?: t.message, response?.code !in listOf(404, 426)) }
                 }
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    main.post { disconnected(attempt, "$code ${reason.take(160)}") }
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4400, 4409)) }
                 }
-            })
+            }
+        wire = ChunkedSocket(listener)
+        socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire))
     }
 
-    private fun disconnected(attempt: Int, reason: String?) {
+    private fun disconnected(attempt: Int, reason: String?, retry: Boolean = true) {
         if (closed || attempt != connectionGeneration) return
         connectionGeneration += 1 // Fence the old socket's later onClosed/onFailure and queued messages.
         if (unconfirmed.isNotEmpty()) invalidateRenderer()
         connected = false
         socket = null
+        wire?.dispose()
+        wire = null
         android.util.Log.i("OfficialCodex", "Extension disconnected: ${reason?.take(180).orEmpty()}")
+        if (!retry) {
+            onStatus("传输已停止：${reason.orEmpty()}。请调整上限或更新组件后重新加载前端。")
+            return
+        }
         onStatus("连接已断开，正在重连。未确认的操作不会自动重发。${reason?.takeIf(String::isNotBlank)?.let { "（$it）" }.orEmpty()}")
         reconnect?.let(main::removeCallbacks)
         reconnect = Runnable { reconnect = null; connect() }.also { main.postDelayed(it, 1500) }
@@ -235,7 +247,7 @@ internal class OfficialChatSession(
                 sequence = maxOf(sequence, snapshot.optLong("sequence", sequence))
                 acknowledge()
                 setVisible(visible)
-                hostResponses.values.forEach { socket?.send(it.toString()) }
+                hostResponses.values.forEach { wire?.send(it.toString()) }
                 onStatus(if (recoveryNotice) "连接已恢复，请确认操作结果；未确认的操作未自动重发。" else null)
                 recoveryNotice = false
                 flushPending()
@@ -303,7 +315,7 @@ internal class OfficialChatSession(
     }
 
     private fun acknowledge() {
-        if (connected) socket?.send(JSONObject().put("type", "ack").put("sequence", sequence).toString())
+        if (connected) wire?.send(JSONObject().put("type", "ack").put("sequence", sequence).toString())
     }
 
     private fun invalidateRenderer() {
@@ -334,6 +346,8 @@ internal class OfficialChatSession(
         connectionGeneration += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null
+        wire?.dispose()
+        wire = null
         socket?.close(1000, "Renderer requires resynchronization")
         socket = null
         connected = false
@@ -359,8 +373,9 @@ internal class OfficialChatSession(
             val packet = JSONObject().put("type", "message").put("messageId", messageId)
                 .put("epoch", epoch).put("surfaceId", message.surfaceId).put("payload", message.payload)
             val active = socket
-            if (active?.send(packet.toString()) != true) {
-                disconnected(connectionGeneration, "发送连接不可用")
+            val transport = wire
+            if (transport?.send(packet.toString()) != true) {
+                disconnected(connectionGeneration, transport?.failureMessage ?: "发送连接不可用", transport?.failureCode !in listOf(4400, 4409))
                 active?.cancel()
                 return
             }
@@ -386,7 +401,7 @@ internal class OfficialChatSession(
 
     private fun hostRequest(request: JSONObject) {
         val id = request.getString("id")
-        hostResponses[id]?.let { socket?.send(it.toString()); return }
+        hostResponses[id]?.let { wire?.send(it.toString()); return }
         if (!handledRequests.add(id)) return
         val requestEpoch = epoch
         val requestGeneration = nativeGeneration
@@ -403,7 +418,7 @@ internal class OfficialChatSession(
                 if (!closed && requestEpoch == epoch && requestGeneration == nativeGeneration && nativeSurfaces[id] == surfaceId) {
                     hostResponses[id] = response
                     while (hostResponses.size > 128) hostResponses.remove(hostResponses.keys.first())
-                    if (connected) socket?.send(response.toString())
+                    if (connected) wire?.send(response.toString())
                 }
             } finally {
                 if (requestGeneration == nativeGeneration) nativeJobs.remove(id)
@@ -468,7 +483,14 @@ internal class OfficialChatSession(
             val bytes = encoded.toByteArray(Charsets.UTF_8).size
             main.post {
                 if (closed || surface(page) == null) return@post
-                if (pendingMessages.size >= 256 || bytes > 16 * 1024 * 1024 - pendingBytes) {
+                val limit = wire?.maxMessageBytes ?: TRANSPORT_MAX_BYTES
+                if (bytes > limit) {
+                    val active = socket
+                    disconnected(connectionGeneration, MessageLimitException().message, retry = false)
+                    active?.close(4409, "Complete message exceeds negotiated limit")
+                    return@post
+                }
+                if (pendingMessages.size >= 256 || bytes > limit - pendingBytes) {
                     onStatus("待发送操作过多，正在恢复页面；未确认的操作不会自动重发。")
                     reconnectRenderer()
                     return@post
