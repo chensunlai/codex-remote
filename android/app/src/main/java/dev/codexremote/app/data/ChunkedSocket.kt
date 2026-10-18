@@ -13,8 +13,12 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
-internal const val TRANSPORT_CHUNK_BYTES = 1024 * 1024
-internal const val TRANSPORT_WIRE_BYTES = 16 * 1024 * 1024
+internal const val TRANSPORT_WIRE_BYTES = 32 * 1024 * 1024
+internal const val TRANSPORT_CHUNK_BYTES = TRANSPORT_WIRE_BYTES - 16
+// OkHttp has a fixed 16 MiB send queue. Keep each upload below that limit.
+internal const val TRANSPORT_UPLOAD_BYTES = 8 * 1024 * 1024
+private const val UPLOAD_CHUNK_BYTES = TRANSPORT_UPLOAD_BYTES - 16
+private const val HIGH_WATER_BYTES = 3 * 1024 * 1024
 internal const val TRANSPORT_MAX_BYTES = 512 * 1024 * 1024
 
 /** Pure byte reassembly, shared wire format with transport/websocket.cjs. */
@@ -26,7 +30,9 @@ internal class FragmentDecoder(var limit: Int = TRANSPORT_MAX_BYTES) {
 
     fun text(value: String): String {
         require(!active) { "Message interrupted an unfinished transfer" }
-        require(value.toByteArray(Charsets.UTF_8).size <= TRANSPORT_CHUNK_BYTES) { "Large messages must be fragmented" }
+        val size = value.toByteArray(Charsets.UTF_8).size
+        if (size > limit) throw MessageLimitException()
+        require(size <= TRANSPORT_WIRE_BYTES) { "Large messages must be fragmented" }
         return value
     }
 
@@ -38,7 +44,7 @@ internal class FragmentDecoder(var limit: Int = TRANSPORT_MAX_BYTES) {
         val position = header.int.toLong() and 0xffffffffL
         val total = header.int.toLong() and 0xffffffffL
         if (total > limit) throw MessageLimitException()
-        require(total > TRANSPORT_CHUNK_BYTES && position + part.size - 16 <= total) { "Invalid fragment length" }
+        require(total > 0 && position + part.size - 16 <= total) { "Invalid fragment length" }
         if (!active) {
             require(position == 0L) { "Fragment starts at a nonzero offset" }
             bytes = ByteArray(total.toInt())
@@ -135,19 +141,19 @@ internal class ChunkedSocket(private val downstream: WebSocketListener) : WebSoc
             return false
         }
         if (bytes.size > maxMessageBytes) { socket?.let { fail(it, 4409, MessageLimitException().message!!) }; return false }
-        if (queuedBytes + bytes.size > maxMessageBytes.toLong() + 8 * TRANSPORT_CHUNK_BYTES) {
+        if (queuedBytes + bytes.size > maxMessageBytes.toLong() + 8 * 1024 * 1024) {
             socket?.let { fail(it, 1013, "Transport send queue full; reconnect to resume") }; return false
         }
         queuedBytes += bytes.size
         writer.execute {
             try {
                 val active = socket ?: error("Transport disconnected")
-                if (bytes.size <= TRANSPORT_CHUNK_BYTES) write(active) { active.send(text) }
+                if (bytes.size <= TRANSPORT_UPLOAD_BYTES) write(active) { active.send(text) }
                 else {
                     val id = ++transferId
                     var offset = 0
                     while (offset < bytes.size) {
-                        val length = minOf(TRANSPORT_CHUNK_BYTES, bytes.size - offset)
+                        val length = minOf(UPLOAD_CHUNK_BYTES, bytes.size - offset)
                         val part = ByteBuffer.allocate(16 + length).order(ByteOrder.BIG_ENDIAN)
                             .putInt(0x43525731).putInt(id).putInt(offset).putInt(bytes.size).put(bytes, offset, length).array()
                         write(active) { active.send(part.toByteString()) }
@@ -164,7 +170,7 @@ internal class ChunkedSocket(private val downstream: WebSocketListener) : WebSoc
     private fun write(active: WebSocket, send: () -> Boolean) {
         var progress = System.nanoTime()
         var previous = active.queueSize()
-        while (active.queueSize() > 3L * TRANSPORT_CHUNK_BYTES) {
+        while (active.queueSize() > HIGH_WATER_BYTES) {
             check(!disposed) { "Transport disconnected" }
             val buffered = active.queueSize()
             if (buffered < previous) progress = System.nanoTime()

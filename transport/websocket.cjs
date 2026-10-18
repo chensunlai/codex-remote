@@ -1,7 +1,8 @@
 'use strict';
 const { TextDecoder } = require('node:util');
-const WIRE_LIMIT = 16 * 1024 * 1024;
-const CHUNK_BYTES = 1024 * 1024;
+const WIRE_LIMIT = 32 * 1024 * 1024;
+const CHUNK_BYTES = WIRE_LIMIT - 16;
+const HIGH_WATER = 3 * 1024 * 1024;
 const DEFAULT_LIMIT = 128 * 1024 * 1024;
 const MAX_LIMIT = 512 * 1024 * 1024;
 const QUEUE_HEADROOM = 8 * 1024 * 1024;
@@ -58,14 +59,14 @@ class ChunkedTransport {
     }
     if (!binary) {
       if (this.incoming) throw new Error('Message interrupted an unfinished transfer');
-      if (data.length > CHUNK_BYTES) throw new Error('Large messages must be fragmented');
+      if (data.length > this.maxMessageBytes) throw tooLarge();
       this.onMessage(decode(data));
       return;
     }
     if (data.length <= 16 || data.length > CHUNK_BYTES + 16 || !data.subarray(0, 4).equals(MAGIC)) throw new Error('Invalid fragment header');
     const id = data.readUInt32BE(4), offset = data.readUInt32BE(8), total = data.readUInt32BE(12);
     if (total > this.maxMessageBytes) throw tooLarge();
-    if (total <= CHUNK_BYTES || offset + data.length - 16 > total) throw new Error('Invalid fragment length');
+    if (total === 0 || offset + data.length - 16 > total) throw new Error('Invalid fragment length');
     let transfer = this.incoming;
     if (!transfer) {
       if (offset !== 0) throw new Error('Fragment starts at a nonzero offset');
@@ -99,7 +100,7 @@ class ChunkedTransport {
     }
     this.queuedBytes += bytes.length;
     const sent = this.tail.then(async () => {
-      if (bytes.length <= CHUNK_BYTES) return this.write(bytes.toString('utf8'));
+      if (bytes.length <= WIRE_LIMIT) return this.write(bytes.toString('utf8'));
       this.onActivity(true);
       try {
         const id = this.transferId = (this.transferId + 1) >>> 0;
@@ -117,7 +118,7 @@ class ChunkedTransport {
 
   async write(data) {
     let changed = Date.now(), previous = this.socket.bufferedAmount;
-    while (this.socket.bufferedAmount > 3 * CHUNK_BYTES) {
+    while (this.socket.bufferedAmount > HIGH_WATER) {
       if (this.closed || this.socket.readyState !== 1) throw new Error('Transport disconnected');
       const buffered = this.socket.bufferedAmount;
       if (buffered < previous) changed = Date.now();

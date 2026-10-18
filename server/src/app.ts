@@ -18,6 +18,7 @@ import { registerAdminRoutes } from "./admin-routes.js";
 import { APP_VERSION } from "./version.js";
 import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
 import { registerExtensionHostRoutes } from "./extension-host-routes.js";
+import { configureBunWebSocketServer } from "../../transport/bun-server.cjs";
 import { ChunkedTransport } from "../../transport/websocket.cjs";
 import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
 
@@ -64,6 +65,7 @@ export async function buildGateway(config: ServerConfig, options: { runtime?: Ga
   });
   // Official extension synchronization sends complete conversation snapshots.
   await app.register(websocket, { options: { maxPayload: MAX_WEBSOCKET_BYTES } });
+  configureBunWebSocketServer(app.websocketServer);
   await app.register(multipart, {
     limits: { files: 1 },
   });

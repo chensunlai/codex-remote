@@ -16,7 +16,7 @@ class FragmentDecoderTest {
         var result: String? = null
         var offset = 0
         while (offset < bytes.size) {
-            val part = part(fixture.getProperty("transferId").toInt(), offset, bytes.size, bytes.copyOfRange(offset, minOf(offset + TRANSPORT_CHUNK_BYTES, bytes.size)))
+            val part = part(fixture.getProperty("transferId").toInt(), offset, bytes.size, bytes.copyOfRange(offset, minOf(offset + 1024 * 1024, bytes.size)))
             if (offset == 0) assertEquals(fixture.getProperty("firstHeaderHex"), hex(part.copyOfRange(0, 16)))
             result = decoder.binary(part)
             offset += part.size - 16
@@ -40,7 +40,7 @@ class FragmentDecoderTest {
         val decoder = FragmentDecoder(64 * 1024 * 1024)
         assertThrows(MessageLimitException::class.java) { decoder.binary(part(1, 0, 64 * 1024 * 1024 + 1, byteArrayOf(1))) }
         assertFalse(decoder.active)
-        assertThrows(IllegalArgumentException::class.java) { decoder.binary(part(1, 0, 100, byteArrayOf(1))) }
+        assertThrows(IllegalArgumentException::class.java) { decoder.binary(part(1, 0, 0, byteArrayOf(1))) }
     }
 
     private fun part(id: Int, offset: Int, total: Int, bytes: ByteArray): ByteArray =

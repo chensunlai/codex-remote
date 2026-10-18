@@ -59,11 +59,17 @@ try {
     clientId: randomUUID(), rendererId: randomUUID(), workspace: directory,
   })}`);
   assert.equal(JSON.parse(await nextMessage(renderer)).type, "ready");
-  for (const size of [20, 60, 70]) {
-    const body = "x".repeat(size * 1024 * 1024);
+  for (const size of [20, 32 - 0.01, 32, 60, 70]) {
+    const body = "x".repeat(Math.floor(size * 1024 * 1024));
     const expected = digest(body);
     let received = nextMessage(renderer);
+    // A paused reader fills native socket buffers and exercises real backpressure.
+    // Bun's compatibility implementation previously duplicated accepted fragments here.
+    renderer.pause();
+    const resume = setTimeout(() => renderer.resume(), 1500);
     await send(body);
+    await new Promise(resolve => setTimeout(resolve, 1600));
+    clearTimeout(resume); renderer.resume();
     const message = JSON.parse(await received);
     assert.equal(message.type, "message");
     assert.equal(digest(message.payload[1]), expected);
@@ -74,16 +80,16 @@ try {
     assert.equal(agent.readyState, WebSocket.OPEN);
     console.log(`${size} MiB snapshot and subsequent update passed`);
   }
-  assert.ok(maxWireBytes <= 1024 * 1024 + 16, `Unexpected network message size: ${maxWireBytes}`);
-  // Verify the actual Bun server still rejects a single over-16 MiB wire message.
+  assert.ok(maxWireBytes <= WIRE_LIMIT, `Unexpected network message size: ${maxWireBytes}`);
+  // Verify the actual Bun server still rejects a single over-32 MiB wire message.
   const legacy = new WebSocket(base.replace("http:", "ws:") + `/agent/v1/connect?${new URLSearchParams({ serviceId: randomUUID(), name: "wire-limit" })}`, { headers });
   sockets.push(legacy); legacy.on("error", () => {});
   await once(legacy, "open");
   const closed = once(legacy, "close");
-  legacy.send("x".repeat(17 * 1024 * 1024));
+  legacy.send("x".repeat(33 * 1024 * 1024));
   await Promise.race([closed, timeout(10_000)]);
   assert.equal((await fetch(`${base}/healthz`)).ok, true);
-  console.log(`Wire messages <= ${maxWireBytes} bytes; over-16 MiB rejected; Gateway healthy`);
+  console.log(`Wire messages <= ${maxWireBytes} bytes; over-32 MiB rejected; Gateway healthy`);
 
   function send(body) {
     return channels.get(agent).send({ type: "event", event: "extension.view", payload: {
@@ -123,7 +129,8 @@ function nextMessage(socket) {
     const onError = error => finish(error);
     function finish(error, value) {
       clearTimeout(timer);
-      channels.get(socket).messages.off("complete", onMessage).off("close", onClose).off("error", onError);
+      channels.get(socket).messages.off("complete", onMessage);
+      socket.off("close", onClose).off("error", onError);
       if (error) reject(error); else resolve(value);
     }
     channels.get(socket).messages.once("complete", onMessage);

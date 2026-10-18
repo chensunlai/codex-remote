@@ -84,7 +84,7 @@ class OfficialChatReconnectInstrumentedTest {
     @Test fun largeOutboundMessageIsFragmentedAndDeliveredOnlyOnce() {
         Fixture().use { fixture ->
             val first = fixture.start()
-            val text = "图🙂".repeat(400_000)
+            val text = "图🙂".repeat(1_300_000)
             fixture.post(text)
             eventually { fixture.server.messages.size == 1 }
             assertEquals(text, fixture.server.messages.single().getJSONArray("payload").getString(1))
@@ -347,7 +347,7 @@ class OfficialChatReconnectInstrumentedTest {
                             length = 0
                             repeat(8) { length = (length shl 8) or input.read().toLong() }
                         }
-                        require(length in 0..2L * 1024 * 1024)
+                        require(length in 0..TRANSPORT_UPLOAD_BYTES.toLong())
                         val mask = if (size and 128 != 0) readExactly(4) else null
                         val bytes = readExactly(length.toInt())
                         if (mask != null) bytes.indices.forEach { bytes[it] = (bytes[it].toInt() xor mask[it % 4].toInt()).toByte() }
@@ -388,7 +388,7 @@ class OfficialChatReconnectInstrumentedTest {
             @Synchronized fun send(packet: JSONObject) {
                 awaitPacket("transport-ready")
                 val bytes = packet.toString().toByteArray()
-                if (bytes.size <= TRANSPORT_CHUNK_BYTES) frame(1, bytes)
+                if (bytes.size <= TRANSPORT_WIRE_BYTES) frame(1, bytes)
                 else {
                     val id = ++transferId
                     var offset = 0
@@ -425,7 +425,7 @@ class OfficialChatReconnectInstrumentedTest {
             }
             fun partialMessage() {
                 val bytes = java.nio.ByteBuffer.allocate(16 + TRANSPORT_CHUNK_BYTES).putInt(0x43525731)
-                    .putInt(999).putInt(0).putInt(20 * 1024 * 1024).array()
+                    .putInt(999).putInt(0).putInt(40 * 1024 * 1024).array()
                 frame(2, bytes)
             }
             fun closeFromServer() {

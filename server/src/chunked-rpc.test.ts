@@ -28,16 +28,16 @@ it("does not spend the RPC response deadline while a large response is progressi
     function send(offset: number, end: number) {
       const part = Buffer.alloc(16 + end - offset); part.write("CRW1"); part.writeUInt32BE(1, 4); part.writeUInt32BE(offset, 8); part.writeUInt32BE(bytes.length, 12); bytes.copy(part, 16, offset, end); socket.send(part);
     }
-    send(0, 500_000); started();
-    setTimeout(() => send(500_000, 800_000), 80);
-    setTimeout(() => send(800_000, bytes.length), 160);
+    send(0, 5_000_000); started();
+    setTimeout(() => send(5_000_000, 8_000_000), 200);
+    setTimeout(() => send(8_000_000, bytes.length), 400);
   };
   try {
     await transport.ready;
     await description;
     const owner = (await gateway.services.tokens.verify(token))!;
     while (!gateway.services.agents.isOnline(owner, serviceId)) await new Promise(resolve => setTimeout(resolve, 5));
-    const response = gateway.services.agents.request<string>(owner, serviceId, "large-response", {}, 50);
+    const response = gateway.services.agents.request<string>(owner, serviceId, "large-response", {}, 150);
     await receiving;
     expect((await response).length).toBe(CHUNK_BYTES);
   } finally {

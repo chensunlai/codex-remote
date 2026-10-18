@@ -38,8 +38,8 @@ describe("opaque fragmented transport", () => {
     const bytes = Buffer.from(fixture.seed!.repeat(Number(fixture.repeat)));
     expect(bytes.length).toBe(Number(fixture.bytes));
     expect(createHash("sha256").update(bytes).digest("hex")).toBe(fixture.sha256);
-    for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
-      const value = part(Number(fixture.transferId), offset, bytes.length, bytes.subarray(offset, offset + CHUNK_BYTES));
+    for (let offset = 0; offset < bytes.length; offset += 1024 * 1024) {
+      const value = part(Number(fixture.transferId), offset, bytes.length, bytes.subarray(offset, offset + 1024 * 1024));
       if (!offset) expect(value.subarray(0, 16).toString("hex")).toBe(fixture.firstHeaderHex);
       client.emit("message", value, true);
     }
@@ -49,22 +49,32 @@ describe("opaque fragmented transport", () => {
 
   it("splits only large messages, preserves bidirectional ordering, and stays below the wire limit", async () => {
     const { c, s, client, server, received, sent } = pair(); await Promise.all([c.ready, s.ready]);
-    const value = { body: "汉🙂".repeat(400_000) };
+    const value = { body: "汉🙂".repeat(5_000_000) };
     await Promise.all([s.send(value), s.send({ next: true }), c.send(value), c.send({ next: false })]);
     expect(received.map(v => JSON.parse(v))).toEqual([value, { next: true }]);
     expect(sent.map(v => JSON.parse(v))).toEqual([value, { next: false }]);
-    expect([...client.parts, ...server.parts].every(p => Buffer.byteLength(p) < WIRE_LIMIT)).toBe(true);
+    expect([...client.parts, ...server.parts].every(p => Buffer.byteLength(p) <= WIRE_LIMIT)).toBe(true);
     expect(server.parts.filter(Buffer.isBuffer).length).toBeGreaterThan(1);
+  });
+
+  it("sends exactly 32 MiB as one text message and fragments the next byte", async () => {
+    const { c, s, server, received } = pair(); await Promise.all([c.ready, s.ready]);
+    await s.send("x".repeat(WIRE_LIMIT - 2));
+    expect(Buffer.byteLength(server.parts[1]!)).toBe(WIRE_LIMIT);
+    expect(typeof server.parts[1]).toBe("string");
+    await s.send("x".repeat(WIRE_LIMIT - 1));
+    expect(server.parts.filter(Buffer.isBuffer).map(p => p.length)).toEqual([WIRE_LIMIT, 33]);
+    expect(received).toHaveLength(2);
   });
 
   it.each(["offset", "id", "length", "interleave", "oversize", "utf8"])("rejects invalid %s without delivering partial data", async fault => {
     const { c, s, client, received } = pair(64 * 1024 * 1024); await Promise.all([c.ready, s.ready]);
     if (fault === "oversize") client.emit("message", part(1, 0, 65 * 1024 * 1024, Buffer.alloc(1)), true);
     else {
-      const total = CHUNK_BYTES + 1;
-      client.emit("message", part(1, 0, total, Buffer.alloc(CHUNK_BYTES, fault === "utf8" ? 255 : 65)), true);
+      const total = 1025;
+      client.emit("message", part(1, 0, total, Buffer.alloc(1024, fault === "utf8" ? 255 : 65)), true);
       if (fault === "interleave") client.emit("message", "{}", false);
-      else client.emit("message", part(fault === "id" ? 2 : 1, fault === "offset" ? 1 : CHUNK_BYTES, fault === "length" ? total + 1 : total, Buffer.alloc(1)), true);
+      else client.emit("message", part(fault === "id" ? 2 : 1, fault === "offset" ? 1 : 1024, fault === "length" ? total + 1 : total, Buffer.alloc(1)), true);
     }
     expect(received).toEqual([]);
     expect(client.closeCode).toBe(fault === "oversize" ? 4409 : 4400);
@@ -81,7 +91,7 @@ describe("opaque fragmented transport", () => {
   it("applies backpressure and stops rather than retrying an oversized complete message", async () => {
     const { c, s, server, client, received } = pair(64 * 1024 * 1024); await Promise.all([c.ready, s.ready]);
     server.bufferedAmount = 4 * CHUNK_BYTES;
-    const pending = s.send({ body: "x".repeat(2 * CHUNK_BYTES) });
+    const pending = s.send({ body: "x".repeat(WIRE_LIMIT + 1) });
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(server.parts.filter(Buffer.isBuffer)).toHaveLength(0);
     server.bufferedAmount = 0;
