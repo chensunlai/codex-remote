@@ -27,12 +27,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -70,7 +67,6 @@ import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.OfficialChatSession
 import dev.codexremote.app.data.frontendScope
-import dev.codexremote.app.data.objects
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
@@ -214,6 +210,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         DropdownMenuItem(text = { Text("检查并更新前端") }, enabled = !busy,
                             onClick = { menu = false; update() })
+                        DropdownMenuItem(text = { Text("重新加载前端") }, enabled = installedVersion != null && !busy,
+                            onClick = { menu = false; rendererGeneration += 1; status = "正在重新加载官方前端" })
                         DropdownMenuItem(text = { Text("App 设置") }, leadingIcon = { AppIcon(CodexIcons.Settings, null) },
                             onClick = { menu = false; viewModel.setSection(MainSection.SETTINGS) })
                     }
@@ -233,7 +231,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
-                TextButton(onClick = ::update) { Text("检查并更新前端") }
+                Button(onClick = ::update) { Text("检查并下载官方前端") }
             }
         }
     }
@@ -492,9 +490,15 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                             path.endsWith(".wasm") -> "application/wasm"
                             else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(path.substringAfterLast('.')) ?: "application/octet-stream"
                         }
-                        val bytes = viewModel.gatewayApi.extensionResource(serviceId, version, path)
+                        val packageSha256 = session.packageSha256
+                        val bytes = viewModel.officialFrontends.resources.load(session.resourceScope, packageSha256, version, path) {
+                            viewModel.gatewayApi.extensionResource(serviceId, version, path, packageSha256)
+                        }
                         WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Cache-Control" to "private, max-age=31536000, immutable"), bytes.inputStream())
-                    }.getOrElse { WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", emptyMap(), ByteArrayInputStream(ByteArray(0))) }
+                    }.getOrElse { failure ->
+                        session.resourceFailed(failure)
+                        WebResourceResponse("text/plain", "UTF-8", 502, "Resource unavailable", emptyMap(), ByteArrayInputStream(ByteArray(0)))
+                    }
                 }
             }
             val bridgeSource = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
@@ -522,41 +526,4 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
         webView.setBackgroundColor(background)
         webView.evaluateJavascript("window.__codexExtensionHost?.setTheme(${JSONObject.quote(theme.id)}, $effectiveFontScale)", null)
     })
-}
-
-@Composable
-internal fun RemoteDirectoryDialog(api: GatewayApi, serviceId: String, initialPath: String, onSelect: (String) -> Unit, onDismiss: () -> Unit) {
-    var path by remember { mutableStateOf(initialPath) }
-    var input by remember { mutableStateOf(initialPath) }
-    var entries by remember { mutableStateOf<List<JSONObject>>(emptyList()) }
-    var busy by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(path) {
-        busy = true
-        error = null
-        try {
-            entries = api.files(serviceId, path).objects().filter { it.optString("type") == "directory" }
-        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (failure: Exception) { error = failure.message }
-        finally { busy = false }
-    }
-    CodexDialog(onDismissRequest = onDismiss, title = { Text("远端工作目录") }, text = {
-        Column {
-            CodexTextField(input, { input = it }, label = "绝对路径")
-            TextButton(onClick = { if (input.startsWith('/')) path = input }, enabled = !busy && input.startsWith('/')) { Text("打开路径") }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (busy) CircularProgressIndicator()
-            LazyColumn(Modifier.heightIn(max = 320.dp)) {
-                item {
-                    TextButton(onClick = { path = path.trimEnd('/').substringBeforeLast('/').ifBlank { "/" }; input = path }, enabled = !busy && path != "/") {
-                        Text("返回父目录")
-                    }
-                }
-                items(entries, key = { it.getString("path") }) { entry ->
-                    TextButton(onClick = { path = entry.getString("path"); input = path }, modifier = Modifier.fillMaxWidth()) { Text(entry.getString("name")) }
-                }
-            }
-        }
-    }, confirmButton = { TextButton(onClick = { onSelect(path) }, enabled = !busy && error == null) { Text("使用此目录") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
 }
