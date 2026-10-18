@@ -28,6 +28,7 @@ interface ExtensionView {
   attached: boolean;
   workspace: string;
   version: string;
+  packageSha256: string;
   origin: string;
   html: string;
   surfaces: Map<string, ExtensionSurface>;
@@ -90,7 +91,10 @@ export class OfficialExtensionService {
           return { confirmationRequired: false, ...await this.status() };
         } finally { this.changing = false; }
       }
-      case "extension.resource": return this.store.resource(text(params.version, "version"), text(params.path, "path"));
+      case "extension.resource": return this.store.resource(text(params.version, "version"), text(params.path, "path"), {
+        ...(params.acceptEncoding === "gzip" ? { acceptEncoding: "gzip" } : {}),
+        ...(params.packageSha256 === undefined ? {} : { packageSha256: text(params.packageSha256, "packageSha256") }),
+      });
       case "extension.view.attach": return this.attach(params);
       case "extension.view.detach": {
         const view = this.owned(params);
@@ -227,7 +231,7 @@ export class OfficialExtensionService {
     await view.started;
     await this.send(view, { type: "visibility", visible: true });
     return {
-      viewId, epoch: view.epoch, sequence: view.sequence, version: view.version, origin: view.origin, html: view.html,
+      viewId, epoch: view.epoch, sequence: view.sequence, version: view.version, packageSha256: view.packageSha256, origin: view.origin, html: view.html,
       frames: resume ? view.frames.filter(({ frame }) => {
         if (frame.sequence <= after || frame.type === "html") return false;
         // The snapshot owns current panel titles/HTML. Only closes are needed
@@ -257,7 +261,7 @@ export class OfficialExtensionService {
     // Prevent an early child failure from becoming an unhandled rejection before attach awaits it.
     void started.catch(() => {});
     const view: ExtensionView = {
-      viewId, epoch: randomUUID(), rendererId, attached: true, workspace, version: extension.version, origin, html: "", surfaces: new Map(), sequence: 0,
+      viewId, epoch: randomUUID(), rendererId, attached: true, workspace, version: extension.version, packageSha256: extension.sha256, origin, html: "", surfaces: new Map(), sequence: 0,
       dropped: 0, frames: [], bytes: 0, child, started, deliveries: new Map(), pending: new Map(), processes: new Map(), stopping: false,
     };
     this.views.set(viewId, view);
@@ -269,7 +273,7 @@ export class OfficialExtensionService {
       else if (event.type === "process-exit" && event.pid) view.processes.delete(event.pid);
       else if (event.type === "error") {
         if (event.fatal) rejectStart(new Error(event.message));
-        this.frame(view, "status", { state: "error", message: event.message, retryable: !event.fatal });
+        this.frame(view, "status", { state: "error", message: event.message, retryable: false, reloadRequired: false });
       } else if (event.type === "surface") {
         const change = event.payload as { action?: string; id?: string; title?: string; html?: string };
         const id = change?.id;
@@ -313,7 +317,7 @@ export class OfficialExtensionService {
       try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
       rejectStart(new Error(`官方扩展已退出 (${String(code ?? signal)})`));
       if (this.views.get(viewId) === view) this.views.delete(viewId);
-      if (!view.stopping) this.frame(view, "status", { state: "error", message: "官方扩展已退出，请重新连接", retryable: true });
+      if (!view.stopping) this.frame(view, "status", { state: "error", message: "官方扩展已退出，请重新连接", retryable: true, reloadRequired: true });
     });
     await this.send(view, { type: "start", options: {
       extensionDirectory: extension.directory, main: extension.manifest.main, stateDirectory, workspace,

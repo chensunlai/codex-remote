@@ -14,6 +14,7 @@ const CLIENT = "bf2c700a-079d-4c62-a5ed-927c6dc255a0";
 const RENDERER = "881e332b-92d4-40ac-b674-175711576d08";
 const NEW_RENDERER = "9b47b233-81aa-46b4-a21b-bc84fe65a090";
 const PICTURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 255, 137, 0]);
+const SCRIPT = Buffer.from("export const originalResource = 'unchanged';\n".repeat(4096));
 type Json = Record<string, any>;
 
 describe("Gateway and real Agent official extension host integration", () => {
@@ -44,6 +45,7 @@ describe("Gateway and real Agent official extension host integration", () => {
     await writeFile(join(extension, "package.json"), JSON.stringify({ publisher: "openai", name: "chatgpt", version: "1.0.0", main: "extension.cjs" }));
     await writeFile(join(extension, "extension.cjs"), fixtureExtension);
     await writeFile(join(extension, "webview", "picture.png"), PICTURE);
+    await writeFile(join(extension, "webview", "app.js"), SCRIPT);
     const store = new OfficialExtensionStore(join(directory, "agent-data", "official-extension", "packages"));
     await store.importDirectory(extension);
     await store.activate();
@@ -88,6 +90,7 @@ describe("Gateway and real Agent official extension host integration", () => {
     const first = await connect();
     const ready = await first.messages.next(message => message.type === "ready");
     expect(ready.version).toBe("1.0.0");
+    expect(ready.packageSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(ready.html).toContain("public-host-fixture");
     expect(ready.html).toContain(`/extension/1.0.0/webview/picture.png`);
 
@@ -99,6 +102,14 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect(resource.headers.get("content-type")).toBe("image/png");
     expect(resource.headers.get("x-resource-sha256")).toBe(createHash("sha256").update(PICTURE).digest("hex"));
     expect(Buffer.from(await resource.arrayBuffer())).toEqual(PICTURE);
+    resourceUrl.searchParams.set("path", "webview/app.js");
+    resourceUrl.searchParams.set("packageSha256", ready.packageSha256);
+    const script = await fetch(resourceUrl, { headers: authorization });
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-encoding")).toBe("gzip");
+    expect(Number(script.headers.get("content-length"))).toBeLessThan(SCRIPT.length / 10);
+    expect(script.headers.get("x-extension-package-sha256")).toBe(ready.packageSha256);
+    expect(Buffer.from(await script.arrayBuffer())).toEqual(SCRIPT);
 
     const future = { futureField: [false, 0, null, { untouched: "value" }] };
     send(first.socket, ready.epoch, "opaque-once", future);

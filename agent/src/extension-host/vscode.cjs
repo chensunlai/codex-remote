@@ -89,6 +89,7 @@ function createHost(options, send) {
   const providers = new Map();
   const commands = new Map();
   const hostRequests = new Map();
+  const fileWatchers = new Set();
   const surfaceContext = new AsyncLocalStorage();
   const settingsPath = path.join(options.stateDirectory, 'configuration.json');
   const configuration = memento(settingsPath);
@@ -235,17 +236,30 @@ function createHost(options, send) {
       createFileSystemWatcher(pattern, ignoreCreateEvents = false, ignoreChangeEvents = false, ignoreDeleteEvents = false) {
         const created = new EventEmitter(), changed = new EventEmitter(), deleted = new EventEmitter();
         const base = pattern?.baseUri?.fsPath || options.workspace;
-        let watcher;
+        let watcher, disposed = false;
+        const result = { onDidCreate: created.event, onDidChange: changed.event, onDidDelete: deleted.event,
+          dispose() {
+            if (disposed) return;
+            disposed = true;
+            fileWatchers.delete(result);
+            watcher?.close(); created.dispose(); changed.dispose(); deleted.dispose();
+          } };
+        const failed = error => {
+          if (disposed) return;
+          console.warn('File watcher: ' + error.message);
+          result.dispose();
+        };
+        fileWatchers.add(result);
         try { watcher = fs.watch(base, { recursive: true }, (kind, filename) => {
+          if (disposed) return;
           const glob = typeof pattern === 'string' ? pattern : pattern?.pattern;
           if (glob && !path.matchesGlob(String(filename || ''), glob)) return;
           const uri = Uri.file(path.join(base, String(filename || '')));
           if (kind === 'change') { if (!ignoreChangeEvents) changed.fire(uri); }
           else if (fs.existsSync(uri.fsPath)) { if (!ignoreCreateEvents) created.fire(uri); }
           else if (!ignoreDeleteEvents) deleted.fire(uri);
-        }); } catch (error) { console.warn('File watcher: ' + error.message); }
-        return { onDidCreate: created.event, onDidChange: changed.event, onDidDelete: deleted.event,
-          dispose() { watcher?.close(); created.dispose(); changed.dispose(); deleted.dispose(); } };
+        }); watcher.on('error', failed); } catch (error) { failed(error); }
+        return result;
       },
       async findFiles(include, exclude, maxResults, token) {
         const base = include?.baseUri?.fsPath || options.workspace;
@@ -324,7 +338,7 @@ function createHost(options, send) {
       hostRequests.delete(value.id);
       if (value.error) pending.reject(new Error(typeof value.error === 'string' ? value.error : value.error.message)); else pending.resolve(value.result);
     },
-    dispose() { for (const view of views.values()) view.dispose(); for (const item of subscriptions.splice(0).reverse()) { try { item.dispose(); } catch {} } for (const pending of hostRequests.values()) pending.resolve(undefined); },
+    dispose() { for (const view of views.values()) view.dispose(); for (const item of subscriptions.splice(0).reverse()) { try { item.dispose(); } catch {} } for (const watcher of fileWatchers) watcher.dispose(); for (const pending of hostRequests.values()) pending.resolve(undefined); },
   };
 }
 

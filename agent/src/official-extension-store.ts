@@ -4,6 +4,8 @@ import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat,
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import * as yauzl from "yauzl";
 
 export interface OfficialExtensionManifest extends Record<string, unknown> {
@@ -38,6 +40,13 @@ export interface OfficialExtensionStatus {
 }
 
 export interface OfficialExtensionSource { version: string; downloadUrl: string }
+export interface OfficialExtensionResource {
+  content: string;
+  mime: string;
+  sha256: string;
+  packageSha256: string;
+  encoding?: "gzip";
+}
 export interface OfficialExtensionStoreOptions {
   fetch?: typeof globalThis.fetch;
   latest?: () => Promise<OfficialExtensionSource>;
@@ -49,6 +58,7 @@ const maximumArchiveBytes = 1024 * 1024 * 1024;
 const maximumExtractedBytes = 2 * 1024 * 1024 * 1024;
 // Leave room for JSON/base64 envelopes inside the 16 MiB transport frame.
 export const maximumExtensionResourceBytes = 12 * 1024 * 1024 - 4096;
+const gzipAsync = promisify(gzip);
 
 /** Complete, unmodified official packages. No private frontend exports or adapters. */
 export class OfficialExtensionStore {
@@ -121,10 +131,11 @@ export class OfficialExtensionStore {
     });
   }
 
-  async resource(version: string, path: string): Promise<{ content: string; mime: string; sha256: string }> {
+  async resource(version: string, path: string, options: { acceptEncoding?: "gzip"; packageSha256?: string } = {}): Promise<OfficialExtensionResource> {
     const state = await this.readState();
     const packages = await Promise.all([this.readPackage(state.active), this.readPackage(state.candidate)]);
-    const installed = packages.find((item) => item?.version === version);
+    const installed = packages.find((item) => item?.version === version
+      && (options.packageSha256 === undefined || item.sha256 === options.packageSha256));
     if (!installed) throw new Error("官方扩展资源版本未安装");
     const pathname = safeRelativePath(path);
     const target = resolve(installed.directory, pathname);
@@ -132,7 +143,12 @@ export class OfficialExtensionStore {
     const metadata = await stat(target);
     if (!metadata.isFile() || metadata.size > maximumExtensionResourceBytes) throw new Error("扩展资源不是文件或超过 12 MiB");
     const content = await readFile(target);
-    return { content: content.toString("base64"), mime: mimeType(pathname), sha256: createHash("sha256").update(content).digest("hex") };
+    const result = { mime: mimeType(pathname), sha256: createHash("sha256").update(content).digest("hex"), packageSha256: installed.sha256 };
+    if (options.acceptEncoding === "gzip" && content.length >= 1024) {
+      const compressed = await gzipAsync(content);
+      if (compressed.length < content.length) return { ...result, encoding: "gzip", content: compressed.toString("base64") };
+    }
+    return { ...result, content: content.toString("base64") };
   }
 
   private async performUpdate(): Promise<void> {

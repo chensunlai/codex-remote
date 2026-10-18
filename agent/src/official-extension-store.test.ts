@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { maximumExtensionResourceBytes, OfficialExtensionStore, queryLatestOfficialExtension } from "./official-extension-store.js";
 
@@ -94,6 +95,43 @@ describe("complete official extension packages", () => {
     await store.update();
     await settled(store);
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("compresses large resources only when requested while retaining original bytes, checksum and package identity", async () => {
+    const root = await fixture();
+    const directory = await source(root);
+    const original = Buffer.from("export const official = 'unchanged';\n".repeat(8192));
+    await writeFile(join(directory, "webview", "app.js"), original);
+    const store = new OfficialExtensionStore(join(root, "store"));
+    const imported = await store.importDirectory(directory);
+    const plain = await store.resource(imported.version, "webview/app.js");
+    expect(plain.encoding).toBeUndefined();
+    expect(Buffer.from(plain.content, "base64")).toEqual(original);
+    const compressed = await store.resource(imported.version, "webview/app.js", { acceptEncoding: "gzip", packageSha256: imported.sha256 });
+    expect(compressed.encoding).toBe("gzip");
+    expect(compressed.content.length).toBeLessThan(plain.content.length / 10);
+    expect(gunzipSync(Buffer.from(compressed.content, "base64"))).toEqual(original);
+    expect(compressed.sha256).toBe(createHash("sha256").update(original).digest("hex"));
+    expect(compressed.packageSha256).toBe(imported.sha256);
+    const tiny = await store.resource(imported.version, "webview/picture.png", { acceptEncoding: "gzip" });
+    expect(tiny.encoding).toBeUndefined();
+  });
+
+  it("selects the exact installed package when two packages share a version", async () => {
+    const root = await fixture();
+    const directory = await source(root);
+    const store = new OfficialExtensionStore(join(root, "store"));
+    const first = await store.importDirectory(directory);
+    await store.activate();
+    await writeFile(join(directory, "webview", "index.html"), "replacement package");
+    const second = await store.importDirectory(directory);
+    expect(second.sha256).not.toBe(first.sha256);
+    for (const imported of [first, second]) {
+      const resource = await store.resource(imported.version, "webview/index.html", { packageSha256: imported.sha256 });
+      expect(resource.packageSha256).toBe(imported.sha256);
+      expect(Buffer.from(resource.content, "base64")).toEqual(await readFile(join(imported.directory, "webview/index.html")));
+    }
+    await expect(store.resource(first.version, "webview/index.html", { packageSha256: "f".repeat(64) })).rejects.toThrow("未安装");
   });
 
   it("keeps the active package and pending candidate intact when an update fails", async () => {

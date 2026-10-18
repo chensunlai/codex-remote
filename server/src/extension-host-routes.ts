@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import type { FastifyInstance } from "fastify";
 import type WebSocket from "ws";
 import { z } from "zod";
@@ -9,6 +11,7 @@ import { AppError, errorMessage } from "./errors.js";
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 // Leave room for base64 expansion and the Agent response envelope within the 16 MiB transport limit.
 const MAX_RESOURCE_BYTES = 12 * 1024 * 1024 - 4096;
+const gunzipAsync = promisify(gunzip);
 const serviceParams = z.object({ serviceId: z.string().uuid() });
 const viewQuery = z.object({
   clientId: z.string().uuid(),
@@ -39,6 +42,8 @@ const resourceResponse = z.object({
   content: z.string(),
   mime: z.string().min(1).max(255).refine((value) => !/[\r\n]/.test(value)),
   sha256: z.string().regex(/^[a-f0-9]{64}$/i).optional(),
+  packageSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  encoding: z.literal("gzip").optional(),
 });
 
 interface ViewSnapshot {
@@ -46,6 +51,7 @@ interface ViewSnapshot {
   epoch: string;
   sequence: number;
   version: string;
+  packageSha256?: string;
   origin: string;
   html: string;
   frames: ExtensionViewEvent["frame"][];
@@ -56,6 +62,7 @@ interface ViewSnapshot {
 interface Attachment {
   socket: WebSocket;
   operations: Promise<void>;
+  acknowledgements: Promise<void>;
   superseded: boolean;
 }
 
@@ -83,27 +90,46 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     const params = parse(z.object({
       version: z.string().min(1).max(255),
       path: z.string().min(1).max(8192),
+      packageSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     }), request.query);
     const result = resourceResponse.safeParse(await services.agents.request(
-      request.ownerId, serviceId, "extension.resource", params,
+      request.ownerId, serviceId, "extension.resource", { ...params, acceptEncoding: "gzip" },
     ));
     if (!result.success) throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Invalid extension resource response");
     if (result.data.content.length > Math.ceil(MAX_RESOURCE_BYTES / 3) * 4) {
       throw new AppError(413, "EXTENSION_RESOURCE_TOO_LARGE", "Extension resource exceeds transport limit");
     }
-    const resource = Buffer.from(result.data.content, "base64");
-    if (resource.length > MAX_RESOURCE_BYTES) {
+    const transported = Buffer.from(result.data.content, "base64");
+    if (transported.length > MAX_RESOURCE_BYTES) {
       throw new AppError(413, "EXTENSION_RESOURCE_TOO_LARGE", "Extension resource exceeds transport limit");
     }
-    if (resource.toString("base64") !== result.data.content) {
+    if (transported.toString("base64") !== result.data.content) {
       throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Invalid extension resource encoding");
     }
-    if (result.data.sha256 && createHash("sha256").update(resource).digest("hex") !== result.data.sha256.toLowerCase()) {
+    let resource = transported;
+    if (result.data.encoding === "gzip") {
+      try { resource = await gunzipAsync(transported, { maxOutputLength: MAX_RESOURCE_BYTES }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") {
+          throw new AppError(413, "EXTENSION_RESOURCE_TOO_LARGE", "Extension resource exceeds transport limit");
+        }
+        throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Invalid compressed extension resource");
+      }
+    }
+    const sha256 = createHash("sha256").update(resource).digest("hex");
+    if (result.data.sha256 && sha256 !== result.data.sha256.toLowerCase()) {
       throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Extension resource checksum mismatch");
     }
-    reply.type(result.data.mime).header("content-length", String(resource.length));
-    if (result.data.sha256) reply.header("x-resource-sha256", result.data.sha256);
-    return reply.send(resource);
+    if (params.packageSha256 && params.packageSha256 !== result.data.packageSha256) {
+      throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Extension resource package changed; reconnect to reload");
+    }
+    const compressed = result.data.encoding === "gzip" && acceptsGzip(request.headers["accept-encoding"]);
+    const response = compressed ? transported : resource;
+    reply.type(result.data.mime).header("content-length", String(response.length))
+      .header("x-resource-sha256", sha256).header("vary", "Accept-Encoding");
+    if (result.data.packageSha256) reply.header("x-extension-package-sha256", result.data.packageSha256);
+    if (compressed) reply.header("content-encoding", "gzip");
+    return reply.send(response);
   });
 
   app.get(base, { websocket: true }, (socket, request) => {
@@ -120,7 +146,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       .update(JSON.stringify([ownerId, serviceId, clientId, workspace]))
       .digest("hex");
     const previous = attachments.get(viewId);
-    const attachment: Attachment = { socket, operations: Promise.resolve(), superseded: false };
+    const attachment: Attachment = { socket, operations: Promise.resolve(), acknowledgements: Promise.resolve(), superseded: false };
     attachments.set(viewId, attachment);
     if (previous) previous.superseded = true;
     previous?.socket.close(4001, "View attached by another connection");
@@ -129,6 +155,8 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     let snapshot: ViewSnapshot | undefined;
     let bufferedBytes = 0;
     let queuedBytes = 0;
+    let pendingAcknowledgement: number | undefined;
+    let acknowledging = false;
     const buffered: ExtensionViewEvent["frame"][] = [];
     const current = () => !closed && socket.readyState === socket.OPEN
       && attachments.get(viewId) === attachment;
@@ -152,6 +180,19 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         message: errorMessage(error),
         retryable: !(error instanceof AppError) || error.statusCode >= 500,
         ...(error instanceof AppError && error.details !== undefined ? { details: error.details } : {}),
+      });
+    };
+    const acknowledge = (): void => {
+      if (!current() || !snapshot || acknowledging || pendingAcknowledgement === undefined) return;
+      const sequence = pendingAcknowledgement;
+      pendingAcknowledgement = undefined;
+      acknowledging = true;
+      // ACKs are cumulative bookkeeping. One slow ACK must not hold up page actions.
+      attachment.acknowledgements = services.agents.request(ownerId, serviceId, "extension.view.ack", {
+        viewId, rendererId, sequence,
+      }).then(() => {}, (error: unknown) => { fail(error); }).finally(() => {
+        acknowledging = false;
+        acknowledge();
       });
     };
     const onFrame = (event: ExtensionViewEvent): void => {
@@ -191,7 +232,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     heartbeat.unref();
 
     attachment.operations = (async () => {
-      await previous?.operations;
+      await Promise.all([previous?.operations, previous?.acknowledgements]);
       if (!current()) return;
       snapshot = await services.agents.request<ViewSnapshot>(ownerId, serviceId, "extension.view.attach", {
         viewId, rendererId, workspace, after, ...(epoch ? { epoch } : {}),
@@ -202,6 +243,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       for (const frame of buffered.sort((a, b) => a.sequence - b.sequence)) onFrame({ ownerId, serviceId, frame });
       buffered.length = 0;
       bufferedBytes = 0;
+      acknowledge();
     })().catch((error: unknown) => {
       fail(error);
       socket.close(1011, "Unable to attach extension view");
@@ -214,6 +256,19 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         return;
       }
       const text = raw.toString();
+      let parsed: z.infer<typeof incomingMessage>;
+      try {
+        parsed = incomingMessage.parse(JSON.parse(text));
+      } catch {
+        fail(new AppError(400, "INVALID_EXTENSION_MESSAGE", "Invalid extension view message"));
+        socket.close(1008, "Invalid extension view message");
+        return;
+      }
+      if (parsed.type === "ack") {
+        pendingAcknowledgement = Math.max(pendingAcknowledgement ?? 0, parsed.sequence);
+        acknowledge();
+        return;
+      }
       const bytes = Buffer.byteLength(text);
       queuedBytes += bytes;
       if (queuedBytes > MAX_BUFFER_BYTES) {
@@ -223,14 +278,6 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       attachment.operations = attachment.operations.then(async () => {
         queuedBytes -= bytes;
         if (!current() || !snapshot) return;
-        let parsed: z.infer<typeof incomingMessage>;
-        try {
-          parsed = incomingMessage.parse(JSON.parse(text));
-        } catch {
-          fail(new AppError(400, "INVALID_EXTENSION_MESSAGE", "Invalid extension view message"));
-          socket.close(1008, "Invalid extension view message");
-          return;
-        }
         try {
           const identity = { viewId, rendererId };
           if (parsed.type === "message") {
@@ -240,10 +287,6 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
               },
             );
             send({ ...delivery, type: "delivery", messageId: parsed.messageId });
-          } else if (parsed.type === "ack") {
-            await services.agents.request(ownerId, serviceId, "extension.view.ack", {
-              ...identity, sequence: parsed.sequence,
-            });
           } else if (parsed.type === "visibility") {
             await services.agents.request(ownerId, serviceId, "extension.view.visibility", {
               ...identity, visible: parsed.visible,
@@ -279,6 +322,16 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       });
     });
   });
+}
+
+function acceptsGzip(header: string | undefined): boolean {
+  const encodings = (header ?? "").split(",").map((value) => {
+    const [name, ...parameters] = value.trim().toLowerCase().split(";");
+    const quality = parameters.find((parameter) => parameter.trim().startsWith("q="));
+    return { name, quality: quality === undefined ? 1 : Number(quality.trim().slice(2)) };
+  });
+  const selected = encodings.find((value) => value.name === "gzip") ?? encodings.find((value) => value.name === "*");
+  return !!selected && Number.isFinite(selected.quality) && selected.quality > 0 && selected.quality <= 1;
 }
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {

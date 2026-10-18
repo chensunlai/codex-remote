@@ -20,6 +20,15 @@ exports.activate=ctx=>{ctx.subscriptions.push(v.window.registerWebviewViewProvid
 view.webview.html='<!doctype html><title>Fixture</title>';
 const panels=[];
 view.webview.onDidReceiveMessage(async message=>{
+if(message==='watcher-error'||message==='watcher-dispose'){
+const fs=require('node:fs'),{EventEmitter}=require('node:events');const original=fs.watch;
+fs.watch=()=>{const watcher=new EventEmitter();watcher.close=()=>fs.appendFileSync(require('node:path').join(v.workspace.workspaceFolders[0].uri.fsPath,'watcher-closed'),'closed\\n');
+if(message==='watcher-error')setImmediate(()=>watcher.emit('error',Object.assign(new Error('permission denied'),{code:'EACCES'})));return watcher;};
+try{const watcher=v.workspace.createFileSystemWatcher('**/*');if(message==='watcher-dispose'){watcher.dispose();watcher.dispose();v.workspace.createFileSystemWatcher('**/*');}}
+finally{fs.watch=original;}setTimeout(()=>view.webview.postMessage('watcher-alive'),30);return;
+}
+if(message==='recoverable-error'){Promise.reject(new Error('nonfatal fixture'));return;}
+if(message==='exit-host'){process.exit(1);}
 if(message==='clipboard'){view.webview.postMessage(await v.env.clipboard.readText());return;}
 if(message==='close-settings-later'){setTimeout(()=>{panels[0].dispose();require('node:fs').writeFileSync(require('node:path').join(v.workspace.workspaceFolders[0].uri.fsPath,'panel-closed'),'closed');},50);return;}
 if(message==='panels'){
@@ -58,6 +67,45 @@ async function until(check: () => boolean | Promise<boolean>) {
 }
 
 describe("official extension process lifecycle", () => {
+  it("keeps the child host alive after an asynchronous file watcher permission error", async () => {
+    const f = await fixture();
+    await f.send("watcher", encode("watcher-error"));
+    await until(() => f.frames.some(frame => JSON.stringify(frame.payload) === JSON.stringify(encode("watcher-alive"))));
+    expect(await readFile(join(f.root, "watcher-closed"), "utf8")).toBe("closed\n");
+    expect(f.frames.some(frame => frame.type === "status")).toBe(false);
+    await f.send("after-error", encode("normal reply"));
+    await until(() => f.frames.some(frame => JSON.stringify(frame.payload).includes("normal reply")));
+    const resumed = await f.service.request("extension.view.attach", { ...f.attach, epoch: f.snapshot.epoch }) as { epoch: string };
+    expect(resumed.epoch).toBe(f.snapshot.epoch);
+  });
+
+  it("disposes watchers once and closes remaining watchers when the host stops", async () => {
+    const f = await fixture();
+    await f.send("watchers", encode("watcher-dispose"));
+    await until(() => f.frames.some(frame => JSON.stringify(frame.payload) === JSON.stringify(encode("watcher-alive"))));
+    expect(await readFile(join(f.root, "watcher-closed"), "utf8")).toBe("closed\n");
+    await f.service.restart();
+    expect(await readFile(join(f.root, "watcher-closed"), "utf8")).toBe("closed\nclosed\n");
+  });
+
+  it("reports a nonfatal host error without requesting a renderer reload and continues accepting actions", async () => {
+    const f = await fixture();
+    await f.send("failure", encode("recoverable-error"));
+    await until(() => f.frames.some(frame => frame.type === "status"));
+    expect(f.frames.find(frame => frame.type === "status")?.payload).toMatchObject({ state: "error", retryable: false, reloadRequired: false });
+    await f.send("continued", encode("still running"));
+    await until(() => f.frames.some(frame => JSON.stringify(frame.payload).includes("still running")));
+    expect((await f.service.status()).hosts).toBe(1);
+  });
+
+  it("requests a renderer reload when the host actually exits", async () => {
+    const f = await fixture();
+    await f.send("exit", encode("exit-host"));
+    await until(() => f.frames.some(frame => frame.type === "status"));
+    expect(f.frames.find(frame => frame.type === "status")?.payload).toMatchObject({ state: "error", retryable: true, reloadRequired: true });
+    expect((await f.service.status()).hosts).toBe(0);
+  });
+
   it("forwards opaque values and byte arrays and deduplicates an accepted message", async () => {
     const f = await fixture(); expect(f.snapshot.html).toContain("Fixture");
     await f.send("first", encode("draft")); await f.send("first", encode("draft"));

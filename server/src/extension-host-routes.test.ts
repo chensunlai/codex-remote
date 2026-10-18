@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { buildGateway, type BuiltGateway } from "./app.js";
@@ -160,6 +161,55 @@ describe("Official extension host relay", () => {
     expect((await second.messages.next("message")).payload).toBe("new renderer");
   });
 
+  it("coalesces cumulative ACKs without blocking ordered official actions behind a slow ACK", async () => {
+    let finishAck: ((value: unknown) => void) | undefined;
+    let finishFirstSend: ((value: unknown) => void) | undefined;
+    respond = (method, params) => {
+      if (method === "extension.view.attach") return snapshot(params);
+      if (method === "extension.view.ack" && params.sequence === 1) return new Promise((resolve) => { finishAck = resolve; });
+      if (method === "extension.view.send" && params.messageId === "first") return new Promise((resolve) => { finishFirstSend = resolve; });
+      return {};
+    };
+    const { socket, messages } = await connectView();
+    await messages.next("ready");
+    socket.send(JSON.stringify({ type: "ack", sequence: 1 }));
+    await eventually(() => finishAck !== undefined);
+    for (let sequence = 2; sequence <= 100; sequence++) socket.send(JSON.stringify({ type: "ack", sequence }));
+    socket.send(JSON.stringify({ type: "message", epoch: EPOCH, messageId: "first", payload: "first action" }));
+    socket.send(JSON.stringify({ type: "message", epoch: EPOCH, messageId: "second", payload: "second action" }));
+    await eventually(() => finishFirstSend !== undefined);
+    expect(calls.filter((call) => call.method === "extension.view.ack")).toHaveLength(1);
+    expect(calls.filter((call) => call.method === "extension.view.send")).toHaveLength(1);
+    finishFirstSend!({ accepted: true });
+    expect((await messages.next("delivery")).messageId).toBe("first");
+    expect((await messages.next("delivery")).messageId).toBe("second");
+    finishAck!({});
+    await eventually(() => calls.filter((call) => call.method === "extension.view.ack").length === 2);
+    expect(calls.filter((call) => call.method === "extension.view.ack").map((call) => call.params.sequence)).toEqual([1, 100]);
+  });
+
+  it("fences pending ACKs when another renderer replaces the connection", async () => {
+    let finishAck: ((value: unknown) => void) | undefined;
+    respond = (method, params) => {
+      if (method === "extension.view.attach") return snapshot(params);
+      if (method === "extension.view.ack") return new Promise((resolve) => { finishAck = resolve; });
+      return {};
+    };
+    const first = await connectView();
+    await first.messages.next("ready");
+    first.socket.send(JSON.stringify({ type: "ack", sequence: 1 }));
+    await eventually(() => finishAck !== undefined);
+    first.socket.send(JSON.stringify({ type: "ack", sequence: 2 }));
+    const closed = onClose(first.socket);
+    const second = await connectView({ rendererId: OTHER_RENDERER });
+    expect(await closed).toBe(4001);
+    expect(calls.filter((call) => call.method === "extension.view.attach")).toHaveLength(1);
+    finishAck!({});
+    await second.messages.next("ready");
+    expect(calls.filter((call) => call.method === "extension.view.ack")).toHaveLength(1);
+    expect(calls.filter((call) => call.method === "extension.view.detach")).toHaveLength(0);
+  });
+
   it("requires authentication and isolates owner and view events", async () => {
     expect((await fetch(`${baseUrl}/api/v3/services/${SERVICE_ID}/extension/status`)).status).toBe(401);
     const unauthorized = new WebSocket(viewUrl(), { headers: { Authorization: "Bearer invalid-token" } });
@@ -244,13 +294,46 @@ describe("Official extension host relay", () => {
     expect(response.headers.get("x-resource-sha256")).toBe(sha256);
     expect(Buffer.from(await response.arrayBuffer()).equals(bytes)).toBe(true);
     expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({
-      version: "1.2.3", path: "webview/image.png",
+      version: "1.2.3", path: "webview/image.png", acceptEncoding: "gzip",
     });
     expect((await api("/resource?version=1.2.3&path=webview%2Fimage.png", "GET", undefined, OTHER_TOKEN)).status).toBe(409);
     respond = () => ({ content: bytes.toString("base64"), mime: "image/png", sha256: "0".repeat(64) });
     expect((await api("/resource?version=1.2.3&path=webview%2Fimage.png", "GET")).status).toBe(502);
     respond = () => ({ content: "not base64!", mime: "image/png" });
     expect((await api("/resource?version=1.2.3&path=webview%2Fimage.png", "GET")).status).toBe(502);
+  });
+
+  it("verifies compressed resources and forwards gzip only to clients accepting it", async () => {
+    const bytes = Buffer.from("export const official = 'unchanged';\n".repeat(8192));
+    const compressed = gzipSync(bytes);
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const packageSha256 = "a".repeat(64);
+    respond = () => ({ content: compressed.toString("base64"), mime: "text/javascript", sha256, packageSha256, encoding: "gzip" });
+    const url = `/api/v3/services/${SERVICE_ID}/extension/resource?version=1.2.3&path=webview%2Fapp.js&packageSha256=${packageSha256}`;
+    for (const encoding of ["gzip", "br, gzip;q=0.5", "*;q=0.5", "gzip;q=0", "*;q=1, gzip;q=0", "identity"]) {
+      const response = await gateway.app.inject({ method: "GET", url, headers: { authorization: `Bearer ${TOKEN}`, "accept-encoding": encoding } });
+      expect(response.statusCode).toBe(200);
+      const useGzip = ["gzip", "br, gzip;q=0.5", "*;q=0.5"].includes(encoding);
+      expect(response.headers["content-encoding"]).toBe(useGzip ? "gzip" : undefined);
+      expect(response.rawPayload).toEqual(useGzip ? compressed : bytes);
+      expect(response.headers["x-resource-sha256"]).toBe(sha256);
+      expect(response.headers["x-extension-package-sha256"]).toBe(packageSha256);
+      expect(response.headers["cache-control"]).toBe("no-store");
+    }
+    expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({
+      version: "1.2.3", path: "webview/app.js", packageSha256, acceptEncoding: "gzip",
+    });
+    expect((await gateway.app.inject({ method: "GET", url: url.replace(packageSha256, "b".repeat(64)), headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(502);
+    respond = () => ({ content: compressed.toString("base64"), mime: "text/javascript", sha256: "0".repeat(64), packageSha256, encoding: "gzip" });
+    expect((await api("/resource?version=1.2.3&path=app.js", "GET")).status).toBe(502);
+  });
+
+  it("rejects corrupt gzip and decompression above the raw resource limit", async () => {
+    respond = () => ({ content: Buffer.from("not gzip").toString("base64"), mime: "text/javascript", encoding: "gzip" });
+    expect((await api("/resource?version=1.2.3&path=app.js", "GET")).status).toBe(502);
+    const oversized = gzipSync(Buffer.alloc(12 * 1024 * 1024 - 4095));
+    respond = () => ({ content: oversized.toString("base64"), mime: "text/javascript", encoding: "gzip" });
+    expect((await api("/resource?version=1.2.3&path=app.js", "GET")).status).toBe(413);
   });
 
   it("allows a resource up to the base64 transport limit and rejects a larger one", async () => {
