@@ -48,6 +48,19 @@ test("Agent installer verifies and installs the matching runtime without launchi
   assert.match(await readFile(join(install, "runtime.previous", "node"), "utf8"), /v24.18.0/);
 });
 
+test("Agent installer defaults to the user's ~/.local/codex-remote rather than the current directory", { skip: process.platform !== "linux" }, async () => {
+  const { directory, release } = await fixture();
+  const userDirectory = join(directory, "user home");
+  await execute("bash", [resolve("install.sh"), "agent", "--from", release], {
+    cwd: directory,
+    env: { ...process.env, HOME: userDirectory, CODEX_REMOTE_INSTALL_DIR: "" },
+  });
+  const installedDirectory = join(userDirectory, ".local", "codex-remote");
+  assert.match(await readFile(join(installedDirectory, "codex-remote-agent"), "utf8"), /fixture-agent/);
+  assert.equal((await execute(join(installedDirectory, "runtime", "node"), ["--version"])).stdout.trim(), "v24.18.0");
+  await assert.rejects(readFile(join(directory, "codex-remote-agent")), { code: "ENOENT" });
+});
+
 test("runtime checksum failure leaves the existing Agent and runtime untouched", { skip: process.platform !== "linux" }, async () => {
   const { install, release, run } = await fixture();
   await run();

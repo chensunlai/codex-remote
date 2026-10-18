@@ -84,7 +84,7 @@ if [[ -z "$INSTALL_DIRECTORY" ]]; then
   if [[ "$COMPONENT" == "gateway" ]]; then
     INSTALL_DIRECTORY="/opt/codex-remote"
   else
-    INSTALL_DIRECTORY="$PWD"
+    INSTALL_DIRECTORY="$HOME/.local/codex-remote"
   fi
 fi
 if [[ -z "$DATA_DIRECTORY" && "$COMPONENT" == "gateway" ]]; then
@@ -366,7 +366,7 @@ install.sh <agent|gateway> [options]
   --repo OWNER/REPO       覆盖 GitHub 仓库
   --version VERSION       release 标签，默认 latest
   --from DIRECTORY        从本地 release 目录安装
-  --install-dir DIRECTORY 程序目录；Agent 默认当前目录，Gateway 默认 /opt/codex-remote
+  --install-dir DIRECTORY 程序目录；Agent 默认 ~/.local/codex-remote，Gateway 默认 /opt/codex-remote
   --data-dir DIRECTORY    Gateway 数据目录，默认位于程序目录的 data
   --systemd               安装并启动 Gateway systemd 服务（需要 root）
 

@@ -1,181 +1,322 @@
 # Codex Remote
 
-Codex Remote 是一个自托管的 Android Codex 客户端，用于从手机访问远程服务器上的 Codex 会话、终端和文件。
+从 Android 手机使用服务器上的 Codex，访问对话、终端和文件。
+
+Codex Remote 复用官方 VS Code 插件：手机显示官方聊天界面，Agent 在服务器上运行官方 `extension.js`，实际任务由服务器上的 Codex App Server 执行。App 提供服务器切换、工作目录选择和手机端交互。
+
+[下载 Android APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk) · [所有版本](https://github.com/chensunlai/codex-remote/releases)
+
+## 目录
+
+- [功能](#功能)
+- [架构](#架构)
+- [运行要求](#运行要求)
+- [安装与连接](#安装与连接)
+- [使用说明](#使用说明)
+- [更新](#更新)
+- [配置与数据位置](#配置与数据位置)
+- [常见问题](#常见问题)
+- [从源码构建](#从源码构建)
+
+## 功能
+
+| 功能 | 说明 |
+| --- | --- |
+| 官方聊天界面 | 会话、流式回复、模型选项和审批由官方插件处理 |
+| 多服务器 | 在同一 Gateway 下切换 Agent，分别保存工作目录 |
+| 远端执行 | 手机断网或关闭后，服务器继续执行已接受的任务 |
+| 聊天附件 | 从手机选择图片和文件，加入官方输入框 |
+| 文件与终端 | 浏览服务器文件、预览和下载文件，使用远端终端 |
+| 鼠标模式 | 在触屏上移动指针、悬停、点击和切换键盘焦点 |
+| 外观 | 黑色、白色、Anthropic 暖色主题，以及字体缩放 |
+| Codex 管理 | 查看 CLI 版本，在 App 中更新或重启服务器上的 Codex |
+
+官方前端与 `extension.js` 保持原样；主题通过宿主提供的 VS Code CSS 变量和主题元数据适配。模型列表、推理档位和功能开关由官方插件及后端决定。
 
 ## 架构
 
 ```text
-Android：原生界面 + 官方 WebView
-                  ↕ WSS
-Gateway：认证与公开宿主消息转发
-                  ↕ WSS（Agent 主动连接）
-Agent：Node.js 宿主 → 官方 extension.js → Codex App Server
+Android 手机
+  原生 App + 官方 WebView
+            ↕ HTTPS / WSS
+Gateway 服务器
+  认证、服务发现、消息与资源转发
+            ↕ WSS（Agent 主动连接）
+Agent 服务器
+  Node.js 宿主 → 官方 extension.js → Codex App Server
 ```
 
-官方 WebView 与 `extension.js` 来自同一份 OpenAI.chatgpt 插件。Agent 提供公开的 VS Code 宿主 API，文件、子进程和客户端协调由官方扩展直接在服务器执行。手机提供文件选择、剪贴板、通知、预览和浏览器操作；Gateway 不解释官方消息内容。
+| 组件 | 安装位置与职责 |
+| --- | --- |
+| Android App | 安装在手机，显示界面并提供文件选择、预览、剪贴板等能力 |
+| Gateway | 部署在手机和 Agent 均可访问的服务器，默认监听 `6767` 端口 |
+| Agent | 部署在实际运行 Codex 的服务器，运行插件宿主、访问文件并执行命令 |
 
-Agent 与 App 使用同一个访问令牌后，App 才能看到对应服务。访问令牌由 Android 原生网络层持有。Gateway 默认端口为 `6767`。
+Gateway 与 Agent 可以部署在同一台机器上，也可以分开部署。Agent 主动连接 Gateway，无需为 Agent 单独开放入站端口。**App 和 Agent 必须使用同一个 Gateway 访问令牌**，App 才能看到对应服务器。
 
-## 功能
+官方 WebView 和 `extension.js` 来自同一份 `OpenAI.chatgpt` 插件。宿主适配层实现所需的公开 VS Code API，Gateway 不解释官方聊天消息内容。本项目不读取官方前端私有导出，也不自行解析 Codex 会话文件。
 
-官方扩展负责会话、聊天、流式展示、模型选项与审批。App 保留服务器切换、工作目录选择、终端和文件管理。文件预览和下载上限默认是 `10 MiB`。
+## 运行要求
 
-切换 App 页面保留同一个聊天 WebView。手机后台、断网或彻底关闭时，Agent 不结束官方扩展，已接受的任务继续运行；需要用户回答时等待恢复连接。重连不自动重发结果不明的操作。手机页面被回收后重新加载官方页面，由官方扩展恢复状态。
+| 环境 | 要求 |
+| --- | --- |
+| Gateway / Agent | glibc Linux，支持 `x86_64` 和 `arm64` |
+| Agent 所在服务器 | 已安装并登录 Codex CLI，启动 Agent 的用户可以运行它 |
+| Android | Android 8.0（API 26）及以上，系统 WebView 需支持当前官方前端 |
+| Gateway 地址 | Release APK 使用 HTTPS 地址 |
 
-后台运行依赖 Agent、扩展宿主与 App Server 持续运行。关闭 Agent、服务器重启、手动重启 Codex 或应用插件更新可能中断任务。官方设置等独立 WebView 面板显示在聊天页上层，底层聊天页面保持运行；原生返回箭头和系统返回可关闭上层面板，随后恢复切换服务器行为。系统键盘、原生弹窗与 JavaScript 确认窗口优先处理返回。
+Agent 安装包附带扩展宿主和独立的 Node.js 24.18.0 运行时，无需另装系统 Node.js。**Codex CLI 需自行安装**；Agent 使用系统中的 `codex` 或配置时指定的可执行文件。官方插件在首次使用时下载。
 
-客户端协调使用服务器上官方扩展自身的实现。未参与官方协调的 CLI 仍可能报告 `already has an active writer`；App 不强制抢占其他写入者。
+当前移动宿主不提供代码编辑、编辑器上下文、代码跳转、登录回调或 Windows/WSL 支持。请先在 Agent 服务器完成 Codex 登录。
 
-新链路不导入官方页面的私有导出、不强制覆盖功能开关，也不自行解析 Codex 会话文件。代码编辑、编辑器上下文、代码跳转、登录回调和 Windows/WSL 不在移动宿主的支持范围内。用户需提前在服务器登录。
+## 安装与连接
 
-## 要求
-
-- Gateway 和 Agent：glibc Linux，支持 `x86_64` 与 `arm64`
-- Agent 所在服务器：已单独安装并登录 Codex CLI
-- Android：Android 8.0（API 26）或更高版本
-
-Agent 安装器包含官方扩展宿主和独立的 Node.js 24.18.0 运行时，保存在程序旁的 `runtime/`；无需安装系统 Node.js。Codex CLI 仍需单独安装并登录，Agent 使用系统中的 `codex` 或配置时指定的可执行文件。
-
-## 快速开始
+`install.sh` 根据命令参数下载并安装程序。交互式界面在程序启动后提供：Gateway 打开管理界面，Agent 首次启动填写连接配置。
 
 ### 1. 安装 Gateway
 
-在公网服务器执行：
+在 Gateway 服务器执行：
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | sudo bash -s -- gateway --systemd
 ```
 
-上述命令会将 Gateway 安装到 `/opt/codex-remote`，并创建、启用和启动 systemd 服务。打开管理 TUI：
+其中 `gateway` 选择安装 Gateway，`--systemd` 表示同时创建并启动 systemd 服务。默认安装到 `/opt/codex-remote`。
+
+查看状态和首次生成的访问令牌：
+
+```bash
+sudo systemctl status codex-remote-gateway
+sudo cat /opt/codex-remote/data/api-token
+```
+
+打开交互式管理界面，可创建或撤销带 tag 的令牌、管理服务记录：
 
 ```bash
 sudo /opt/codex-remote/codex-remote-gateway
 ```
 
-首次打开会自动创建 tag 为 `admin` 的访问令牌。后续令牌在 TUI 中输入 tag 后创建。
+首次自动生成的令牌保存在 `data/api-token`；在管理界面创建的新令牌只显示一次，请在创建时保存。这里的访问令牌也就是 App 中填写的 Gateway Key，与 OpenAI API Key 不同。
 
-查看运行状态：
-
-```bash
-sudo systemctl status codex-remote-gateway
-```
+不使用 systemd 时，安装命令省略 `--systemd`，然后运行 `sudo /opt/codex-remote/codex-remote-gateway start` 启动服务。直接运行二进制打开的是管理界面。
 
 ### 2. 安装 Agent
 
-在需要运行 Codex 的服务器上执行：
+在运行 Codex 的服务器上，以已登录 Codex 的用户执行：
 
 ```bash
-mkdir -p ~/codex-remote-agent
-cd ~/codex-remote-agent
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
-./codex-remote-agent
+
+~/.local/codex-remote/codex-remote-agent
 ```
 
-首次启动会进入配置 TUI，依次输入 Gateway 地址、服务名称、访问令牌和 Codex 路径。配置保存在程序旁的 `agent.json`。
+**Agent 默认安装到 `~/.local/codex-remote`**，不需要先创建目录或切换当前目录。首次启动进入配置界面：
 
-重新配置：
+| 配置项 | 填写内容 |
+| --- | --- |
+| Gateway 地址 | 例如 `https://codex.example.com` |
+| 服务名称 | 在 App 中显示的名称，例如 `开发服务器` |
+| 访问令牌 | Gateway 创建的令牌，与 App 使用的令牌一致 |
+| Codex 路径 | 默认 `codex`，也可填写可执行文件的绝对路径 |
+
+配置保存在 `~/.local/codex-remote/agent.json`。后续直接运行即可连接，重新配置使用：
 
 ```bash
-./codex-remote-agent --configure
+~/.local/codex-remote/codex-remote-agent --configure
 ```
 
-### 3. 使用 Android App
+安装器不会为 Agent 配置后台服务。需要断开 SSH 后继续运行时，可以用 tmux 启动；避免同时启动同一份配置的多个 Agent：
 
-从 [GitHub Releases](https://github.com/chensunlai/codex-remote/releases) 下载 APK：
+```bash
+tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
+```
 
-1. 输入 Gateway 地址和访问令牌。
-2. 在“服务”页面选择在线服务。
-3. 在聊天页右上角“更多选项”中点击“检查并更新前端”，首次安装由此触发。
-4. 点击聊天页的文件夹按钮，在远端目录列表中选择工作目录，再打开或创建 Codex 会话。
+按 `Ctrl+B`，再按 `D` 离开 tmux；通过 `tmux attach -t codex-remote-agent` 返回。tmux 会话不会在服务器重启后自动恢复。
 
-工作目录按服务器保存，默认使用该服务器的用户主目录。切换目录会重新加载官方前端，已被后端接受的任务继续运行。
+### 3. 连接 Android App
 
-Release APK 仅连接 HTTPS Gateway。
+下载并安装 [Release APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk)：
 
-### 上传与预览
+1. 输入 Gateway 的 HTTPS 地址和访问令牌。
+2. 在“服务器”页面选择在线 Agent。
+3. 首次进入聊天页，点击 **“检查并下载官方前端”**，等待下载和初始化完成。
+4. 点击右上角文件夹按钮，选择服务器上的工作目录。
+5. 在官方界面打开已有会话，或创建新会话。
 
-- 聊天附件：点击官方输入框的 **＋ → Files and folders（文件和文件夹）**，在 Android 文件选择器中选择手机图片或文件，可多选。上传后出现在输入框中，点击发送才会交给 Codex；取消选择不会提交消息。
-- 聊天附件保存在所选服务器的 `~/.codex-remote-uploads/<随机目录>/原文件名`，避免覆盖同名文件。它们会留在服务器供后续会话引用，可在文件页手动清理。
-- 聊天中的本地图片链接和文件页使用同一个原生预览器：PNG、JPEG、WebP 等图片支持双指缩放；文本最多预览 256 KiB，其他二进制文件提示下载查看。预览受 Gateway 下载限制约束，App 额外限制图片数据不超过 20 MiB，并缩小过大位图以控制内存。
+工作目录按服务器保存，默认是 Agent 用户的主目录。切换工作目录会重新加载官方页面。
+
+### 自定义安装位置
+
+安装器支持通过 `--install-dir` 指定位置。例如：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
+  | bash -s -- agent --install-dir "$HOME/tools/codex-remote"
+```
+
+默认目录变更不会搬迁已有安装。**升级旧 Agent 时，如果原目录不同，请继续用 `--install-dir` 指定原目录**，以使用已有配置和数据。
+
+## 使用说明
+
+### 页面切换与断线恢复
+
+切换 App 底部页面时保留聊天 WebView。短暂断线后，能够恢复原页面时会保留草稿；系统回收页面或宿主要求重新同步时，需要重新加载。结果不明的已发送操作不会自动重发，以免重复执行。
+
+手机进入后台、断网或彻底关闭，都不会主动结束 Agent 上的官方扩展。**后端已接受的任务继续执行**；需要审批或补充信息时，等待用户恢复连接。Agent、扩展宿主和 App Server 必须持续运行，重启服务器或相关进程可能中断任务。
+
+官方设置等独立面板显示在聊天页上层。App 返回箭头和 Android 返回操作可关闭上层面板；键盘、原生弹窗和未保存设置的确认窗口优先处理返回。
+
+### 图片、文件与链接
+
+- **添加聊天附件**：点击官方输入框的 **＋ → Files and folders（文件和文件夹）**；若出现“选择文件或目录”，选择 **“手机文件或图片”**，再选择附件，可多选。“服务器目录”用于选择远端目录。附件加入输入框后，点击发送才会提交给 Codex。
+- **查看和下载**：聊天中的本地文件链接与文件页共用原生预览器。图片支持双指缩放，文本最多预览 256 KiB，其他二进制文件提示下载。所有原生文件预览均提供下载按钮。
+- **打开网页**：网页链接提供“在浏览器打开”操作。
+- **清理附件**：上传文件保存在 Agent 用户的 `~/.codex-remote-uploads/<随机目录>/原文件名`，供会话后续引用，可在文件页手动清理。
+
+Gateway 默认上传上限为 **512 MiB**，预览和下载上限为 **10 MiB**。图片预览还受 App 的 20 MiB 数据上限约束，并会缩小过大的位图以控制内存。
 
 ### 鼠标模式
 
-聊天页右上角的指针按钮开启或关闭鼠标模式：单指滑动移动原生指针，松手保持悬停，轻点在指针处点击，双指滑动滚动页面。关闭后恢复普通触屏操作；开关模式不重新加载前端。实体鼠标直接使用原有输入。
+点击聊天页右上角的指针按钮切换鼠标模式，切换时不会重新加载前端：
 
-部分官方按钮只在浏览器检测到鼠标设备时响应悬停，模拟事件不会改变这项设备能力。遇到图片附件的删除按钮不显示时，可用模式工具条的上一项、下一项箭头切换键盘焦点，显示官方删除按钮，再移动指针点击。焦点操作只发送标准 Tab / Shift+Tab，不读取或修改官方页面元素。
-
-### 官方前端更新与主题
-
-不提供版本选择。点击“检查并更新前端”后，Agent 从官方 Marketplace 检查并下载最新正式版的完整插件，手机加载对应版本的官方资源。插件可能包含较大的桌面二进制资源，下载进度、总大小和速度以 Agent 的实际传输为准。
-
-更新全部手动触发，日常启动使用已安装版本。新包先校验并验证公开扩展生命周期；失败保留当前版本。有宿主正在运行时，应用更新前确认重启影响；选择“稍后”会保留待应用包，同一个按钮可继续应用。资源版本与宿主版本保持配套。
-
-设置页面提供黑色、白色和 Anthropic 暖色三种主题，同时应用于 Android 原生界面与官方 WebView。主题与字体缩放使用宿主的标准 VS Code CSS 变量及主题元数据，官方 JS/CSS 保持原样。
-
-模型列表、推理档位及功能开关由官方插件和后端决定。原先通过私有导出覆盖 Ultra、模型列表及设置路由的适配不进入新 App。连接与工作目录偏好继续保留，旧适配器内部状态不自行转换；升级前请保存未发送草稿。
-
-所有原生文件预览提供下载，网页链接提供“在浏览器打开”。
-
-### 服务器 Codex 管理
-
-设置页面显示配置的可执行文件、磁盘安装版本、各通道实际运行版本以及最新稳定版，并提供两个按钮：
-
-| 按钮 | 行为与高亮条件 |
+| 操作 | 效果 |
 | --- | --- |
-| 更新 | 执行配置的 Codex 可执行文件的 `update` 命令。有已知更新时高亮；CLI 未提供该命令时禁用。更新不自动重启已有 app-server。 |
-| 重启 | 重建该 Agent 的扩展宿主及其 app-server。磁盘版本与运行版本不同时高亮；存在运行进程时先确认，确认后立即重启。 |
+| 单指滑动 | 移动指针 |
+| 松手 | 保持悬停 |
+| 轻点 | 在指针位置点击 |
+| 双指滑动 | 滚动页面 |
+| 工具条上一项 / 下一项 | 发送 `Shift+Tab` / `Tab`，切换键盘焦点 |
 
-更新和重启互斥，页面显示执行状态及输出。版本查询失败显示未知，不据此提示有更新。更新操作不提权、不调用全局包管理器，也不修改 Codex 的登录和配置目录；需要交互或不支持 `update` 的安装方式，请在服务器上自行更新后点击“重启”。
+部分官方按钮仅在检测到鼠标设备时响应悬停。如果图片附件的删除按钮没有显示，可用焦点切换定位官方删除按钮，再点击。此操作不读取或修改官方页面元素；实体鼠标可直接使用。
 
-## 配置
+### 主题与字体
 
-### Gateway
+在右上角菜单的 **“App 设置”** 中选择黑色、白色或 Anthropic 暖色主题，并调整字体大小。外观设置应用于原生界面、聊天和终端。
 
-| 变量 | 默认值 | 说明 |
+### Codex 更新与重启
+
+选中服务器后，进入 **“App 设置 → Codex”**，可查看配置的可执行文件、磁盘安装版本、实际运行版本和最新稳定版。
+
+| 按钮 | 行为 | 高亮条件 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | 监听地址 |
-| `PORT` | `6767` | 监听端口 |
-| `CODEX_REMOTE_DATA_DIR` | 程序默认目录 | 数据目录 |
-| `CODEX_REMOTE_MAX_DOWNLOAD_BYTES` | `10485760` | 预览与下载上限 |
-| `CODEX_REMOTE_MAX_UPLOAD_BYTES` | `536870912` | 上传上限 |
-| `LOG_LEVEL` | `info` | 日志级别 |
+| 更新 | 执行所配置 Codex 的 `update` 命令，不自动重启已有 App Server | 检测到新版本 |
+| 重启 | 重建该 Agent 管理的扩展宿主和 App Server，必要时先确认 | 磁盘版本与运行版本不同 |
 
-### Agent
-
-运行 `./codex-remote-agent --help` 查看连接地址、Token、服务名、Codex 路径和配置文件参数。
-
-例如 `./codex-remote-agent --codex /path/to/codex` 使用指定 CLI。Agent 安装器只放置程序，后台运行方式由服务器管理员配置；要允许手机退出后继续执行，需要保持 Agent 进程运行。
-
-## Gateway 管理
-
-直接运行 `codex-remote-gateway` 打开管理 TUI，可以查看 Gateway 状态、创建或撤销带 tag 的 Token，以及查看或删除离线服务记录。新 Token 的明文只显示一次。
+更新和重启互斥，页面显示执行状态及输出。CLI 不支持 `update` 时按钮禁用，请按原安装方式在服务器更新，再点击“重启”。版本查询失败会显示未知，不据此判断有更新。
 
 ## 更新
 
-重新执行安装命令即可安装最新版本。
+项目程序、官方插件和 Codex CLI 分别更新：
 
-Gateway：
+| 更新对象 | 更新方式 |
+| --- | --- |
+| Android App | 从 Releases 下载新 APK 并安装 |
+| Gateway / Agent | 重新运行安装器，使用原安装目录；项目升级时应配套更新 |
+| 官方插件 | 聊天页右上角菜单 → 检查并更新前端 |
+| Codex CLI | App 设置 → Codex → 更新，或在服务器按原安装方式更新 |
+
+### 更新 Gateway 和 Agent
+
+Gateway 默认安装：
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | sudo bash -s -- gateway --systemd
 ```
 
-Agent：
+Agent 默认安装：
 
 ```bash
-cd ~/codex-remote-agent
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
 ```
 
-安装指定版本时，在命令末尾添加 `--version vX.Y.Z`。
+安装器保留配置和数据。Gateway 使用 `--systemd` 时自动重启；Agent 安装后需自行重启进程以运行新版本，请在任务结束后操作。Agent 的 `runtime/` 与二进制配套更新；手动下载部署时，也要安装相同版本、相同架构的 runtime 压缩包。
+
+安装器默认下载最新 Release。需要指定项目版本时，添加 `--version vX.Y.Z`；需要使用旧安装目录时，添加 `--install-dir /原安装目录`。
+
+### 更新官方插件
+
+点击 **“检查并更新前端”** 后，Agent 从官方 Marketplace 检查并下载最新正式版的完整插件，App 展示进度、总大小和下载速度。手机加载该插件对应的 WebView 资源。
+
+只提供最新版本，不提供插件版本选择。更新由用户手动触发，日常启动使用已安装版本。新包会先校验并验证扩展生命周期；验证失败时保留当前版本。应用更新可能重启宿主并中断任务，选择“稍后”会保留待应用包。
+
+首次进入需要传输资源并初始化官方页面。后续启动优先使用 App 的资源缓存，但仍有官方模块初始化开销。
+
+## 配置与数据位置
+
+以下为默认安装位置；使用自定义目录时相应变化：
+
+| 内容 | 默认位置 |
+| --- | --- |
+| Gateway 程序 | `/opt/codex-remote/codex-remote-gateway` |
+| Gateway 数据和令牌 | `/opt/codex-remote/data/` |
+| Gateway systemd 环境配置 | `/opt/codex-remote/gateway.env` |
+| Agent 程序 | `~/.local/codex-remote/codex-remote-agent` |
+| Agent 连接配置 | `~/.local/codex-remote/agent.json` |
+| Agent 插件和宿主状态 | `~/.local/codex-remote/agent-data/` |
+| Agent 自带 Node.js 与宿主代码 | `~/.local/codex-remote/runtime/` |
+| 聊天上传附件 | Agent 用户的 `~/.codex-remote-uploads/` |
+
+这里的 `~` 指运行 Agent 的用户主目录。使用 `--config` 指定其他配置文件时，`agent-data/` 跟随配置文件所在目录。Codex 自身的登录、模型和会话配置仍由所配置的 CLI 和官方插件管理。
+
+### Gateway 配置
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `PORT` | `6767` | 监听端口 |
+| `CODEX_REMOTE_DATA_DIR` | 二进制旁的 `data/` | 数据和令牌目录 |
+| `CODEX_REMOTE_MAX_DOWNLOAD_BYTES` | `10485760` | 预览与下载上限，10 MiB |
+| `CODEX_REMOTE_MAX_UPLOAD_BYTES` | `536870912` | 上传上限，512 MiB |
+| `LOG_LEVEL` | `info` | 日志级别 |
+
+通过安装器配置的 systemd 服务读取 `gateway.env`；修改后执行 `sudo systemctl restart codex-remote-gateway` 生效。直接运行管理命令不会自动读取此文件，使用自定义数据目录时，需要给管理命令设置同样的 `CODEX_REMOTE_DATA_DIR`。
+
+### Agent 参数
+
+| 参数 | 用途 |
+| --- | --- |
+| `--gateway <url>` | Gateway 地址，省略协议时使用 HTTPS |
+| `--token <token>` | Gateway 访问令牌 |
+| `--name <name>` | App 中显示的服务器名称 |
+| `--codex <path>` | Codex 可执行文件，默认 `codex` |
+| `--config <path>` | 指定 Agent 配置文件 |
+| `--configure` | 重新输入连接配置 |
+
+运行 `~/.local/codex-remote/codex-remote-agent --help` 可查看参数说明。
+
+## 常见问题
+
+**App 中看不到服务器？**
+
+确认 Agent 正在运行，App 与 Agent 连接同一个 Gateway，并使用同一个访问令牌。Gateway 地址填写 HTTPS 地址；Agent 连接失败时会在终端输出原因并自动重试。
+
+**退出手机 App 后，任务还会执行吗？**
+
+后端已经接受的任务会继续，前提是服务器上的 Agent、扩展宿主和 App Server 仍在运行。尚未发出的草稿不算已提交任务。
+
+**官方页面长时间加载或断线后没有恢复？**
+
+先确认 App、Gateway、Agent 及 Agent runtime 已配套更新，Agent 在线，系统 WebView 可用。首次下载、资源传输和官方模块初始化都可能耗时。仍未恢复时，可使用聊天页菜单的“重新加载前端”；手动重载前请保存草稿。
+
+**提示 `already has an active writer`？**
+
+会话可能被其他客户端占用。客户端协调使用官方扩展自身的实现；未参与该协调的 CLI 仍可能冲突。App 不会强制抢占写入者。
+
+**某个模型、推理档位或桌面功能没有出现？**
+
+可用选项由官方插件和后端决定。移动宿主只提供已支持的宿主能力，不保证完整 VS Code 的编辑器功能都可用。
+
+**旧 Agent 安装在别处，重新安装后要求配置？**
+
+默认安装目录变更不会自动迁移旧配置。重新运行安装器时，用 `--install-dir` 指定原安装目录，再启动该目录内的 Agent。
 
 ## 从源码构建
 
-要求 Node.js 24.18.0+。打包 Agent 时会下载并校验对应架构的官方 Node.js 运行时，输出 Agent 二进制及 `codex-remote-agent-runtime-linux-<架构>.tar.gz`；手动部署时两者都需安装。开发时可通过 `CODEX_REMOTE_NODE_PATH` 指定 Node.js。
+开发与打包环境使用 Node.js 24.18.0+：
 
 ```bash
 npm ci
@@ -185,17 +326,28 @@ npm run build
 npm run package:binaries
 ```
 
-构建 Android APK：
+打包产物位于 `release/`。Agent 打包过程会下载并校验对应架构的 Node.js 运行时，输出独立的 `codex-remote-agent-runtime-linux-<架构>.tar.gz`；部署时需与 Agent 二进制一起安装。开发环境可用 `CODEX_REMOTE_NODE_PATH` 指定宿主 Node.js。
+
+构建 Android Debug APK，需要 JDK 17 或更高版本，以及 Android SDK（当前编译目标为 API 37）：
 
 ```bash
 cd android
 ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-验证完整官方扩展与真实页面（需安装 Playwright，可用 `CODEX_PLAYWRIGHT_MODULE` 指定其入口）：
+产物为 `android/app/build/outputs/apk/debug/app-debug.apk`。连接设备或模拟器后，可运行 `./gradlew :app:connectedDebugAndroidTest` 执行设备测试。
+
+验证完整官方扩展与真实页面，需要安装 Playwright，也可用 `CODEX_PLAYWRIGHT_MODULE` 指定其入口：
 
 ```bash
 npm run frontend:smoke -- --extension /path/to/openai.chatgpt-extension
 ```
 
-测试宿主只实现公开 VS Code API，官方资源通过摘要验证保持不变。旧 `frontend-host/` 和导入脚本用于旧链路回归，不打包到新 Android App。
+| 目录 | 内容 |
+| --- | --- |
+| `android/` | Android 原生 App |
+| `server/` | Gateway |
+| `agent/` | Agent、官方扩展宿主与服务器能力 |
+| `extension-webview-host/` | 当前 WebView 桥接与主题适配 |
+| `scripts/` | 打包、资源同步和验证脚本 |
+| `frontend-host/` | 旧链路回归代码，不打包进当前 Android App |
