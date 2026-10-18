@@ -70,7 +70,16 @@ internal class OfficialChatSession(
     private var reconnect: Runnable? = null
     private var mustRecreatePage = false
     private var recoveryNotice = false
+    private var reloadScheduled = false
     private val unconfirmed = mutableMapOf<String, String>()
+    private data class PendingMessage(val surfaceId: String, val documentId: String, val payload: JSONArray, val bytes: Int)
+    // These messages have never been accepted by WebSocket.send, so sending them once is safe.
+    private val pendingMessages = ArrayDeque<PendingMessage>()
+    private var pendingBytes = 0
+    @Volatile var packageSha256: String? = null
+        private set
+    val resourceScope: String get() = scope
+    private var resourceFailureReported = false
     private val handledRequests = mutableSetOf<String>()
     private val nativeJobs = mutableMapOf<String, Job>()
     private var nativeGeneration = 0L
@@ -110,6 +119,7 @@ internal class OfficialChatSession(
         surfaces.remove(id)
         surfaceOrder.remove(id)
         unconfirmed.entries.removeAll { it.value == id }
+        discardPending(id)
         publishSurfaces()
     }
 
@@ -119,6 +129,7 @@ internal class OfficialChatSession(
         surface.documentId = UUID.randomUUID().toString()
         surface.pageReady = false
         surface.queue.clear()
+        discardPending(surface.id)
         surface.loader?.invoke(origin, html, surface.documentId)
     }
 
@@ -152,6 +163,8 @@ internal class OfficialChatSession(
         cancelNativeRequests()
         hostResponses.clear()
         unconfirmed.clear()
+        pendingMessages.clear()
+        pendingBytes = 0
         jobs.cancel()
     }
 
@@ -162,26 +175,34 @@ internal class OfficialChatSession(
         socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch,
             object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
+                    // OkHttp invokes these callbacks in wire order. Parse large snapshots away from the UI thread.
+                    val parsed = runCatching { JSONObject(text) }
                     main.post {
                         if (!closed && attempt == connectionGeneration) {
-                            runCatching { receive(JSONObject(text)) }.onFailure { onStatus("扩展连接错误：${it.message}") }
+                            parsed.mapCatching(::receive).onFailure { onStatus("扩展连接错误：${it.message}") }
                         }
                     }
                 }
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(if (code == 1005) 1000 else code, reason)
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}") }
+                }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    main.post { disconnected(attempt, t.message) }
+                    main.post { disconnected(attempt, response?.let { "HTTP ${it.code} ${t.message}" } ?: t.message) }
                 }
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    main.post { disconnected(attempt, reason) }
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}") }
                 }
             })
     }
 
     private fun disconnected(attempt: Int, reason: String?) {
         if (closed || attempt != connectionGeneration) return
+        connectionGeneration += 1 // Fence the old socket's later onClosed/onFailure and queued messages.
         if (unconfirmed.isNotEmpty()) invalidateRenderer()
         connected = false
         socket = null
+        android.util.Log.i("OfficialCodex", "Extension disconnected: ${reason?.take(180).orEmpty()}")
         onStatus("连接已断开，正在重连。未确认的操作不会自动重发。${reason?.takeIf(String::isNotBlank)?.let { "（$it）" }.orEmpty()}")
         reconnect?.let(main::removeCallbacks)
         reconnect = Runnable { reconnect = null; connect() }.also { main.postDelayed(it, 1500) }
@@ -203,6 +224,7 @@ internal class OfficialChatSession(
                 epoch = nextEpoch
                 viewId = nextView
                 origin = nextOrigin
+                packageSha256 = snapshot.optString("packageSha256").lowercase().takeIf { it.matches(Regex("[a-f0-9]{64}")) }
                 connected = true
                 mustRecreatePage = false
                 setHtml(surfaces.getValue("main"), nextHtml, force)
@@ -216,12 +238,15 @@ internal class OfficialChatSession(
                 hostResponses.values.forEach { socket?.send(it.toString()) }
                 onStatus(if (recoveryNotice) "连接已恢复，请确认操作结果；未确认的操作未自动重发。" else null)
                 recoveryNotice = false
+                flushPending()
             }
             "delivery" -> {
                 unconfirmed.remove(packet.optString("messageId"))
                 if (!packet.optBoolean("accepted", true)) reconnectRenderer()
+                else flushPending()
             }
             "frame" -> packet.optJSONObject("frame")?.let(::frame)
+            "resync-required" -> reconnectRenderer()
             "error" -> {
                 onStatus(packet.optString("message").ifBlank { packet.optJSONObject("error")?.optString("message") ?: "官方扩展连接失败" })
                 if (unconfirmed.remove(packet.optString("messageId")) != null) reconnectRenderer()
@@ -264,8 +289,12 @@ internal class OfficialChatSession(
             "host-request" -> hostRequest(frame.getJSONObject("payload").apply { if (!has("surfaceId")) put("surfaceId", frame.optString("surfaceId", "main")) })
             "status" -> frame.optJSONObject("payload")?.let { status ->
                 status.optString("message").takeIf(String::isNotBlank)?.let(onStatus)
-                if (status.optString("state") == "reload" || (status.optString("state") == "error" && status.optBoolean("retryable"))) main.post {
-                    reconnectRenderer()
+                val requiresReload = status.optString("state") == "reload" || status.optBoolean("reloadRequired",
+                    status.optString("state") == "error" && status.optBoolean("retryable"))
+                if (requiresReload && !reloadScheduled) {
+                    reloadScheduled = true
+                    connected = false
+                    main.post { if (!closed && reloadScheduled) reconnectRenderer() }
                 }
             }
         }
@@ -286,6 +315,8 @@ internal class OfficialChatSession(
         sequence = 0
         surfaces.values.forEach { it.documentId = ""; it.pageReady = false; it.queue.clear() }
         unconfirmed.clear()
+        pendingMessages.clear()
+        pendingBytes = 0
     }
 
     private fun cancelNativeRequests() {
@@ -299,6 +330,7 @@ internal class OfficialChatSession(
 
     private fun reconnectRenderer() {
         if (closed) return
+        reloadScheduled = false
         connectionGeneration += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null
@@ -307,6 +339,44 @@ internal class OfficialChatSession(
         connected = false
         invalidateRenderer()
         connect()
+    }
+
+    private fun discardPending(surfaceId: String) {
+        val removed = pendingMessages.filter { it.surfaceId == surfaceId }
+        pendingMessages.removeAll(removed.toSet())
+        pendingBytes -= removed.sumOf { it.bytes }
+    }
+
+    private fun flushPending() {
+        while (connected && unconfirmed.size < 256 && pendingMessages.isNotEmpty()) {
+            val message = pendingMessages.first()
+            if (surfaces[message.surfaceId]?.documentId != message.documentId) {
+                pendingMessages.removeFirst()
+                pendingBytes -= message.bytes
+                continue
+            }
+            val messageId = UUID.randomUUID().toString()
+            val packet = JSONObject().put("type", "message").put("messageId", messageId)
+                .put("epoch", epoch).put("surfaceId", message.surfaceId).put("payload", message.payload)
+            val active = socket
+            if (active?.send(packet.toString()) != true) {
+                disconnected(connectionGeneration, "发送连接不可用")
+                active?.cancel()
+                return
+            }
+            pendingMessages.removeFirst()
+            pendingBytes -= message.bytes
+            unconfirmed[messageId] = message.surfaceId
+        }
+    }
+
+    fun resourceFailed(failure: Throwable) {
+        main.post {
+            if (!closed && !resourceFailureReported) {
+                resourceFailureReported = true
+                onStatus("官方前端资源加载失败：${failure.message?.take(180).orEmpty()}。请在右上角菜单重新加载前端。")
+            }
+        }
     }
 
     private fun deliver(surface: Surface, payload: Any) {
@@ -394,21 +464,18 @@ internal class OfficialChatSession(
             runCatching { JSONTokener(json).nextValue() }.onSuccess { store.setState(scope, "$viewId:$surfaceId", json) }
         }
         @JavascriptInterface fun postMessage(page: String, encoded: String) {
+            val payload = runCatching { JSONArray(encoded) }.getOrNull() ?: return
+            val bytes = encoded.toByteArray(Charsets.UTF_8).size
             main.post {
                 if (closed || surface(page) == null) return@post
-                if (connected && unconfirmed.size < 256) {
-                    val messageId = UUID.randomUUID().toString()
-                    val packet = JSONObject().put("type", "message").put("messageId", messageId)
-                        .put("epoch", epoch).put("surfaceId", surfaceId).put("payload", JSONArray(encoded))
-                    unconfirmed[messageId] = surfaceId
-                    if (socket?.send(packet.toString()) != true) {
-                        onStatus("操作未能发送，正在恢复页面；操作不会自动重发。")
-                        reconnectRenderer()
-                    }
-                } else {
-                    onStatus("操作未发送，正在恢复页面；操作不会自动重发。")
+                if (pendingMessages.size >= 256 || bytes > 16 * 1024 * 1024 - pendingBytes) {
+                    onStatus("待发送操作过多，正在恢复页面；未确认的操作不会自动重发。")
                     reconnectRenderer()
+                    return@post
                 }
+                pendingMessages.addLast(PendingMessage(surfaceId, page, payload, bytes))
+                pendingBytes += bytes
+                flushPending()
             }
         }
         @JavascriptInterface fun ready(page: String) {

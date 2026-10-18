@@ -23,6 +23,7 @@ import org.json.JSONObject
 import java.io.InputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -114,12 +115,25 @@ class GatewayApi {
     )
 
     /** Runs on WebView's resource thread. Never exposes the Gateway token to page JavaScript. */
-    internal fun extensionResource(serviceId: String, version: String, path: String): ByteArray =
-        execute(Request.Builder().url(url("api/v3/services/$serviceId/extension/resource",
-            mapOf("version" to version, "path" to path))).authorized().get().build()).use {
-            ensureSuccess(it)
-            it.body.bytes()
+    internal fun extensionResource(serviceId: String, version: String, path: String, packageSha256: String? = null): ByteArray {
+        val current = requireNotNull(config) { "Gateway is not configured" }
+        val target = current.baseUrl.ensureTrailingSlash().toHttpUrl().newBuilder()
+            .addPathSegments("api/v3/services/$serviceId/extension/resource")
+            .addQueryParameter("version", version).addQueryParameter("path", path)
+        packageSha256?.let { target.addQueryParameter("packageSha256", it) }
+        return execute(Request.Builder().url(target.build())
+            .header("Authorization", "Bearer " + current.token).get().build()).use { response ->
+            ensureSuccess(response)
+            val bytes = response.body.bytes()
+            val expected = response.header("x-resource-sha256")
+            val actual = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            require(expected != null && actual.equals(expected, ignoreCase = true)) { "官方前端资源校验失败" }
+            if (packageSha256 != null) require(packageSha256.equals(response.header("x-extension-package-sha256"), ignoreCase = true)) {
+                "官方前端包已更换，请重新连接"
+            }
+            bytes
         }
+    }
 
     fun codexChannel(
         serviceId: String,

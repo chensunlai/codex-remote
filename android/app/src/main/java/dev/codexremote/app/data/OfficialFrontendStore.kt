@@ -3,11 +3,13 @@ package dev.codexremote.app.data
 import android.content.Context
 import androidx.core.content.edit
 import dev.codexremote.app.model.GatewayConfig
+import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 
 /** Only host preferences live here. The Agent owns the complete official plugin package. */
 class OfficialFrontendStore(context: Context) {
+    internal val resources = ExtensionResourceCache(File(context.cacheDir, "official-extension-resources-v1"))
     // Retain the preference name so workspace and client identities survive the migration.
     private val preferences = context.getSharedPreferences("official-frontends", Context.MODE_PRIVATE)
     private val pageState = context.getSharedPreferences("extension-webview-state", Context.MODE_PRIVATE)
