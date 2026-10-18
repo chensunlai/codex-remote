@@ -30,6 +30,8 @@ Codex Remote 复用官方 VS Code 插件：手机显示官方聊天界面，Agen
 | 鼠标模式 | 在触屏上移动指针、悬停、点击和切换键盘焦点 |
 | 外观 | 黑色、白色、Anthropic 暖色主题，以及字体缩放 |
 | Codex 管理 | 查看 CLI 版本，在 App 中更新或重启服务器上的 Codex |
+| Gateway 管理 | 管理员在 App 中查看服务、管理 Token、修改传输限制、更新或重启 Gateway |
+| 版本检查 | 在 App 中检查 Android App 和 Agent 是否有新版本 |
 
 官方前端与 `extension.js` 保持原样；主题通过宿主提供的 VS Code CSS 变量和主题元数据适配。模型列表、推理档位和功能开关由官方插件及后端决定。
 
@@ -84,6 +86,8 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 其中 `gateway` 选择安装 Gateway，`--systemd` 表示同时创建并启动 systemd 服务。默认安装到 `/opt/codex-remote`。
 
+systemd 安装需要服务器提供 `curl` 和 `flock`；安装器会先检查这些依赖。
+
 查看状态和首次生成的访问令牌：
 
 ```bash
@@ -97,7 +101,7 @@ sudo cat /opt/codex-remote/data/api-token
 sudo /opt/codex-remote/codex-remote-gateway
 ```
 
-首次自动生成的令牌保存在 `data/api-token`；在管理界面创建的新令牌只显示一次，请在创建时保存。这里的访问令牌也就是 App 中填写的 Gateway Key，与 OpenAI API Key 不同。
+首次自动生成的管理员令牌保存在 `data/api-token`；在管理界面创建的新令牌只显示一次，请在创建时保存。这里的访问令牌也就是 App 中填写的 Gateway Key，与 OpenAI API Key 不同。使用管理员令牌连接 App 后，可直接在手机上管理 Gateway。
 
 不使用 systemd 时，安装命令省略 `--systemd`，然后运行 `sudo /opt/codex-remote/codex-remote-gateway start` 启动服务。直接运行二进制打开的是管理界面。
 
@@ -175,7 +179,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 - **打开网页**：网页链接提供“在浏览器打开”操作。
 - **清理附件**：上传文件保存在 Agent 用户的 `~/.codex-remote-uploads/<随机目录>/原文件名`，供会话后续引用，可在文件页手动清理。
 
-Gateway 默认上传上限为 **512 MiB**，预览和下载上限为 **10 MiB**。图片预览还受 App 的 20 MiB 数据上限约束，并会缩小过大的位图以控制内存。
+Gateway 默认上传、预览和下载上限均为 **10 MiB**。管理员可在 App 中分别修改上传和下载上限，预览使用下载上限。图片预览还受 App 的 20 MiB 数据上限约束，并会缩小过大的位图以控制内存。
 
 ### 鼠标模式
 
@@ -197,7 +201,7 @@ Gateway 默认上传上限为 **512 MiB**，预览和下载上限为 **10 MiB**�
 
 ### Codex 更新与重启
 
-选中服务器后，进入 **“App 设置 → Codex”**，可查看配置的可执行文件、磁盘安装版本、实际运行版本和最新稳定版。
+选中服务器后，进入 **“App 设置 → Codex CLI”**，可查看配置的可执行文件、磁盘安装版本、实际运行版本和最新稳定版。
 
 | 按钮 | 行为 | 高亮条件 |
 | --- | --- | --- |
@@ -206,16 +210,37 @@ Gateway 默认上传上限为 **512 MiB**，预览和下载上限为 **10 MiB**�
 
 更新和重启互斥，页面显示执行状态及输出。CLI 不支持 `update` 时按钮禁用，请按原安装方式在服务器更新，再点击“重启”。版本查询失败会显示未知，不据此判断有更新。
 
+### 手机端 Gateway 管理
+
+使用管理员密钥连接 Gateway 后，App 设置中显示管理入口，提供与 Gateway 管理 TUI 对应的概览、Token 和服务管理能力：
+
+| 管理项目 | 操作 |
+| --- | --- |
+| 网关概览 | 查看 Gateway 版本、监听信息、服务数量和传输限制 |
+| Token | 列出令牌，创建普通或管理员令牌，撤销不再使用的令牌 |
+| 已注册服务 | 查看全部服务的在线状态、主机、平台、Agent 版本和连接时间；删除离线记录 |
+| 传输限制 | 分别修改上传和下载大小上限，保存后对新请求生效，重启后保留 |
+| 更新与重启 | 检查 Gateway 新版本，确认后更新或重启，查看执行结果 |
+
+管理员身份由 Gateway 校验，Token 的名称不决定权限。普通令牌继续只访问自己绑定的服务。新建 Token 的明文仅在创建时显示；撤销后该令牌不能继续访问 Gateway。
+
+Gateway 的远程更新和重启需要安装器配置的 systemd 管理组件。已有 systemd 安装需重新执行本版本安装命令以补齐组件；手动启动的 Gateway 可检查更新，App 会提示不支持远程更新或重启。更新包通过校验后替换程序；启动检查失败时回退到原程序。
+
+### App 与 Agent 检查更新
+
+App 设置中可检查 Android App 和 Agent 的版本，分别显示当前版本、最新正式版和更新入口。App 更新通过浏览器下载官方 Release APK；Agent 检查提供 Release 信息，安装仍使用原目录的安装命令。检查更新不会自动安装或重启程序。
+
 ## 更新
 
 项目程序、官方插件和 Codex CLI 分别更新：
 
 | 更新对象 | 更新方式 |
 | --- | --- |
-| Android App | 从 Releases 下载新 APK 并安装 |
-| Gateway / Agent | 重新运行安装器，使用原安装目录；项目升级时应配套更新 |
+| Android App | App 设置中检查更新，从 Releases 下载新 APK 并安装 |
+| Gateway | 管理员在 App 中检查并更新，或重新运行安装器 |
+| Agent | App 中检查更新，重新运行安装器并指定原安装目录 |
 | 官方插件 | 聊天页右上角菜单 → 检查并更新前端 |
-| Codex CLI | App 设置 → Codex → 更新，或在服务器按原安装方式更新 |
+| Codex CLI | App 设置 → Codex CLI → 更新，或在服务器按原安装方式更新 |
 
 ### 更新 Gateway 和 Agent
 
@@ -235,6 +260,8 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 安装器保留配置和数据。Gateway 使用 `--systemd` 时自动重启；Agent 安装后需自行重启进程以运行新版本，请在任务结束后操作。Agent 的 `runtime/` 与二进制配套更新；手动下载部署时，也要安装相同版本、相同架构的 runtime 压缩包。
 
+已有 `gateway.env` 中设置的传输限制会保留。需要将旧安装的上传限制调整为 10 MiB，可在 App 管理页面修改并保存；App 保存的限制优先于环境变量。
+
 安装器默认下载最新 Release。需要指定项目版本时，添加 `--version vX.Y.Z`；需要使用旧安装目录时，添加 `--install-dir /原安装目录`。
 
 ### 更新官方插件
@@ -253,6 +280,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 | --- | --- |
 | Gateway 程序 | `/opt/codex-remote/codex-remote-gateway` |
 | Gateway 数据和令牌 | `/opt/codex-remote/data/` |
+| App 保存的 Gateway 传输限制 | `/opt/codex-remote/data/gateway-settings.json` |
 | Gateway systemd 环境配置 | `/opt/codex-remote/gateway.env` |
 | Agent 程序 | `~/.local/codex-remote/codex-remote-agent` |
 | Agent 连接配置 | `~/.local/codex-remote/agent.json` |
@@ -270,10 +298,12 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 | `PORT` | `6767` | 监听端口 |
 | `CODEX_REMOTE_DATA_DIR` | 二进制旁的 `data/` | 数据和令牌目录 |
 | `CODEX_REMOTE_MAX_DOWNLOAD_BYTES` | `10485760` | 预览与下载上限，10 MiB |
-| `CODEX_REMOTE_MAX_UPLOAD_BYTES` | `536870912` | 上传上限，512 MiB |
+| `CODEX_REMOTE_MAX_UPLOAD_BYTES` | `10485760` | 上传上限，10 MiB |
 | `LOG_LEVEL` | `info` | 日志级别 |
 
 通过安装器配置的 systemd 服务读取 `gateway.env`；修改后执行 `sudo systemctl restart codex-remote-gateway` 生效。直接运行管理命令不会自动读取此文件，使用自定义数据目录时，需要给管理命令设置同样的 `CODEX_REMOTE_DATA_DIR`。
+
+在 App 中保存上传或下载限制后，Gateway 优先使用 `gateway-settings.json` 中的值。初始配置中的令牌作为管理员导入；已有手动创建的普通令牌不会因为名字包含 `admin` 而获得管理员权限。
 
 ### Agent 参数
 
