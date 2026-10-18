@@ -17,7 +17,7 @@ const targets = {
 };
 const components = {
   agent: "agent/src/index.ts",
-  gateway: "server/src/cli.ts",
+  gateway: "scripts/gateway-standalone.mjs",
 };
 const maxBinaryBytes = 100_000_000;
 // Pin both official Node archives and digests; installing the Agent needs no system Node.

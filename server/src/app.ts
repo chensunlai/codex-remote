@@ -18,6 +18,7 @@ import { registerAdminRoutes } from "./admin-routes.js";
 import { APP_VERSION } from "./version.js";
 import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
 import { registerExtensionHostRoutes } from "./extension-host-routes.js";
+import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -61,7 +62,7 @@ export async function buildGateway(config: ServerConfig, options: { runtime?: Ga
     ...(config.tls ? { https: config.tls } : {}),
   });
   // Official extension synchronization sends complete conversation snapshots.
-  await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
+  await app.register(websocket, { options: { maxPayload: MAX_WEBSOCKET_BYTES } });
   await app.register(multipart, {
     limits: { files: 1 },
   });

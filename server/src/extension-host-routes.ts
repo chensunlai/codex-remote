@@ -7,8 +7,9 @@ import { z } from "zod";
 import type { GatewayServices } from "./app.js";
 import type { AgentDisconnectedEvent, ExtensionViewEvent } from "./agent-registry.js";
 import { AppError, errorMessage } from "./errors.js";
+import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
 
-const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+const MAX_BUFFER_BYTES = MAX_WEBSOCKET_BYTES;
 // Resource downloads retain their existing, separate limit (including base64 headroom).
 const MAX_RESOURCE_BYTES = 12 * 1024 * 1024 - 4096;
 const gunzipAsync = promisify(gunzip);
