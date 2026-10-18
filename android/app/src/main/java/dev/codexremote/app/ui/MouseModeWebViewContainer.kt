@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyCharacterMap
@@ -14,6 +13,9 @@ import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.VectorPath
 import androidx.core.graphics.withSave
 import kotlin.math.hypot
 
@@ -22,13 +24,22 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
     private val configuration = ViewConfiguration.get(context)
     private val accessibility = context.getSystemService(AccessibilityManager::class.java)
     private val cursorScale = resources.displayMetrics.density
-    private val cursor = Path().apply {
-        moveTo(0f, 0f); lineTo(0f, 22f); lineTo(6f, 16f); lineTo(11f, 26f)
-        lineTo(15f, 24f); lineTo(10f, 14f); lineTo(20f, 14f); close()
+    // Reuse the toolbar icon's exact 24dp geometry; (4, 4) is its arrow-tip hotspot.
+    private val cursor = PathParser().addPathNodes((CodexIcons.MousePointer.root[0] as VectorPath).pathData)
+        .toPath().asAndroidPath()
+    private val contrastOutline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f
+        strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
     }
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 1.5f; strokeJoin = Paint.Join.ROUND
+        color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 2f
+        strokeJoin = Paint.Join.ROUND; strokeCap = Paint.Cap.ROUND
+    }
+    private var windowFocused = false
+    private var visibleToUser = false
+    private var notifiedMouseMode: Boolean? = null
+    private val touchExplorationListener = AccessibilityManager.TouchExplorationStateChangeListener { enabled ->
+        if (enabled) cancelPointer() else refreshPointerAvailability()
     }
     private var cursorX = 0f
     private var cursorY = 0f
@@ -48,14 +59,50 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
         set(value) {
             if (field == value) return
             field = value
-            if (value) { hardwarePointer = false; updateHover() } else cancelPointer()
+            if (value) { hardwarePointer = false; refreshPointerAvailability() } else cancelPointer()
             invalidate()
         }
 
     init { addView(webView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)) }
 
-    private fun canInteract() = mouseModeEnabled && isShown && hasWindowFocus() && !accessibility.isTouchExplorationEnabled
+    private fun canInteract() = mouseModeEnabled && isAttachedToWindow && visibleToUser && isShown &&
+        windowFocused && hasWindowFocus() && !accessibility.isTouchExplorationEnabled
     private fun canPoint() = canInteract() && positioned && !hardwarePointer
+
+    val mouseModeActive: Boolean get() = canInteract()
+
+    fun setCursorColors(foreground: Int, contrast: Int) {
+        if (outline.color == foreground && contrastOutline.color == contrast) return
+        outline.color = foreground
+        contrastOutline.color = contrast
+        invalidate()
+    }
+
+    private fun notifyMouseMode(enabled: Boolean) {
+        if (notifiedMouseMode == enabled) return
+        notifiedMouseMode = enabled
+        webView.evaluateJavascript("window.__codexExtensionHost?.setMouseMode($enabled)", null)
+    }
+
+    private fun refreshPointerAvailability() {
+        notifyMouseMode(canInteract())
+        updateHover()
+    }
+
+    /** Reconcile the new page with native focus/visibility after document-start initialization. */
+    fun onDocumentReady() {
+        clearPointerInput()
+        notifiedMouseMode = null
+        refreshPointerAvailability()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        windowFocused = hasWindowFocus()
+        visibleToUser = isShown
+        accessibility.addTouchExplorationStateChangeListener(touchExplorationListener)
+        refreshPointerAvailability()
+    }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -66,18 +113,29 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
-        if (hasWindowFocus) updateHover() else cancelPointer()
+        windowFocused = hasWindowFocus
+        if (hasWindowFocus) refreshPointerAvailability() else cancelPointer()
     }
 
     override fun onVisibilityAggregated(isVisible: Boolean) {
         super.onVisibilityAggregated(isVisible)
-        if (isVisible) updateHover() else cancelPointer()
+        visibleToUser = isVisible
+        if (isVisible) refreshPointerAvailability() else cancelPointer()
     }
 
-    override fun onDetachedFromWindow() { cancelPointer(); super.onDetachedFromWindow() }
+    override fun onDetachedFromWindow() {
+        cancelPointer()
+        accessibility.removeTouchExplorationStateChangeListener(touchExplorationListener)
+        super.onDetachedFromWindow()
+    }
 
     /** Also used before replacing a document; no input from an old gesture reaches the new page. */
     fun cancelPointer() {
+        clearPointerInput()
+        notifyMouseMode(false)
+    }
+
+    private fun clearPointerInput() {
         gestureActive = false
         tapCandidate = false
         parent?.requestDisallowInterceptTouchEvent(false)
@@ -94,9 +152,9 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
         super.dispatchDraw(canvas)
         if (canPoint()) {
             canvas.withSave {
-                translate(cursorX, cursorY)
+                translate(cursorX - 4f * cursorScale, cursorY - 4f * cursorScale)
                 scale(cursorScale, cursorScale)
-                drawPath(cursor, fill)
+                drawPath(cursor, contrastOutline)
                 drawPath(cursor, outline)
             }
         }
@@ -110,8 +168,7 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
         val finger = event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN) && event.getToolType(0) == MotionEvent.TOOL_TYPE_FINGER
         // A lost window can swallow a gesture's tail. A fresh DOWN always starts a new sequence.
         if (finger && event.actionMasked == MotionEvent.ACTION_DOWN) consumingTouch = false
-        if (finger && event.actionMasked == MotionEvent.ACTION_DOWN && mouseModeEnabled &&
-            isShown && hasWindowFocus() && !accessibility.isTouchExplorationEnabled) {
+        if (finger && event.actionMasked == MotionEvent.ACTION_DOWN && canInteract()) {
             hardwarePointer = false
             consumingTouch = true
             gestureActive = true
@@ -120,6 +177,7 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
             startX = event.x; startY = event.y
             lastX = event.x; lastY = event.y
             parent?.requestDisallowInterceptTouchEvent(true)
+            notifyMouseMode(true)
             updateHover()
         }
         if (!finger || !consumingTouch) return super.dispatchTouchEvent(event)
@@ -149,8 +207,10 @@ internal class MouseModeWebViewContainer(context: Context, val webView: WebView)
     }
 
     private fun useHardwarePointer() {
-        cancelPointer()
+        if (hardwarePointer) return
+        clearPointerInput()
         hardwarePointer = true
+        notifyMouseMode(canInteract())
         invalidate()
     }
 

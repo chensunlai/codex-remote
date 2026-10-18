@@ -24,7 +24,7 @@ const option = (name, fallback) => {
 if (args.includes("--fixture-cli")) await runFixture();
 else if (args.includes("--proxy-cli")) await runProxy();
 else if (args.includes("--help")) {
-  console.log("Usage: node scripts/smoke-official-extension.mjs [--extension DIR] [--artifacts DIR] [--send TEXT] [--expect TEXT] [--attachments] [--mouse-input] [--approval] [--settings] [--reload] [--timeout MS] [--codex EXECUTABLE]\n\nThe default backend is a safe local App Server fixture. --codex uses the logged-in real CLI; --send then makes a real model request. For real replies, request CODEX_REMOTE_EXTENSION_SMOKE_OK or set --expect. --mouse-input requires --attachments and checks mobile focus navigation followed by a pointer-position touch. Playwright can be supplied with CODEX_PLAYWRIGHT_MODULE.");
+  console.log("Usage: node scripts/smoke-official-extension.mjs [--extension DIR] [--artifacts DIR] [--send TEXT] [--expect TEXT] [--attachments] [--mouse-input] [--approval] [--settings] [--reload] [--timeout MS] [--codex EXECUTABLE]\n\nThe default backend is a safe local App Server fixture. --codex uses the logged-in real CLI; --send then makes a real model request. For real replies, request CODEX_REMOTE_EXTENSION_SMOKE_OK or set --expect. --mouse-input requires --attachments and checks reversible mobile mouse-mode hover followed by a pointer-position touch, without Tab navigation. Playwright can be supplied with CODEX_PLAYWRIGHT_MODULE.");
 } else await runSmoke();
 
 async function runSmoke() {
@@ -207,7 +207,7 @@ async function runSmoke() {
           postMessage: (_documentId, json) => { void window.extensionSmokePostMessage(surfaceId, JSON.parse(json)); },
           ready: () => { void window.extensionSmokeReady(surfaceId); },
         };
-        window.__codexExtensionConfig = { documentId, theme: 'dark', fontScale: 1, themeCss: ${JSON.stringify(themeCss)} };
+        window.__codexExtensionConfig = { documentId, theme: 'dark', fontScale: 1, mouseMode: false, themeCss: ${JSON.stringify(themeCss)} };
       })();
       ${bridgeSource}
       (() => {
@@ -257,14 +257,36 @@ async function runSmoke() {
           const style = getComputedStyle(button);
           return style.pointerEvents !== "none" && Number(style.opacity) > 0;
         });
+        const waitInteractive = async enabled => page.waitForFunction(({ button, enabled }) => {
+          const style = getComputedStyle(button);
+          return (style.pointerEvents !== "none" && Number(style.opacity) > 0) === enabled;
+        }, { button: await removePhoto.elementHandle(), enabled }, { timeout });
+        const mediaQueries = () => page.evaluate(() => {
+          const values = [];
+          const visit = rules => { for (const rule of rules) { if (rule.media) values.push(rule.media.mediaText); if (rule.cssRules) visit(rule.cssRules); } };
+          for (const sheet of document.styleSheets) { try { visit(sheet.cssRules); } catch {} }
+          return values;
+        });
+        const originalQueries = await mediaQueries();
+        const serverProcesses = events.filter(event => event.type === "process-start").length;
         assert.equal(await isInteractive(), false, "Official photo delete starts hidden on a phone");
         const photoBounds = await page.getByRole("button", { name: "phone-photo.png", exact: true }).boundingBox();
         assert.ok(photoBounds, "Official photo attachment must have bounds");
         await page.mouse.move(photoBounds.x + photoBounds.width / 2, photoBounds.y + photoBounds.height / 2);
         assert.equal(await isInteractive(), false, "Synthetic mouse movement must not bypass the official hover media query");
-        let focusSteps = 0;
-        for (; focusSteps < 80 && !(await isInteractive()); focusSteps++) await page.keyboard.press("Tab");
-        assert.ok(await isInteractive(), "Public Tab navigation must reveal the official photo delete button");
+        await page.evaluate(() => window.__codexExtensionHost.setMouseMode(true));
+        await waitInteractive(true);
+        assert.equal(await page.evaluate(() => matchMedia("(hover: hover)").matches), false, "Mouse mode must not override JavaScript device capability checks");
+        await page.mouse.move(10, 10);
+        await waitInteractive(false);
+        await page.mouse.move(photoBounds.x + photoBounds.width / 2, photoBounds.y + photoBounds.height / 2);
+        await waitInteractive(true);
+        await page.evaluate(() => window.__codexExtensionHost.setMouseMode(false));
+        await waitInteractive(false);
+        assert.deepEqual(await mediaQueries(), originalQueries, "Disabling mouse mode must restore official media conditions exactly");
+        await page.evaluate(() => window.__codexExtensionHost.setMouseMode(true));
+        await waitInteractive(true);
+        await page.screenshot({ path: path.join(artifactDirectory, "mouse-hover-delete.png"), fullPage: true });
         const deleteBounds = await removePhoto.boundingBox();
         assert.ok(deleteBounds, "Revealed delete button must have bounds");
         const x = deleteBounds.x + deleteBounds.width / 2;
@@ -272,10 +294,13 @@ async function runSmoke() {
         await page.mouse.move(x, y);
         await page.touchscreen.tap(x, y);
         await removePhoto.waitFor({ state: "detached", timeout });
+        await page.evaluate(() => window.__codexExtensionHost.setMouseMode(false));
+        assert.deepEqual(await mediaQueries(), originalQueries, "Removing an attachment must retain the original official styles");
         assert.equal(await composer.innerText(), "Unsent attachment draft", "Removing the image must preserve the draft");
         assert.equal(await page.evaluate(() => window.__extensionSmokeDocumentId), documentId, "Removing the image must preserve the document");
-        assert.equal((await readRequests(fixtureLog)).filter(request => request.method === "turn/start").length, 0, "Focus and pointer operations must not send a message");
-        mouseInputCheck = { hoverUnavailable: true, hoverStayedHidden: true, focusRevealedDelete: true, touchRemovedPhoto: true, focusSteps };
+        assert.equal(events.filter(event => event.type === "process-start").length, serverProcesses, "Mouse mode must preserve the App Server process");
+        assert.equal((await readRequests(fixtureLog)).filter(request => request.method === "turn/start").length, 0, "Hover and pointer operations must not send a message");
+        mouseInputCheck = { physicalHoverUnavailable: true, mouseModeRevealedDelete: true, movingAwayHidesDelete: true, disablingRestoresStyles: true, touchRemovedPhoto: true, noTabRequired: true, draftPreserved: true, documentPreserved: true, serverPreserved: true, noAutomaticSend: true };
         await pick([photo]);
         await page.waitForFunction(() => [...document.images].some(image => image.naturalWidth === 1 && image.naturalHeight === 1), null, { timeout });
       }

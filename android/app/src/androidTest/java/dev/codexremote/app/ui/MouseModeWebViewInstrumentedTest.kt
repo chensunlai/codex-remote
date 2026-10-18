@@ -6,6 +6,7 @@ import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,9 +14,12 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
@@ -23,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.math.abs
 
-/** Browser fixture only: these checks do not import or alter any official frontend code. */
+/** The production host bridge and a browser fixture; official frontend bytes stay untouched. */
 class MouseModeWebViewInstrumentedTest {
     @get:Rule val compose = createComposeRule()
 
@@ -31,8 +35,11 @@ class MouseModeWebViewInstrumentedTest {
     private val loads = AtomicInteger()
 
     @Test
-    fun hoverOnlyAttachmentCanBeRemovedWithATrackpadTap() {
+    fun mediaGatedAttachmentCanBeRemovedWithATrackpadTapWithoutFocusNavigation() {
         showFixture()
+        assertEquals("false", evaluate("matchMedia('(hover: hover)').matches"))
+        val identity = evaluate("window.identity")
+        evaluate("document.getElementById('draft').value = 'keep this unsent'; document.getElementById('remove').addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); })")
         setMouseMode(true)
         val distance = dragDistance()
 
@@ -46,12 +53,17 @@ class MouseModeWebViewInstrumentedTest {
         assertEquals("1", evaluate("window.clicks"))
         assertTrue(evaluate("window.lastPointerType") in setOf("\"mouse\"", "\"touch\""))
         assertEquals("true", evaluate("window.lastClickTrusted"))
+        assertEquals("\"keep this unsent\"", evaluate("document.getElementById('draft').value"))
+        assertEquals("0", evaluate("window.sends"))
+        assertEquals(identity, evaluate("window.identity"))
+        assertEquals("false", evaluate("matchMedia('(hover: hover)').matches"))
+        assertEquals(1, loads.get())
     }
 
     @Test
     fun focusNavigationAndPointerTapRemoveAMediaGatedButtonWithoutSendingTheDraft() {
         showFixture()
-        evaluate("document.body.classList.add('media-gated'); document.getElementById('draft').value = 'keep this unsent'; document.getElementById('remove').addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); })")
+        evaluate("document.getElementById('draft').value = 'keep this unsent'; document.getElementById('remove').addEventListener('pointerdown', event => { event.preventDefault(); event.stopPropagation(); })")
         setMouseMode(true)
         compose.runOnUiThread { host.get().navigateFocus(forward = true) }
         waitForScript("document.activeElement.id === 'remove'")
@@ -106,12 +118,69 @@ class MouseModeWebViewInstrumentedTest {
         setMouseMode(false)
 
         waitForScript("!document.getElementById('attachment').matches(':hover')")
+        waitForScript("window.originalMedia === [...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText")
         setMouseMode(true)
         setMouseMode(false)
         assertEquals(identity, evaluate("window.identity"))
         assertEquals("\"unsent attachment draft\"", evaluate("document.getElementById('draft').value"))
         assertEquals(1, loads.get())
         assertEquals("0", evaluate("window.clicks"))
+    }
+
+    @Test
+    fun lateHoverStylesAndOppositeTouchConditionsRestoreAcrossModeChanges() {
+        showFixture()
+        setMouseMode(true)
+        evaluate("""
+            const late = document.createElement('style');
+            late.id = 'late-styles';
+            late.textContent = '@layer compat { @media (min-width: 1px) and (any-hover: hover) { #attachment { --late-hover: active; } } } @media (hover: none) { #attachment { --touch-device: active; } }';
+            document.head.appendChild(late);
+        """.trimIndent())
+        waitForScript("getComputedStyle(document.getElementById('attachment')).getPropertyValue('--late-hover').trim() === 'active'")
+        assertEquals("\"\"", evaluate("getComputedStyle(document.getElementById('attachment')).getPropertyValue('--touch-device').trim()"))
+        setMouseMode(false)
+        waitForScript("getComputedStyle(document.getElementById('attachment')).getPropertyValue('--late-hover').trim() === ''")
+        assertEquals("\"active\"", evaluate("getComputedStyle(document.getElementById('attachment')).getPropertyValue('--touch-device').trim()"))
+        setMouseMode(true)
+        waitForScript("getComputedStyle(document.getElementById('attachment')).getPropertyValue('--late-hover').trim() === 'active'")
+        setMouseMode(false)
+        waitForScript("document.getElementById('late-styles').sheet.cssRules[0].cssRules[0].conditionText.includes('any-hover: hover')")
+        assertEquals("0", evaluate("window.clicks"))
+        assertEquals("0", evaluate("window.sends"))
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun losingWindowFocusRestoresMediaAndCancelsAnUnfinishedTap() {
+        showFixture()
+        setMouseMode(true)
+        waitForScript("!([...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText.includes('hover: hover'))")
+        touchGesture(listOf(MotionEvent.ACTION_DOWN to listOf(point())))
+        compose.runOnUiThread { host.get().onWindowFocusChanged(false) }
+        waitForScript("window.originalMedia === [...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText")
+        touchGesture(listOf(MotionEvent.ACTION_UP to listOf(point())))
+        assertEquals("0", evaluate("window.clicks"))
+        compose.runOnUiThread { host.get().onWindowFocusChanged(true) }
+        waitForScript("!([...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText.includes('hover: hover'))")
+        assertEquals("false", evaluate("window.deleted"))
+        assertEquals(1, loads.get())
+    }
+
+    @Test
+    fun replacingDocumentReconcilesEnabledMouseModeWithoutOldGestures() {
+        showFixture()
+        setMouseMode(true)
+        touchGesture(listOf(MotionEvent.ACTION_DOWN to listOf(point())))
+        compose.runOnUiThread {
+            host.get().cancelPointer()
+            host.get().webView.loadDataWithBaseURL("https://mouse-fixture.invalid/", FIXTURE, "text/html", "UTF-8", null)
+        }
+        compose.waitUntil(15_000) { loads.get() == 2 }
+        waitForScript("window.ready === true && !([...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText.includes('hover: hover'))")
+        touchGesture(listOf(MotionEvent.ACTION_UP to listOf(point())))
+        assertEquals("0", evaluate("window.clicks"))
+        assertEquals("false", evaluate("window.deleted"))
     }
 
     @Test
@@ -145,6 +214,7 @@ class MouseModeWebViewInstrumentedTest {
         compose.runOnUiThread { host.get().visibility = View.INVISIBLE }
 
         waitForScript("!document.getElementById('attachment').matches(':hover')")
+        waitForScript("window.originalMedia === [...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText")
         compose.runOnUiThread { host.get().visibility = View.VISIBLE }
         touchGesture(listOf(MotionEvent.ACTION_UP to listOf(point())))
 
@@ -182,13 +252,29 @@ class MouseModeWebViewInstrumentedTest {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun showFixture() {
+        assumeTrue(WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT))
         compose.setContent {
             DisposableEffect(Unit) { onDispose { host.get()?.webView?.destroy() } }
             AndroidView(modifier = Modifier.fillMaxSize(), factory = { context ->
                 val browser = RecordingWebView(context).apply {
                     settings.javaScriptEnabled = true
+                    val bridge = object {
+                        @JavascriptInterface fun getState(documentId: String): String = "null"
+                        @JavascriptInterface fun setState(documentId: String, state: String) {}
+                        @JavascriptInterface fun postMessage(documentId: String, message: String) {}
+                        @JavascriptInterface fun ready(documentId: String) {}
+                    }
+                    addJavascriptInterface(bridge, "CodexExtensionBridge")
+                    val source = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
+                    val config = JSONObject().put("documentId", "mouse-fixture").put("theme", "light")
+                        .put("fontScale", 1).put("themeCss", "").put("mouseMode", false)
+                    WebViewCompat.addDocumentStartJavaScript(this,
+                        "window.__codexExtensionConfig = $config;\n$source", setOf("https://mouse-fixture.invalid"))
                     webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView, url: String) { loads.incrementAndGet() }
+                        override fun onPageFinished(view: WebView, url: String) {
+                            host.get()?.onDocumentReady()
+                            loads.incrementAndGet()
+                        }
                     }
                     loadDataWithBaseURL("https://mouse-fixture.invalid/", FIXTURE, "text/html", "UTF-8", null)
                 }
@@ -304,13 +390,11 @@ class MouseModeWebViewInstrumentedTest {
         private val FIXTURE = """
             <!doctype html><html><head>
             <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
+            <style id="fixture-styles">
             body { margin: 0; min-height: 300vh; }
             #attachment { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 70vw; height: 40vh; background: #ccc; }
             #remove { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 90px; height: 64px; opacity: 0; pointer-events: none; }
-            #attachment:hover #remove { opacity: 1; pointer-events: auto; }
-            body.media-gated #attachment:hover #remove { opacity: 0; pointer-events: none; }
-            @media (hover: hover) { body.media-gated #attachment:hover #remove { opacity: 1; pointer-events: auto; } }
+            @media (hover: hover) { #attachment:hover #remove { opacity: 1; pointer-events: auto; } }
             #remove:focus-visible { opacity: 1 !important; pointer-events: auto !important; }
             #plain { position: fixed; top: 12px; left: 12px; width: 90px; height: 64px; }
             #draft { position: fixed; left: 12px; bottom: 12px; }
@@ -319,9 +403,11 @@ class MouseModeWebViewInstrumentedTest {
             <button id="plain">Plain button</button><input id="draft">
             <script>
             window.identity = Math.random().toString();
+            window.originalMedia = [...document.getElementById('fixture-styles').sheet.cssRules].find(rule => rule instanceof CSSMediaRule).conditionText;
             window.clicks = 0; window.plainClicks = 0; window.deleted = false; window.wheels = 0; window.sends = 0;
             document.addEventListener('keydown', e => { if (e.key === 'Enter') window.sends++; });
-            document.addEventListener('pointerdown', e => window.lastPointerType = e.pointerType);
+            // The attachment deliberately stops bubbling, as the official button does.
+            document.addEventListener('pointerdown', e => window.lastPointerType = e.pointerType, true);
             document.addEventListener('click', e => { window.clicks++; window.lastClickTrusted = e.isTrusted; });
             document.addEventListener('wheel', () => window.wheels++, { passive: true });
             document.getElementById('plain').onclick = () => window.plainClicks++;

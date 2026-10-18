@@ -8,7 +8,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.JsResult
-import android.webkit.MimeTypeMap
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -76,7 +75,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.io.ByteArrayInputStream
 
 internal class OfficialSettingsConfirmation {
     var pending by mutableStateOf<Pair<String, JsResult>?>(null)
@@ -364,7 +362,7 @@ private fun OfficialWebView(
             Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("滑动移动 · 轻点点击 · 双指滚动", style = MaterialTheme.typography.labelSmall)
-                    Text("用右侧箭头聚焦隐藏按钮，再移动指针点击", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("悬停显示更多操作 · 右侧箭头切换焦点", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = { target?.navigateFocus(false) }, enabled = visible && target != null && !modalOpen) {
                     AppIcon(CodexIcons.ChevronUp, "聚焦上一项")
@@ -427,7 +425,9 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
     val currentTheme by rememberUpdatedState(theme)
     val currentScale by rememberUpdatedState(effectiveFontScale)
     val currentVisible by rememberUpdatedState(visible)
+    val currentMouseMode by rememberUpdatedState(mouseMode && visible)
     val background = MaterialTheme.colorScheme.background.toArgb()
+    val cursorForeground = MaterialTheme.colorScheme.onSurface.toArgb()
     var browser by remember { mutableStateOf<WebView?>(null) }
     var pointerContainer by remember { mutableStateOf<MouseModeWebViewContainer?>(null) }
     var script by remember { mutableStateOf<ScriptHandler?>(null) }
@@ -462,6 +462,9 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                 }
             }
             webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView, url: String) {
+                    pointerContainer?.onDocumentReady()
+                }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                     session.close()
                     pointerContainer?.cancelPointer()
@@ -479,26 +482,12 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                     return true
                 }
                 override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-                    if (request.url.host != originHost) return null
-                    return runCatching {
-                        val segments = request.url.pathSegments
-                        require(segments.size >= 3 && segments.first() == "extension") { "资源路径无效" }
-                        val version = segments[1]
-                        val path = segments.drop(2).joinToString("/")
-                        val mime = when {
-                            path.endsWith(".mjs") || path.endsWith(".js") -> "text/javascript"
-                            path.endsWith(".wasm") -> "application/wasm"
-                            else -> MimeTypeMap.getSingleton().getMimeTypeFromExtension(path.substringAfterLast('.')) ?: "application/octet-stream"
-                        }
+                    return officialWebViewResource(request.url, originHost, load = { version, path ->
                         val packageSha256 = session.packageSha256
-                        val bytes = viewModel.officialFrontends.resources.load(session.resourceScope, packageSha256, version, path) {
+                        viewModel.officialFrontends.resources.load(session.resourceScope, packageSha256, version, path) {
                             viewModel.gatewayApi.extensionResource(serviceId, version, path, packageSha256)
                         }
-                        WebResourceResponse(mime, "UTF-8", 200, "OK", mapOf("Cache-Control" to "private, max-age=31536000, immutable"), bytes.inputStream())
-                    }.getOrElse { failure ->
-                        session.resourceFailed(failure)
-                        WebResourceResponse("text/plain", "UTF-8", 502, "Resource unavailable", emptyMap(), ByteArrayInputStream(ByteArray(0)))
-                    }
+                    }, onFailure = session::resourceFailed)
                 }
             }
             val bridgeSource = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
@@ -510,6 +499,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                 script?.remove()
                 val config = JSONObject().put("documentId", documentId).put("theme", currentTheme.id)
                     .put("fontScale", currentScale).put("themeCss", themeCss)
+                    .put("mouseMode", currentMouseMode && pointerContainer?.mouseModeActive == true)
                 if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
                     script = WebViewCompat.addDocumentStartJavaScript(this,
                         "window.__codexExtensionConfig = $config;\n$bridgeSource", setOf(origin))
@@ -520,6 +510,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
         }).also { pointerContainer = it; onPointerContainerChanged(it) }
     }, update = { container ->
         val webView = container.webView
+        container.setCursorColors(cursorForeground, background)
         container.mouseModeEnabled = mouseMode && visible
         if (!visible && webView.hasFocus()) webView.clearFocus()
         container.visibility = if (visible) View.VISIBLE else View.INVISIBLE

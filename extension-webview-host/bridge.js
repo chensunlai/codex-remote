@@ -81,9 +81,88 @@
   });
   observer.observe(document, { childList: true, subtree: true });
   applyTheme();
+
+  // Native mouse events do not change a touch device's CSS hover capability.
+  // Adapt only the media conditions while mouse mode can interact with this page.
+  const hoverMedia = new Map();
+  let mouseModeRequested = config.mouseMode === true;
+  let pageActive = true;
+  let hoverEnabled = false;
+  let hoverScanScheduled = false;
+  function hoverCondition(mediaText) {
+    return mediaText.replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/)|\(\s*(?:any-)?hover\s*(?::\s*(hover|none)\s*)?\)/gi, (match, quoted, value) => {
+      if (quoted) return match;
+      return value?.toLowerCase() === 'none' ? '(max-width: -1px)' : '(min-width: 0px)';
+    });
+  }
+  function adaptMedia(media) {
+    if (!media) return;
+    try {
+      const current = media.mediaText;
+      if (typeof current !== 'string' || hoverMedia.get(media)?.adapted === current) return;
+      const adapted = hoverCondition(current);
+      if (adapted === current) return;
+      media.mediaText = adapted;
+      hoverMedia.set(media, { original: current, adapted: media.mediaText });
+    } catch { /* Cross-origin and read-only sheets retain their original behavior. */ }
+  }
+  function scanHoverStyles() {
+    const visited = new Set();
+    function visitSheet(sheet) {
+      if (!sheet || visited.has(sheet)) return;
+      visited.add(sheet);
+      adaptMedia(sheet.media);
+      try { visitRules(sheet.cssRules); } catch { /* Cross-origin CSSOM is inaccessible. */ }
+    }
+    function visitRules(rules) {
+      for (const rule of rules || []) {
+        adaptMedia(rule.media);
+        if (rule.styleSheet) visitSheet(rule.styleSheet);
+        if (rule.cssRules) visitRules(rule.cssRules);
+      }
+    }
+    for (const sheet of document.styleSheets || []) visitSheet(sheet);
+    for (const sheet of document.adoptedStyleSheets || []) visitSheet(sheet);
+  }
+  function scheduleHoverScan() {
+    if (!hoverEnabled || hoverScanScheduled) return;
+    hoverScanScheduled = true;
+    Promise.resolve().then(() => {
+      hoverScanScheduled = false;
+      if (hoverEnabled) scanHoverStyles();
+    });
+  }
+  const isStyleNode = node => node?.nodeType === 1 && (node.tagName === 'STYLE' || (node.tagName === 'LINK' && /(?:^|\s)stylesheet(?:\s|$)/i.test(node.rel)));
+  const containsStyle = node => isStyleNode(node) || (node?.nodeType === 1 && node.querySelector('style, link[rel~="stylesheet"]'));
+  const hoverObserver = new MutationObserver(records => {
+    if (records.some(record => isStyleNode(record.target) || isStyleNode(record.target.parentElement) || [...record.addedNodes || [], ...record.removedNodes || []].some(containsStyle))) scheduleHoverScan();
+  });
+  function onStyleLoad(event) { if (isStyleNode(event.target)) scheduleHoverScan(); }
+  function updateMouseMode() {
+    const enabled = mouseModeRequested && pageActive && document.visibilityState !== 'hidden';
+    if (enabled === hoverEnabled) return;
+    hoverEnabled = enabled;
+    if (enabled) {
+      hoverObserver.observe(document, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['href', 'rel', 'media', 'disabled'] });
+      document.addEventListener('load', onStyleLoad, true);
+      scanHoverStyles();
+    } else {
+      hoverObserver.disconnect();
+      document.removeEventListener('load', onStyleLoad, true);
+      for (const [media, saved] of hoverMedia) {
+        try { if (media.mediaText === saved.adapted) media.mediaText = saved.original; } catch { /* A discarded stylesheet may no longer be writable. */ }
+      }
+      hoverMedia.clear();
+    }
+  }
+  document.addEventListener('visibilitychange', updateMouseMode);
+  window.addEventListener('pagehide', () => { pageActive = false; updateMouseMode(); });
+  window.addEventListener('pageshow', () => { pageActive = true; updateMouseMode(); });
+  updateMouseMode();
   window.__codexExtensionHost = Object.freeze({
     receive(encoded) { window.dispatchEvent(new MessageEvent('message', { data: decode(encoded), source: window, origin: location.origin })); },
     setTheme(nextTheme, nextScale) { theme = nextTheme; fontScale = nextScale; applyTheme(); },
+    setMouseMode(enabled) { mouseModeRequested = enabled === true; updateMouseMode(); },
   });
   const ready = () => { applyTheme(); observer.disconnect(); native.ready(config.documentId); };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, { once: true });
