@@ -9,6 +9,7 @@ User=codex-remote
 Group=codex-remote
 WorkingDirectory=/opt/codex-remote/data
 EnvironmentFile=/opt/codex-remote/gateway.env
+Environment=CODEX_REMOTE_MANAGED_GATEWAY=1
 ExecStart=/opt/codex-remote/codex-remote-gateway start
 Restart=on-failure
 RestartSec=3
@@ -22,6 +23,7 @@ ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
 ReadWritePaths=/opt/codex-remote/data
+ReadWritePaths=-/var/lib/codex-remote-control/requests
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]

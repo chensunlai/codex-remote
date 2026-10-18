@@ -8,7 +8,10 @@ export interface TokenRecord {
   label: string;
   tokenHash: string;
   createdAt: string;
+  role: TokenRole;
 }
+
+export type TokenRole = "user" | "admin";
 
 interface StoreFile {
   version: 1;
@@ -21,6 +24,7 @@ export class TokenStore {
   private revokedTokenHashes = new Set<string>();
   private writeQueue = Promise.resolve();
   private fileStamp = "missing";
+  private mutationQueue = Promise.resolve();
 
   private constructor(private readonly path: string) {}
 
@@ -31,28 +35,45 @@ export class TokenStore {
   }
 
   async verify(token: string): Promise<string | undefined> {
+    return (await this.authenticate(token))?.id;
+  }
+
+  async authenticate(token: string): Promise<Omit<TokenRecord, "tokenHash"> | undefined> {
     if (!token) return undefined;
     await this.refresh();
     const hash = hashToken(token);
-    return this.records.find((record) => record.tokenHash === hash)?.id;
+    const record = this.records.find((record) => record.tokenHash === hash);
+    if (!record) return undefined;
+    const { tokenHash: _tokenHash, ...metadata } = record;
+    return structuredClone(metadata);
   }
 
   async import(tokens: string[]): Promise<void> {
-    await this.refresh();
-    let changed = this.migrateBootstrapLabels();
-    for (const token of tokens) {
-      const tokenHash = hashToken(token);
-      if (this.revokedTokenHashes.has(tokenHash)) continue;
-      if (this.records.some((record) => record.tokenHash === tokenHash)) continue;
-      this.records.push({
-        id: tokenHash,
-        label: this.nextAdminLabel(),
-        tokenHash,
-        createdAt: new Date().toISOString(),
-      });
-      changed = true;
-    }
-    if (changed) await this.persist();
+    return this.mutate(async () => {
+      await this.refresh();
+      let changed = false;
+      for (const token of tokens) {
+        const tokenHash = hashToken(token);
+        if (this.revokedTokenHashes.has(tokenHash)) continue;
+        const existing = this.records.find((record) => record.tokenHash === tokenHash);
+        if (existing) {
+          // Only possession of a configured bootstrap secret establishes this role.
+          // A legacy label such as "admin" or "bootstrap" is never authorization.
+          if (existing.role !== "admin") { existing.role = "admin"; changed = true; }
+          if (existing.label === "bootstrap") { existing.label = this.nextAdminLabel(); changed = true; }
+          continue;
+        }
+        this.records.push({
+          id: tokenHash,
+          label: this.nextAdminLabel(),
+          tokenHash,
+          createdAt: new Date().toISOString(),
+          role: "admin",
+        });
+        changed = true;
+      }
+      if (changed) await this.persist();
+    });
   }
 
   async list(): Promise<Omit<TokenRecord, "tokenHash">[]> {
@@ -60,33 +81,44 @@ export class TokenStore {
     return this.records.map(({ tokenHash: _tokenHash, ...record }) => structuredClone(record));
   }
 
-  async create(label: string): Promise<{ id: string; token: string }> {
-    await this.refresh();
-    const normalizedLabel = label.trim();
-    if (!normalizedLabel) throw new Error("Token tag 不能为空");
-    if (this.records.some((record) => record.label.toLocaleLowerCase() === normalizedLabel.toLocaleLowerCase())) {
-      throw new ConflictError(`Token tag 已存在：${normalizedLabel}`);
-    }
-    const token = randomBytes(32).toString("base64url");
-    const record: TokenRecord = {
-      id: randomUUID(),
-      label: normalizedLabel,
-      tokenHash: hashToken(token),
-      createdAt: new Date().toISOString(),
-    };
-    this.records.push(record);
-    await this.persist();
-    return { id: record.id, token };
+  async create(label: string, role: TokenRole = "user"): Promise<{ id: string; token: string; label: string; role: TokenRole }> {
+    return this.mutate(async () => {
+      await this.refresh();
+      const normalizedLabel = label.trim();
+      if (!normalizedLabel) throw new Error("Token tag 不能为空");
+      if (role !== "user" && role !== "admin") throw new Error("Invalid token role");
+      if (this.records.some((record) => record.label.toLocaleLowerCase() === normalizedLabel.toLocaleLowerCase())) {
+        throw new ConflictError(`Token tag 已存在：${normalizedLabel}`);
+      }
+      const token = randomBytes(32).toString("base64url");
+      const record: TokenRecord = {
+        id: randomUUID(),
+        label: normalizedLabel,
+        tokenHash: hashToken(token),
+        createdAt: new Date().toISOString(),
+        role,
+      };
+      this.records.push(record);
+      await this.persist();
+      return { id: record.id, token, label: normalizedLabel, role };
+    });
   }
 
-  async revoke(id: string): Promise<void> {
-    await this.refresh();
-    const before = this.records.length;
-    const record = this.records.find((candidate) => candidate.id === id);
-    this.records = this.records.filter((record) => record.id !== id);
-    if (this.records.length === before) throw new NotFoundError("Token");
-    this.revokedTokenHashes.add(record!.tokenHash);
-    await this.persist();
+  async revoke(id: string, actingTokenId?: string): Promise<void> {
+    return this.mutate(async () => {
+      await this.refresh();
+      const record = this.records.find((candidate) => candidate.id === id);
+      if (!record) throw new NotFoundError("Token");
+      if (actingTokenId) {
+        if (id === actingTokenId) throw new ConflictError("不能撤销当前使用的管理员令牌，请先切换到另一管理员令牌");
+        if (record.role === "admin" && this.records.filter((candidate) => candidate.role === "admin").length <= 1) {
+          throw new ConflictError("不能撤销最后一个管理员令牌");
+        }
+      }
+      this.records = this.records.filter((record) => record.id !== id);
+      this.revokedTokenHashes.add(record.tokenHash);
+      await this.persist();
+    });
   }
 
   private async load(): Promise<void> {
@@ -103,7 +135,7 @@ export class TokenStore {
       if (parsed.version !== 1 || !Array.isArray(parsed.tokens)) {
         throw new Error("Unsupported token store format");
       }
-      this.records = parsed.tokens;
+      this.records = parsed.tokens.map((record) => ({ ...record, role: record.role === "admin" ? "admin" : "user" }));
       this.revokedTokenHashes = new Set(parsed.revokedTokenHashes ?? []);
       this.fileStamp = stamp;
     } catch (error) {
@@ -122,22 +154,26 @@ export class TokenStore {
       tokens: structuredClone(this.records),
       revokedTokenHashes: [...this.revokedTokenHashes],
     };
-    this.writeQueue = this.writeQueue.then(async () => {
+    const write = this.writeQueue.then(async () => {
       await writePrivateFileAtomically(this.path, `${JSON.stringify(snapshot, null, 2)}\n`);
       const metadata = await stat(this.path, { bigint: true });
       this.fileStamp = `${metadata.mtimeNs}:${metadata.size}`;
     });
-    await this.writeQueue;
+    this.writeQueue = write.catch(() => {});
+    await write;
   }
 
-  private migrateBootstrapLabels(): boolean {
-    let changed = false;
-    for (const record of this.records) {
-      if (record.label !== "bootstrap") continue;
-      record.label = this.nextAdminLabel();
-      changed = true;
-    }
-    return changed;
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(async () => {
+      try { return await operation(); }
+      catch (error) {
+        // A failed disk write must not leave an unpersisted privilege change active.
+        await this.refresh(true);
+        throw error;
+      }
+    });
+    this.mutationQueue = result.then(() => {}, () => {});
+    return result;
   }
 
   private nextAdminLabel(): string {

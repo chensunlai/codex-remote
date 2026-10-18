@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writePrivateFileExclusively } from "./private-file.js";
+import { GatewaySettingsStore } from "./gateway-settings.js";
 
 export interface ServerConfig {
   host: string;
@@ -72,8 +73,8 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   await mkdir(dataDirectory, { recursive: true, mode: 0o700 });
 
   const port = Number.parseInt(env.PORT ?? "6767", 10);
-  const maxUploadBytes = Number.parseInt(env.CODEX_REMOTE_MAX_UPLOAD_BYTES ?? "536870912", 10);
-  const maxDownloadBytes = Number.parseInt(env.CODEX_REMOTE_MAX_DOWNLOAD_BYTES ?? "10485760", 10);
+  const maxUploadBytes = Number(env.CODEX_REMOTE_MAX_UPLOAD_BYTES ?? "10485760");
+  const maxDownloadBytes = Number(env.CODEX_REMOTE_MAX_DOWNLOAD_BYTES ?? "10485760");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be 1-65535");
   if (!Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1) {
     throw new Error("CODEX_REMOTE_MAX_UPLOAD_BYTES must be a positive integer");
@@ -81,6 +82,9 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
   if (!Number.isSafeInteger(maxDownloadBytes) || maxDownloadBytes < 1) {
     throw new Error("CODEX_REMOTE_MAX_DOWNLOAD_BYTES must be a positive integer");
   }
+  const settings = await GatewaySettingsStore.open(resolve(dataDirectory, "gateway-settings.json"), {
+    maxUploadBytes, maxDownloadBytes,
+  });
 
   const tokenResult = await readTokens(dataDirectory, env);
   let tls: ServerConfig["tls"];
@@ -99,8 +103,7 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     dataDirectory,
     apiTokens: tokenResult.tokens,
     ...(tokenResult.generated ? { generatedApiToken: tokenResult.generated } : {}),
-    maxUploadBytes,
-    maxDownloadBytes,
+    ...settings.current,
     ...(tls ? { tls } : {}),
   };
 }

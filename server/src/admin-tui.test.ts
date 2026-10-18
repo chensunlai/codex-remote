@@ -11,7 +11,7 @@ describe("Gateway admin TUI", () => {
   it("creates a token from the nested management menu", async () => {
     await withGateway(async (config) => {
       const ui = new FakeAdminUi({
-        select: ["tokens", "create", "back", "exit"],
+        select: ["tokens", "create", "user", "back", "exit"],
         text: ["phone"],
       });
 

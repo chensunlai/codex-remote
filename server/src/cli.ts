@@ -43,7 +43,7 @@ async function start(): Promise<void> {
   if (config.generatedApiToken) {
     app.log.warn(
       { apiToken: config.generatedApiToken },
-      "Generated initial user token; it is shown only for initial setup",
+      "Generated initial administrator token; it is shown only for initial setup",
     );
   }
   let closing = false;
@@ -62,11 +62,12 @@ async function tokenCommand(command: string | undefined, args: string[]): Promis
   const store = await TokenStore.open(resolve(config.dataDirectory, "tokens.json"));
   await store.import(config.apiTokens);
   if (command === "create") {
-    const label = args.join(" ").trim();
-    if (!label) throw new Error("用法: codex-remote-gateway token create <tag>");
-    const result = await store.create(label);
+    const role = args.includes("--admin") ? "admin" : "user";
+    const label = args.filter((arg) => arg !== "--admin").join(" ").trim();
+    if (!label) throw new Error("用法: codex-remote-gateway token create [--admin] <tag>");
+    const result = await store.create(label, role);
     process.stdout.write(
-      `Tag: ${label}\nToken ID: ${result.id}\nToken: ${result.token}\n请立即保存；之后只能撤销，不能再次查看。\n`,
+      `Tag: ${label}\nRole: ${role}\nToken ID: ${result.id}\nToken: ${result.token}\n请立即保存；之后只能撤销，不能再次查看。\n`,
     );
   } else if (command === "list") {
     console.table((await store.list()).map(({ label, ...record }) => ({
@@ -79,7 +80,7 @@ async function tokenCommand(command: string | undefined, args: string[]): Promis
     await store.revoke(id);
     process.stdout.write(`已撤销 Token: ${id}\n`);
   } else {
-    throw new Error("用法: token create <tag> | token list | token revoke <token-id>");
+    throw new Error("用法: token create [--admin] <tag> | token list | token revoke <token-id>");
   }
 }
 
@@ -117,7 +118,7 @@ function printUsage(): void {
       "",
       "  admin                              打开交互式管理控制台（默认）",
       "  start                              前台启动 Gateway",
-      "  token create <tag>                 创建带 tag 的用户令牌",
+      "  token create [--admin] <tag>       创建用户令牌；--admin 创建管理员令牌",
       "  token list                         列出令牌元数据",
       "  token revoke <token-id>            撤销令牌",
       "  service list                       列出已注册服务",

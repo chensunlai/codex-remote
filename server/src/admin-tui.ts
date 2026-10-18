@@ -82,7 +82,7 @@ export async function runGatewayAdminTui(
   if (config.generatedApiToken) {
     ui.note(
       `${config.generatedApiToken}\n\n该令牌只在首次初始化时显示，请立即保存。`,
-      "首次访问令牌",
+      "首次管理员令牌",
     );
   }
 
@@ -171,9 +171,19 @@ async function createToken(store: TokenStore, ui: GatewayAdminUi): Promise<void>
     },
   });
   if (ui.isCancel(label)) return;
-  const result = await store.create(String(label));
+  const role = await ui.select({
+    message: "令牌权限",
+    options: [
+      { value: "user", label: "普通用户", hint: "访问自身服务" },
+      { value: "admin", label: "管理员", hint: "管理 Gateway、令牌和所有服务记录" },
+    ],
+    initialValue: "user",
+  });
+  if (ui.isCancel(role)) return;
+  if (role !== "user" && role !== "admin") throw new Error("无效的令牌权限");
+  const result = await store.create(String(label), role);
   ui.note(
-    [`Tag       ${String(label).trim()}`, `Token ID  ${result.id}`, `Token     ${result.token}`].join("\n"),
+    [`Tag       ${String(label).trim()}`, `权限      ${role === "admin" ? "管理员" : "普通用户"}`, `Token ID  ${result.id}`, `Token     ${result.token}`].join("\n"),
     "令牌已创建 · 请立即保存",
   );
 }
@@ -185,7 +195,7 @@ function showTokens(records: Array<Omit<TokenRecord, "tokenHash">>, ui: GatewayA
   }
   ui.note(
     records.map((record, index) => [
-      `${index + 1}. ${record.label}`,
+      `${index + 1}. ${record.label} · ${record.role === "admin" ? "管理员" : "普通用户"}`,
       `   ${shortId(record.id)} · ${formatTime(record.createdAt)}`,
     ].join("\n")).join("\n"),
     `访问令牌 · ${records.length}`,

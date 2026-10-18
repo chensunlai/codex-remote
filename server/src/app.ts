@@ -1,4 +1,6 @@
 import { resolve } from "node:path";
+import type { IncomingMessage } from "node:http";
+import type WebSocket from "ws";
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
@@ -9,7 +11,10 @@ import type { GatewayEvent } from "./domain.js";
 import { AppError, ConflictError, errorMessage } from "./errors.js";
 import { EventJournal } from "./event-journal.js";
 import { ServiceStore } from "./service-store.js";
-import { TokenStore } from "./token-store.js";
+import { TokenStore, type TokenRole } from "./token-store.js";
+import { GatewaySettingsStore } from "./gateway-settings.js";
+import { GatewayRuntimeControl, type GatewayRuntimeController } from "./gateway-runtime-control.js";
+import { registerAdminRoutes } from "./admin-routes.js";
 import { APP_VERSION } from "./version.js";
 import { registerCodexChannelRoutes } from "./codex-channel-routes.js";
 import { registerExtensionHostRoutes } from "./extension-host-routes.js";
@@ -17,6 +22,7 @@ import { registerExtensionHostRoutes } from "./extension-host-routes.js";
 declare module "fastify" {
   interface FastifyRequest {
     ownerId: string;
+    tokenRole: TokenRole;
   }
 }
 
@@ -37,11 +43,13 @@ const filePath = z.string().min(1).max(4096).refine((value) => value.startsWith(
   message: "远端路径必须是绝对路径",
 });
 
-export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> {
+export async function buildGateway(config: ServerConfig, options: { runtime?: GatewayRuntimeController } = {}): Promise<BuiltGateway> {
   const events = await EventJournal.open(resolve(config.dataDirectory, "events.jsonl"));
   const services = new ServiceStore(resolve(config.dataDirectory, "services.json"));
   const tokens = await TokenStore.open(resolve(config.dataDirectory, "tokens.json"));
   await tokens.import(config.apiTokens);
+  const settings = await GatewaySettingsStore.open(resolve(config.dataDirectory, "gateway-settings.json"), config);
+  const runtime = options.runtime ?? new GatewayRuntimeControl(config.dataDirectory);
   const agents = new AgentRegistry(services, events);
   const builtServices = { agents, events, services, tokens };
 
@@ -54,8 +62,35 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
   });
   await app.register(websocket, { options: { maxPayload: 16 * 1024 * 1024 } });
   await app.register(multipart, {
-    limits: { fileSize: config.maxUploadBytes, files: 1 },
+    limits: { files: 1 },
   });
+
+  const socketOwners = new WeakMap<IncomingMessage, string>();
+  const ownedSockets = new Map<string, Set<WebSocket>>();
+  const revokeConnections = (ownerId: string) => {
+    for (const socket of ownedSockets.get(ownerId) ?? []) socket.terminate();
+    ownedSockets.delete(ownerId);
+  };
+  app.websocketServer.on("connection", (socket, request) => {
+    const ownerId = socketOwners.get(request);
+    if (!ownerId) { socket.terminate(); return; }
+    const sockets = ownedSockets.get(ownerId) ?? new Set<WebSocket>();
+    sockets.add(socket);
+    ownedSockets.set(ownerId, sockets);
+    socket.once("close", () => {
+      sockets.delete(socket);
+      if (!sockets.size) ownedSockets.delete(ownerId);
+    });
+  });
+  // Local CLI/TUI mutations use the same store. Revalidate long-lived sockets
+  // as well as HTTP requests so revoked keys cannot retain an old connection.
+  const tokenRefresh = setInterval(() => {
+    void tokens.list().then((records) => {
+      const active = new Set(records.map((record) => record.id));
+      for (const ownerId of ownedSockets.keys()) if (!active.has(ownerId)) revokeConnections(ownerId);
+    }).catch((error: unknown) => app.log.error({ err: error }, "Token revalidation failed"));
+  }, 10_000);
+  tokenRefresh.unref();
 
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("cache-control", "no-store");
@@ -70,11 +105,13 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
     }
     const authorization = request.headers.authorization ?? "";
     const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
-    const ownerId = token ? await tokens.verify(token) : undefined;
-    if (!ownerId) {
+    const authentication = token ? await tokens.authenticate(token) : undefined;
+    if (!authentication) {
       throw new AppError(401, "UNAUTHORIZED", "访问令牌无效");
     }
-    request.ownerId = ownerId;
+    request.ownerId = authentication.id;
+    request.tokenRole = authentication.role;
+    socketOwners.set(request.raw, authentication.id);
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -95,33 +132,36 @@ export async function buildGateway(config: ServerConfig): Promise<BuiltGateway> 
     });
   });
 
-  registerMetaRoutes(app, config);
+  registerMetaRoutes(app, config, settings);
+  registerAdminRoutes(app, builtServices, config, settings, runtime, revokeConnections);
   registerAgentRoute(app, builtServices);
   registerServiceRoutes(app, builtServices);
   registerCodexChannelRoutes(app, builtServices);
   registerExtensionHostRoutes(app, builtServices);
-  registerFileRoutes(app, builtServices, config);
+  registerFileRoutes(app, builtServices, settings);
   registerTerminalRoute(app, builtServices);
   registerEventRoutes(app, builtServices);
 
   app.addHook("onClose", async () => {
+    clearInterval(tokenRefresh);
     await agents.close();
   });
   return { app, services: builtServices };
 }
 
-function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
+function registerMetaRoutes(app: FastifyInstance, config: ServerConfig, settings: GatewaySettingsStore): void {
   app.get("/healthz", async () => ({ status: "ok", version: APP_VERSION }));
   app.get("/readyz", async () => ({ status: "ready" }));
-  app.get("/api/v1/meta", async () => ({
+  app.get("/api/v1/meta", async (request) => ({
     data: {
       name: "Codex Remote Gateway",
       version: APP_VERSION,
       port: config.port,
+      auth: { role: request.tokenRole, tokenId: request.ownerId },
       limits: {
-        downloadBytes: config.maxDownloadBytes,
-        previewBytes: config.maxDownloadBytes,
-        uploadBytes: config.maxUploadBytes,
+        downloadBytes: settings.current.maxDownloadBytes,
+        previewBytes: settings.current.maxDownloadBytes,
+        uploadBytes: settings.current.maxUploadBytes,
       },
       capabilities: [
         "outbound-agent",
@@ -131,6 +171,7 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig): void {
         "codex-channel-v2",
         "codex-runtime-management",
         "official-extension-host-v1",
+        "gateway-admin-v1",
       ],
     },
   }));
@@ -183,7 +224,7 @@ function registerServiceRoutes(app: FastifyInstance, services: GatewayServices):
 function registerFileRoutes(
   app: FastifyInstance,
   services: GatewayServices,
-  config: ServerConfig,
+  settings: GatewaySettingsStore,
 ): void {
   const querySchema = z.object({ path: filePath });
 
@@ -209,7 +250,7 @@ function registerFileRoutes(
       request.ownerId,
       serviceId,
       path,
-      config.maxDownloadBytes,
+      settings.current.maxDownloadBytes,
     );
     reply.header("content-type", "application/octet-stream");
     reply.header("content-length", String(file.size));
@@ -227,7 +268,7 @@ function registerFileRoutes(
       request.ownerId,
       serviceId,
       path,
-      config.maxDownloadBytes,
+      settings.current.maxDownloadBytes,
     );
     reply.header("content-type", "text/plain; charset=utf-8");
     reply.header("content-length", String(file.size));
@@ -237,8 +278,12 @@ function registerFileRoutes(
   app.post("/api/v1/services/:serviceId/fs/upload", async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
     const { path } = parse(querySchema, request.query);
-    const part = await request.file();
+    const part = await request.file({ limits: { fileSize: settings.current.maxUploadBytes, files: 1 } });
     if (!part) throw new AppError(400, "FILE_REQUIRED", "需要选择上传文件");
+    // A multipart limit event alone only truncates the stream; abort it so the
+    // Agent never receives a successful finish for a partial upload.
+    part.file.on("limit", () => part.file.destroy(new AppError(413, "UPLOAD_TOO_LARGE", "上传文件超过 Gateway 限制")));
+    if (part.file.truncated) throw new AppError(413, "UPLOAD_TOO_LARGE", "上传文件超过 Gateway 限制");
     const result = await services.agents.upload(request.ownerId, serviceId, path, part.file);
     return reply.status(201).send({ data: result });
   });
