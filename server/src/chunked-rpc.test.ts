@@ -6,7 +6,7 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { expect, it } from "vitest";
 import { buildGateway } from "./app.js";
-import { ChunkedTransport, CHUNK_BYTES } from "../../transport/websocket.cjs";
+import { ChunkedTransport } from "../../transport/websocket.cjs";
 
 it("does not spend the RPC response deadline while a large response is progressing", async () => {
   const directory = await mkdtemp(join(tmpdir(), "chunked-rpc-"));
@@ -21,28 +21,32 @@ it("does not spend the RPC response deadline while a large response is progressi
   const description = new Promise<void>(resolve => { described = resolve; });
   let started!: () => void;
   const receiving = new Promise<void>(resolve => { started = resolve; });
+  // This tests deadline suspension, not throughput or a particular fragment size.
+  // Prepare the payload before starting the deadline and send a small first
+  // fragment so a busy CI runner can observe progress before the request expires.
+  const body = "x".repeat(1024 * 1024);
   transport.onMessage = text => {
     const request = JSON.parse(text);
     if (request.method === "service.describe") { void transport.send({ type: "response", id: request.id, ok: true, result: {} }).then(described); return; }
-    const bytes = Buffer.from(JSON.stringify({ type: "response", id: request.id, ok: true, result: "x".repeat(CHUNK_BYTES) }));
+    const bytes = Buffer.from(JSON.stringify({ type: "response", id: request.id, ok: true, result: body }));
     function send(offset: number, end: number) {
       const part = Buffer.alloc(16 + end - offset); part.write("CRW1"); part.writeUInt32BE(1, 4); part.writeUInt32BE(offset, 8); part.writeUInt32BE(bytes.length, 12); bytes.copy(part, 16, offset, end); socket.send(part);
     }
-    send(0, 5_000_000); started();
-    setTimeout(() => send(5_000_000, 8_000_000), 200);
-    setTimeout(() => send(8_000_000, bytes.length), 400);
+    send(0, 1024); started();
+    setTimeout(() => send(1024, 2048), 1_000);
+    setTimeout(() => send(2048, bytes.length), 3_000);
   };
   try {
     await transport.ready;
     await description;
     const owner = (await gateway.services.tokens.verify(token))!;
     while (!gateway.services.agents.isOnline(owner, serviceId)) await new Promise(resolve => setTimeout(resolve, 5));
-    const response = gateway.services.agents.request<string>(owner, serviceId, "large-response", {}, 150);
+    const response = gateway.services.agents.request<string>(owner, serviceId, "large-response", {}, 2_000);
     await receiving;
-    expect((await response).length).toBe(CHUNK_BYTES);
+    expect((await response).length).toBe(body.length);
   } finally {
     if (socket.readyState !== socket.CLOSED) { const close = once(socket, "close"); socket.terminate(); await close; }
     await gateway.app.close();
     await rm(directory, { recursive: true, force: true });
   }
-});
+}, 10_000);
