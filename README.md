@@ -15,18 +15,11 @@
   <a href="docs/development.md">开发与构建</a>
 </p>
 
-<table>
-  <tr>
-    <td align="center" width="33%"><a href="docs/assets/screenshots/home-anthropic.jpg"><img src="docs/assets/screenshots/home-anthropic.jpg" alt="Anthropic 主题下的聊天首页" width="260"></a></td>
-    <td align="center" width="33%"><a href="docs/assets/screenshots/chat-dark.jpg"><img src="docs/assets/screenshots/chat-dark.jpg" alt="深色主题下的聊天界面" width="260"></a></td>
-    <td align="center" width="33%"><a href="docs/assets/screenshots/files-light.jpg"><img src="docs/assets/screenshots/files-light.jpg" alt="浅色主题下的文件浏览界面" width="260"></a></td>
-  </tr>
-  <tr>
-    <td align="center">聊天首页 · Anthropic</td>
-    <td align="center">对话 · 深色</td>
-    <td align="center">文件浏览 · 浅色</td>
-  </tr>
-</table>
+<p align="center">
+  <a href="docs/assets/screenshots/home-anthropic.jpg"><img src="docs/assets/screenshots/home-anthropic.jpg" alt="聊天首页" width="32%"></a>
+  <a href="docs/assets/screenshots/chat-dark.jpg"><img src="docs/assets/screenshots/chat-dark.jpg" alt="对话界面" width="32%"></a>
+  <a href="docs/assets/screenshots/files-light.jpg"><img src="docs/assets/screenshots/files-light.jpg" alt="文件浏览" width="32%"></a>
+</p>
 
 ## 架构
 
