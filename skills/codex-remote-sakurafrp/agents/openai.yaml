@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Remote 内外网部署"
+  short_description: "使用 Sakura FRP、systemd 和手机多入口部署内外网可用的 Codex Remote"
+  default_prompt: "使用 $codex-remote-sakurafrp 为我部署支持内网优先与公网 HTTPS 的 Codex Remote。"

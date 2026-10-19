@@ -107,3 +107,5 @@ tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
 工作目录按服务器保存，默认是 Agent 用户的主目录。官方插件由 Agent 从 Marketplace 下载，手机加载同一版本的 WebView 资源。
 
 > **安装到其他目录或升级旧安装：** 安装命令添加 `--install-dir /原安装目录`，配置和数据会保留；Agent 更新后需自行重启。手动部署 Agent 时，二进制和 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
+
+使用 Sakura FRP 部署内外网访问，可参考 [Codex Remote 部署 Skill](skills/codex-remote-sakurafrp/SKILL.md)，包含隧道、HTTPS、systemd 与 App 多入口配置。
