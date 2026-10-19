@@ -50,8 +50,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -85,7 +83,6 @@ internal fun RemoteDirectoryDialog(
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val colors = MaterialTheme.colorScheme
-    val accentContent = if (colors.tertiary.luminance() > 0.179f) Color.Black else colors.onTertiary
 
     fun navigate(nextPath: String) {
         if (busy || !nextPath.startsWith('/')) return
@@ -133,28 +130,33 @@ internal fun RemoteDirectoryDialog(
                     Column {
                         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
                             Row(
-                                Modifier.fillMaxWidth().background(colors.surfaceContainerLow)
-                                    .heightIn(min = 56.dp).padding(start = 20.dp, end = 8.dp),
+                                Modifier.fillMaxWidth()
+                                    .heightIn(min = 64.dp).padding(start = 20.dp, end = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                AppIcon(CodexIcons.FolderOpen, null, tint = colors.tertiary)
+                                Surface(shape = MaterialTheme.shapes.extraSmall, color = colors.tertiaryContainer) {
+                                    Box(Modifier.size(36.dp), contentAlignment = Alignment.Center) {
+                                        AppIcon(CodexIcons.FolderOpen, null, Modifier.size(20.dp), tint = colors.tertiary)
+                                    }
+                                }
                                 Text("远端工作目录", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
                                 IconButton(onClick = onDismiss) { AppIcon(CodexIcons.Close, "关闭目录选择") }
                             }
-                            Column(Modifier.fillMaxWidth().background(colors.tertiaryContainer).padding(top = 4.dp)) {
+                            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                                Text("绝对路径", Modifier.padding(bottom = 6.dp), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                                 OutlinedTextField(
                                     value = input,
                                     onValueChange = { input = it },
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                                    modifier = Modifier.fillMaxWidth()
                                         .semantics { contentDescription = "绝对路径" },
-                                    label = { Text("绝对路径") },
                                     singleLine = true,
                                     textStyle = MonoTextStyle,
-                                    shape = RoundedCornerShape(8.dp),
+                                    shape = MaterialTheme.shapes.small,
                                     colors = OutlinedTextFieldDefaults.colors(
                                         focusedContainerColor = colors.background,
                                         unfocusedContainerColor = colors.background,
+                                        unfocusedBorderColor = colors.outline,
                                         focusedBorderColor = colors.tertiary,
                                         focusedLabelColor = colors.tertiary,
                                         cursorColor = colors.tertiary,
@@ -171,19 +173,23 @@ internal fun RemoteDirectoryDialog(
                                     },
                                 )
                                 Row(
-                                    Modifier.fillMaxWidth().padding(horizontal = 8.dp).heightIn(min = 48.dp),
+                                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
-                                    IconButton(
+                                    TextButton(
                                         onClick = { navigate(path.trimEnd('/').substringBeforeLast('/').ifBlank { "/" }) },
                                         enabled = !busy && path != "/",
-                                        colors = IconButtonDefaults.iconButtonColors(contentColor = colors.tertiary),
+                                        contentPadding = PaddingValues(horizontal = 8.dp),
                                     ) {
-                                        AppIcon(CodexIcons.ArrowUp, "返回父目录")
+                                        AppIcon(CodexIcons.ArrowUp, "返回父目录", Modifier.size(16.dp))
+                                        Text("上一级", Modifier.padding(start = 6.dp), style = MaterialTheme.typography.labelMedium)
                                     }
-                                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                                        Text("当前目录", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                                        Text(path, style = MonoTextStyle, maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+                                    Box(Modifier.weight(1f).padding(start = 8.dp), contentAlignment = Alignment.CenterEnd) {
+                                        Text(
+                                            if (input != path) "当前：$path" else if (!busy && error == null) "${entries.size} 个文件夹" else "",
+                                            style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
+                                            maxLines = 1, overflow = TextOverflow.MiddleEllipsis,
+                                        )
                                     }
                                 }
                             }
@@ -217,9 +223,9 @@ internal fun RemoteDirectoryDialog(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                                             ) {
-                                                AppIcon(CodexIcons.Folder, null, tint = colors.tertiary)
+                                                AppIcon(CodexIcons.Folder, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant)
                                                 Text(entry.getString("name"), Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                AppIcon(CodexIcons.ChevronDown, null, Modifier.rotate(-90f), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                AppIcon(CodexIcons.ChevronDown, null, Modifier.size(16.dp).rotate(-90f), tint = colors.onSurfaceVariant)
                                             }
                                         }
                                     }
@@ -228,7 +234,7 @@ internal fun RemoteDirectoryDialog(
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Row(
-                            Modifier.fillMaxWidth().background(colors.surfaceContainerLow).padding(horizontal = 16.dp, vertical = 12.dp),
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -237,7 +243,6 @@ internal fun RemoteDirectoryDialog(
                                 onClick = { onSelect(path) },
                                 enabled = !busy && error == null && input == path,
                                 shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = colors.tertiary, contentColor = accentContent),
                             ) { Text("使用此目录") }
                         }
                     }
