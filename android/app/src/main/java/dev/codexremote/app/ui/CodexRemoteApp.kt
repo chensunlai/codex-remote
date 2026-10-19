@@ -35,6 +35,10 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
@@ -44,6 +48,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.R
+import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.MainSection
 
@@ -164,9 +169,20 @@ private fun MainContent(
     snackbar: SnackbarHostState,
     modifier: Modifier = Modifier,
 ) {
+    val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val foreground = lifecycle.isAtLeast(Lifecycle.State.STARTED)
+    val chatVisible = state.section == MainSection.SESSIONS
     Box(modifier.fillMaxSize()) {
-        RetainedPane(visible = state.section == MainSection.SESSIONS) {
-            OfficialChatScreen(state, viewModel, visible = state.section == MainSection.SESSIONS)
+        RetainedServerPanes(
+            identity = state.gatewayConfig?.let { frontendScope(it, "") },
+            availableIds = state.services.map { it.id }.toSet(),
+            selectedId = state.selectedServiceId,
+            visible = chatVisible,
+        ) { serviceId, active ->
+            OfficialChatScreen(state.copy(selectedServiceId = serviceId), viewModel, visible = active && foreground)
+        }
+        if (chatVisible && (state.gatewayConfig == null || state.services.none { it.id == state.selectedServiceId })) {
+            EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
         }
         when (state.section) {
             MainSection.SERVICES -> ServicesScreen(state, viewModel)

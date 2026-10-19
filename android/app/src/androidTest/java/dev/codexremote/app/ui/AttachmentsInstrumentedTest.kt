@@ -14,6 +14,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -41,6 +42,36 @@ import kotlin.concurrent.thread
 
 class AttachmentsInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun hiddenPageDefersPickerAndBackgroundingDoesNotCancelAnOpenPicker() {
+        val visible = mutableStateOf(false)
+        val completed = AtomicReference<JSONArray>()
+        val registry = object : ActivityResultRegistry() {
+            var launchedCode: Int? = null
+            override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
+                launchedCode = requestCode
+            }
+        }
+        val owner = object : ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        compose.setContent {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                val picker = rememberOfficialFilePicker(GatewayApi(), "fixture", "/tmp", "/tmp", visible.value) {}
+                val scope = rememberCoroutineScope()
+                TextButton(onClick = { scope.launch { completed.set(picker(JSONObject().put("imagesOnly", true))) } }) { Text("请求文件") }
+            }
+        }
+        compose.onNodeWithText("请求文件").performClick()
+        compose.runOnIdle { assertNull(registry.launchedCode); visible.value = true }
+        compose.waitUntil(5000) { registry.launchedCode != null }
+        compose.runOnIdle { visible.value = false }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertNull(completed.get())
+            registry.dispatchResult(registry.launchedCode!!, Activity.RESULT_CANCELED, null)
+        }
+        compose.waitUntil(5000) { completed.get() != null }
+        assertEquals(0, completed.get().length())
+    }
 
     @Test fun binaryImageIsDecodedAndRenderedEvenWithATextFilename() = runBlocking {
         val bytes = png(512, noise = true)

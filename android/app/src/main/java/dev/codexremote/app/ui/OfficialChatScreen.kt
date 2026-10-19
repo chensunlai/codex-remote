@@ -137,6 +137,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     val stagedVersion = extension?.version("stagedVersion")
     val updating = extension?.optBoolean("updating") == true
     val busy = requestInProgress || updating
+    LaunchedEffect(visible) { if (!visible) menu = false }
 
     suspend fun presentStagedUpdate() {
         if (extension?.version("stagedVersion") == null) return
@@ -218,7 +219,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                 }
                 Box {
                     IconButton(onClick = { menu = true }) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
-                    CodexDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    CodexDropdownMenu(expanded = visible && menu, onDismissRequest = { menu = false }) {
                         Text("官方前端 · ${installedVersion ?: "未安装"}", style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         DropdownMenuItem(text = { Text("检查并更新前端") }, enabled = !busy,

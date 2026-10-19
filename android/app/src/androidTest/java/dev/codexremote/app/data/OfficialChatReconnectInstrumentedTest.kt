@@ -366,7 +366,7 @@ class OfficialChatReconnectInstrumentedTest {
         }
     }
 
-    private class SocketFixture(private val compression: Boolean = false, private val handshakeGate: CountDownLatch? = null) : Closeable {
+    internal class SocketFixture(private val compression: Boolean = false, private val handshakeGate: CountDownLatch? = null) : Closeable {
         private val listener = ServerSocket(0)
         val port: Int get() = listener.localPort
         val messages = CopyOnWriteArrayList<JSONObject>()
@@ -476,6 +476,9 @@ class OfficialChatReconnectInstrumentedTest {
                 .put("messageId", packet.getString("messageId")).put("accepted", true))
 
             fun awaitPacket(type: String) = eventually { packets.any { it.optString("type") == type } }
+            fun awaitVisibility(visible: Boolean) = eventually {
+                packets.lastOrNull { it.optString("type") == "visibility" }?.optBoolean("visible") == visible
+            }
             private fun acceptPacket(packet: JSONObject) {
                 packets += packet
                 if (packet.optString("type") == "message") {

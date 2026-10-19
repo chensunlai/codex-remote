@@ -11,6 +11,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.Text
@@ -21,6 +23,7 @@ import dev.codexremote.app.data.uploadAttachments
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.first
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -31,6 +34,7 @@ internal fun rememberOfficialFilePicker(
     onStatus: (String?) -> Unit,
 ): suspend (JSONObject) -> JSONArray {
     val resolver = LocalContext.current.contentResolver
+    val currentVisible by rememberUpdatedState(visible)
     var pending by remember { mutableStateOf<CompletableDeferred<List<Uri>>?>(null) }
     var directory by remember { mutableStateOf<CompletableDeferred<String?>?>(null) }
     var kindChoice by remember { mutableStateOf<CompletableDeferred<String?>?>(null) }
@@ -56,6 +60,9 @@ internal fun rememberOfficialFilePicker(
             TextButton(onClick = { kindChoice?.complete("directory") }) { Text("服务器目录") }
         } }, confirmButton = { TextButton(onClick = { kindChoice?.complete(null) }) { Text("取消") } })
     return pick@{ params ->
+        // A retained server may receive a late request while hidden. Wait without launching
+        // another Activity; an already-open picker remains valid when our Activity stops.
+        snapshotFlow { currentVisible }.first { it }
         check(pending == null && directory == null && kindChoice == null) { "文件选择器已打开" }
         val kind = if (params.optString("kind") == "mixed") {
             val result = CompletableDeferred<String?>()
@@ -87,6 +94,7 @@ internal fun rememberOfficialFilePicker(
                 putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple)
             }
             try {
+                snapshotFlow { currentVisible }.first { it }
                 launcher.launch(intent)
                 val uris = selection.await().let { if (multiple) it else it.take(1) }
                 currentCoroutineContext().ensureActive()
