@@ -18,23 +18,20 @@ config:
 ---
 flowchart LR
     app("Android App
-官方 WebView
-原生手机能力")
-    gateway("Gateway
-认证 · 服务发现
-资源与消息转发")
+WebView")
+    gateway("Gateway")
 
-    subgraph agent["Agent · 执行 Codex 的服务器"]
+    subgraph agent["Agent"]
         direction TB
-        host("Node.js 宿主
-公开 VS Code API")
-        extension("官方 extension.js")
+        host("Node.js
+VS Code API")
+        extension("extension.js")
         codex("Codex App Server")
         host <--> extension <--> codex
     end
 
     app <-->|HTTPS / WSS| gateway
-    gateway <-->|WSS · Agent 主动连接| agent
+    gateway <-->|WSS| agent
 
     classDef mobile fill:#eff6ff,stroke:#93c5fd,color:#172554,stroke-width:1.5px
     classDef relay fill:#f1f5f9,stroke:#cbd5e1,color:#334155,stroke-width:1.5px
