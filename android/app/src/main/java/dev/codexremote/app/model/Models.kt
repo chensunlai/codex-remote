@@ -9,6 +9,9 @@ enum class AppTheme(val id: String) { DARK("dark"), LIGHT("light"), ANTHROPIC("a
 data class GatewayConfig(
     val baseUrl: String,
     val token: String,
+    val allowHttp: Boolean = false,
+    val multipleEndpoints: Boolean = false,
+    val endpoints: List<String> = emptyList(),
 )
 
 enum class RuntimeState { CONNECTED, DISCONNECTED }
@@ -43,6 +46,8 @@ data class FilePreview(
 )
 
 data class AppState(
+    val allowHttp: Boolean = false,
+    val multipleEndpoints: Boolean = false,
     val configured: Boolean = false,
     val gatewayConfig: GatewayConfig? = null,
     val fontScale: Float = 1f,

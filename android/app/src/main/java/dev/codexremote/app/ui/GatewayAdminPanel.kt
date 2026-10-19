@@ -44,12 +44,12 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** A panel owns an immutable credential snapshot and cancels it when removed. */
+/** Standalone panels own their client; the App shares its selected Gateway route. */
 @Composable
-internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, onSettingsSaved: () -> Unit) {
-    val api = remember(config) { GatewayApi().apply { configure(config) } }
+internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, onSettingsSaved: () -> Unit, sharedApi: GatewayApi? = null) {
+    val api = remember(config, sharedApi) { sharedApi ?: GatewayApi().apply { configure(config) } }
     val updates = remember { ProductUpdates() }
-    DisposableEffect(api, updates) { onDispose { api.clear(); updates.close() } }
+    DisposableEffect(api, updates) { onDispose { if (sharedApi == null) api.clear(); updates.close() } }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var tab by remember { mutableStateOf("访问令牌") }

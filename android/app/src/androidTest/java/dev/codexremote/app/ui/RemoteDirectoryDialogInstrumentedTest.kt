@@ -210,7 +210,7 @@ class RemoteDirectoryDialogInstrumentedTest {
 
     private class DirectoryGateway(private val respond: (String, Int) -> Response) : AutoCloseable {
         private val server = ServerSocket(0)
-        val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture")) }
+        val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture", allowHttp = true)) }
         val requests = CopyOnWriteArrayList<String>()
         private val attempts = ConcurrentHashMap<String, Int>()
 

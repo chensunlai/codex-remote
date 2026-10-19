@@ -69,6 +69,8 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
             error = state.error,
             onSave = viewModel::configureGateway,
             onClearError = viewModel::clearError,
+            allowHttp = state.allowHttp, multipleEndpoints = state.multipleEndpoints,
+            onExperiments = viewModel::setExperiments,
         )
         return
     }

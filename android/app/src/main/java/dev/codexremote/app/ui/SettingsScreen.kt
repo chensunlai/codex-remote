@@ -21,6 +21,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -36,6 +38,7 @@ import kotlin.math.roundToInt
 
 @Composable
 fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
+    val link by viewModel.gatewayApi.link.collectAsStateWithLifecycle()
     Column(Modifier.fillMaxSize()) {
         CodexTopBar(
             title = { Text("App 设置") },
@@ -51,7 +54,11 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                 verticalArrangement = Arrangement.spacedBy(24.dp)) {
                 CodexSettingsGroup("网关连接") {
                     GatewayForm(initial = state.gatewayConfig, loading = state.connecting, error = null,
-                        showBrand = false, submitLabel = "保存并测试", onSave = viewModel::configureGateway)
+                        showBrand = false, submitLabel = "保存并测试", onSave = viewModel::configureGateway,
+                        multipleEndpoints = state.multipleEndpoints)
+                    link.endpoint?.let { Text("当前入口：$it", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    ExperimentalSettings(state.allowHttp, state.multipleEndpoints, !state.connecting, viewModel::setExperiments)
                 }
                 CodexSettingsGroup("外观") {
                     Text("主题", style = MaterialTheme.typography.bodyMedium)
@@ -98,10 +105,10 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     Text("应用于界面、对话和终端", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                GatewayAdministration(state, viewModel::refreshGatewayMetadata)
+                GatewayAdministration(state, viewModel.gatewayApi, viewModel::refreshGatewayMetadata)
                 key(state.gatewayConfig, state.selectedServiceId) {
                     CodexSettingsGroup("应用与 Agent 更新") {
-                        ProductUpdatePanel(state.gatewayConfig, state.services.firstOrNull { it.id == state.selectedServiceId })
+                        ProductUpdatePanel(state.gatewayConfig, state.services.firstOrNull { it.id == state.selectedServiceId }, viewModel.gatewayApi)
                     }
                 }
                 state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
@@ -119,12 +126,12 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
 }
 
 @Composable
-internal fun GatewayAdministration(state: AppState, onSettingsSaved: () -> Unit) {
+internal fun GatewayAdministration(state: AppState, sharedApi: dev.codexremote.app.data.GatewayApi? = null, onSettingsSaved: () -> Unit) {
     val config = state.gatewayConfig
     if (config != null && state.gatewayRole == "admin" && state.gatewayAdminSupported) {
         key(config) {
             CodexSettingsGroup("Gateway 管理") {
-                GatewayAdminPanel(config, state.gatewayTokenId, onSettingsSaved)
+                GatewayAdminPanel(config, state.gatewayTokenId, onSettingsSaved, sharedApi)
             }
         }
     }

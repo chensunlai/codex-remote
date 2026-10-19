@@ -3,6 +3,10 @@ package dev.codexremote.app
 import android.app.Application
 import android.content.ContentResolver
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.Network
+import dev.codexremote.app.data.normalizeGatewayUrl
+import kotlinx.coroutines.delay
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.codexremote.app.data.documentMetadata
@@ -32,7 +36,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.FileNotFoundException
-import java.net.URI
 
 /** Native shell state only. Conversations and approvals belong to the official frontend. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -42,41 +45,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val api get() = gatewayApi
     internal val officialFrontends = OfficialFrontendStore(application)
     private val terminalSessions = TerminalSessionManager(api)
-    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme))
+    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints))
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var activeOperations = 0
     private var configurationGeneration = 0
     private var connectionJob: Job? = null
     private var operationScope = newOperationScope()
 
+    private var monitoringJob: Job? = null
+    private var networkJob: Job? = null
+    private var foreground = false
+    private val connectivity = application.getSystemService(ConnectivityManager::class.java)
+    @Volatile private var lastNetwork: Network? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            val changed = lastNetwork != null && lastNetwork != network
+            lastNetwork = network
+            networkChanged(changed)
+        }
+        override fun onLost(network: Network) { networkChanged(forceReconnect = true) }
+    }
+
+    private fun networkChanged(forceReconnect: Boolean = false) {
+        viewModelScope.launch {
+            if (!foreground) return@launch
+            networkJob?.cancel()
+            networkJob = viewModelScope.launch {
+                delay(700) // Coalesce the old-network loss and new-network availability callbacks.
+                try { api.checkConnection(preferPrimary = true, reconnect = forceReconnect) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* The link indicator shows failure; existing sockets retry. */ }
+            }
+        }
+    }
+
+    fun setForeground(value: Boolean) {
+        if (foreground == value) return
+        foreground = value
+        monitoringJob?.cancel()
+        if (!value) {
+            networkJob?.cancel()
+            runCatching { connectivity.unregisterNetworkCallback(networkCallback) }
+            return
+        }
+        connectivity.registerDefaultNetworkCallback(networkCallback)
+        monitoringJob = viewModelScope.launch {
+            while (true) {
+                try { api.checkConnection() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { }
+                delay(15_000)
+            }
+        }
+    }
+
+    fun reconnectGateway() {
+        if (networkJob?.isActive == true) return
+        networkJob = viewModelScope.launch {
+            try { api.checkConnection(preferPrimary = true, reconnect = true) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _state.update { it.copy(error = error.message) } }
+        }
+    }
+
+    fun setExperiments(http: Boolean, multiple: Boolean) {
+        uiPreferences.setExperiments(http, multiple)
+        val config = _state.value.gatewayConfig?.copy(allowHttp = http, multipleEndpoints = multiple)
+        config?.let { secretStore.save(it); api.updatePolicy(it) }
+        _state.update { it.copy(allowHttp = http, multipleEndpoints = multiple, gatewayConfig = config) }
+        networkChanged()
+    }
+
     init {
-        secretStore.load()?.let { config ->
-            api.configure(config)
+        secretStore.load()?.let { saved ->
+            val config = saved.copy(allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
+            api.updatePolicy(config)
             _state.update { it.copy(configured = true, gatewayConfig = config) }
             launchOperation("正在连接 Gateway") {
+                api.checkConnection(preferPrimary = true)
                 applyMeta(api.meta())
                 loadServicesAndSelect()
             }
         }
     }
 
-    fun configureGateway(address: String, token: String) {
+    fun configureGateway(address: String, token: String, endpoints: String = "") {
         if (_state.value.connecting) return
         val generation = configurationGeneration
         _state.update { it.copy(connecting = true, error = null) }
         connectionJob = viewModelScope.launch {
             try {
-                val config = GatewayConfig(normalizeGatewayUrl(address), token.trim())
+                val config = GatewayConfig(normalizeGatewayUrl(address), token.trim(),
+                    allowHttp = _state.value.allowHttp, multipleEndpoints = _state.value.multipleEndpoints,
+                    endpoints = endpoints.lineSequence().map(String::trim).filter(String::isNotEmpty).map(::normalizeGatewayUrl).distinct().toList())
                 require(config.token.isNotBlank()) { "访问令牌不能为空" }
-                val meta = api.testConfiguration(config)
+                val selection = api.selectConfiguration(config)
                 if (generation != configurationGeneration) return@launch
                 secretStore.save(config)
+                val previous = _state.value.gatewayConfig
+                if (previous?.baseUrl == config.baseUrl && previous.token == config.token) {
+                    api.updatePolicy(config)
+                    _state.update { it.copy(gatewayConfig = config) }
+                    api.checkConnection(preferPrimary = true)
+                    applyMeta(selection.metadata)
+                    return@launch
+                }
                 configurationGeneration += 1
                 resetOperations()
                 terminalSessions.closeAll()
-                api.configure(config)
-                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, theme = it.theme) }
-                applyMeta(meta)
+                api.configure(config, selection.endpoint, selection.latencyMs)
+                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, theme = it.theme, allowHttp = it.allowHttp, multipleEndpoints = it.multipleEndpoints) }
+                applyMeta(selection.metadata)
                 launchOperation("正在刷新服务") { loadServicesAndSelect() }
             } catch (error: CancellationException) {
                 throw error
@@ -95,7 +174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalSessions.closeAll()
         api.clear()
         secretStore.clear()
-        _state.value = AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme)
+        _state.value = AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
     }
 
     fun setSection(section: MainSection) { _state.update { it.copy(section = section) } }
@@ -238,7 +317,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     internal fun terminalSession(serviceId: String, cwd: String?): TerminalSession =
         terminalSessions.session(serviceId, cwd)
 
-    override fun onCleared() { terminalSessions.closeAll() }
+    override fun onCleared() { setForeground(false); terminalSessions.closeAll(); api.clear(); operationScope.coroutineContext[Job]?.cancel() }
 
     private fun applyMeta(meta: org.json.JSONObject) {
         val limits = meta.optJSONObject("limits")
@@ -305,20 +384,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun newOperationScope() = CoroutineScope(
         viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]),
     )
-}
-
-private fun normalizeGatewayUrl(value: String): String {
-    val input = value.trim()
-    val withScheme = if (input.contains("://")) input else "https://" + input
-    val uri = URI(withScheme)
-    require(uri.scheme == "https" || uri.scheme == "http") {
-        "Gateway 地址需要使用 https:// 或 http://"
-    }
-    require(!uri.host.isNullOrBlank()) { "Gateway 地址无效" }
-    require(uri.userInfo == null && uri.query == null && uri.fragment == null) {
-        "Gateway 地址不应包含账号、查询参数或片段"
-    }
-    return withScheme.trimEnd('/')
 }
 
 private fun joinRemote(parent: String, name: String): String =

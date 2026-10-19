@@ -77,7 +77,7 @@ class GatewayExtensionResourceTest {
                 }
             }
             try {
-                val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "owner-token")) }
+                val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "owner-token", allowHttp = true)) }
                 check(api, request)
             } finally { worker.join(2000) }
         }

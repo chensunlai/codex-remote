@@ -123,7 +123,7 @@ class GatewayAdminInstrumentedTest {
         private val sockets = CopyOnWriteArrayList<Socket>()
         val requests = CopyOnWriteArrayList<Captured>()
         @Volatile var cancelled = false
-        val config = GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture-admin")
+        val config = GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture-admin", allowHttp = true)
         val state = AppState(gatewayConfig = config, gatewayRole = "admin", gatewayTokenId = "current", gatewayAdminSupported = true)
         init { thread(isDaemon = true) {
             while (!server.isClosed) {

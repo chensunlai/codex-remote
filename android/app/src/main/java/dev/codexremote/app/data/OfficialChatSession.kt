@@ -69,6 +69,7 @@ internal class OfficialChatSession(
     private var closed = false
     private var visible = true
     private var reconnect: Runnable? = null
+    private var connectionJob: Job? = null
     private var mustRecreatePage = false
     private var recoveryNotice = false
     private var reloadScheduled = false
@@ -87,6 +88,23 @@ internal class OfficialChatSession(
     private val nativeSurfaces = mutableMapOf<String, String>()
     // Only host-operation responses can be resent. Official page actions are never replayed.
     private val hostResponses = linkedMapOf<String, JSONObject>()
+    init {
+        jobs.launch {
+            api.reconnections.collect {
+                if (!closed) {
+                    connectionJob?.cancel()
+                    connectionJob = null
+                    val previous = socket
+                    disconnected(connectionGeneration, "正在重新选择网关入口")
+                    previous?.cancel()
+                    reconnect?.let(main::removeCallbacks)
+                    reconnect = null
+                    connect()
+                }
+            }
+        }
+    }
+
     fun bridge(surfaceId: String) = Bridge(surfaceId)
 
     fun attach(webView: WebView, loader: (String, String, String) -> Unit) = attachSurface("main", webView, loader)
@@ -155,6 +173,7 @@ internal class OfficialChatSession(
 
     fun close() {
         closed = true
+        connectionJob?.cancel()
         connectionGeneration += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null
@@ -171,7 +190,7 @@ internal class OfficialChatSession(
     }
 
     private fun connect() {
-        if (closed || socket != null) return
+        if (closed || socket != null || connectionJob?.isActive == true) return
         val attempt = ++connectionGeneration
         onStatus("正在连接官方扩展")
         val listener = object : WebSocketListener() {
@@ -198,8 +217,16 @@ internal class OfficialChatSession(
                     main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4400, 4409)) }
                 }
             }
-        wire = ChunkedSocket(listener)
-        socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire))
+        api.chatConnecting()
+        connectionJob = jobs.launch {
+            try {
+                if (!api.prepareSocketConnection()) return@launch
+                if (closed || attempt != connectionGeneration) return@launch
+                wire = ChunkedSocket(listener)
+                socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { disconnected(attempt, error.message) }
+        }
     }
 
     private fun disconnected(attempt: Int, reason: String?, retry: Boolean = true) {
@@ -212,6 +239,7 @@ internal class OfficialChatSession(
         wire = null
         android.util.Log.i("OfficialCodex", "Extension disconnected: ${reason?.take(180).orEmpty()}")
         if (!retry) {
+            api.chatStopped(reason)
             onStatus("传输已停止：${reason.orEmpty()}。请调整上限或更新组件后重新加载前端。")
             return
         }
@@ -343,6 +371,8 @@ internal class OfficialChatSession(
     private fun reconnectRenderer() {
         if (closed) return
         reloadScheduled = false
+        connectionJob?.cancel()
+        connectionJob = null
         connectionGeneration += 1
         reconnect?.let(main::removeCallbacks)
         reconnect = null

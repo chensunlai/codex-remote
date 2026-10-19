@@ -8,6 +8,13 @@ import kotlin.math.roundToInt
 class UiPreferences(context: Context) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
 
+    val allowHttp: Boolean get() = preferences.getBoolean("allow_http", false)
+    val multipleEndpoints: Boolean get() = preferences.getBoolean("multiple_endpoints", false)
+
+    fun setExperiments(http: Boolean, multiple: Boolean) {
+        preferences.edit { putBoolean("allow_http", http); putBoolean("multiple_endpoints", multiple) }
+    }
+
     val fontScale: Float
         get() = normalize(preferences.getFloat(FONT_SCALE, DEFAULT_FONT_SCALE))
 

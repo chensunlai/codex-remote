@@ -7,6 +7,7 @@ import android.util.Base64
 import androidx.core.content.edit
 import dev.codexremote.app.model.GatewayConfig
 import org.json.JSONObject
+import org.json.JSONArray
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -31,6 +32,11 @@ class SecretStore(context: Context) {
         GatewayConfig(
             baseUrl = value.getString("baseUrl"),
             token = value.getString("token"),
+            allowHttp = value.optBoolean("allowHttp", false),
+            multipleEndpoints = value.optBoolean("multipleEndpoints", false),
+            endpoints = value.optJSONArray("endpoints")?.let { array ->
+                (0 until array.length()).map { array.getString(it) }
+            }.orEmpty(),
         )
     }.getOrNull()
 
@@ -38,6 +44,9 @@ class SecretStore(context: Context) {
         val plaintext = JSONObject()
             .put("baseUrl", config.baseUrl.trimEnd('/'))
             .put("token", config.token)
+            .put("allowHttp", config.allowHttp)
+            .put("multipleEndpoints", config.multipleEndpoints)
+            .put("endpoints", JSONArray(config.endpoints))
             .toString()
             .toByteArray(StandardCharsets.UTF_8)
         val cipher = Cipher.getInstance(TRANSFORMATION)

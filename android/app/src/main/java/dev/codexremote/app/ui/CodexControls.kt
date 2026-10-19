@@ -44,6 +44,7 @@ fun CodexTextField(
     visualTransformation: VisualTransformation = VisualTransformation.None,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     trailingIcon: (@Composable () -> Unit)? = null,
+    singleLine: Boolean = true,
 ) {
     var focused by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -53,7 +54,7 @@ fun CodexTextField(
             value = value,
             onValueChange = onValueChange,
             enabled = enabled,
-            singleLine = true,
+            singleLine = singleLine,
             visualTransformation = visualTransformation,
             keyboardOptions = keyboardOptions,
             textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onSurface.copy(alpha = if (enabled) 1f else 0.5f)),

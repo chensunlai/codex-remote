@@ -32,6 +32,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -108,6 +113,7 @@ private fun JSONObject.version(name: String): String? = optString(name).takeIf {
 @Composable
 fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true) {
     val service = state.services.firstOrNull { it.id == state.selectedServiceId }
+    val link by viewModel.gatewayApi.link.collectAsStateWithLifecycle()
     val config = state.gatewayConfig
     if (service == null || config == null) {
         EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
@@ -192,6 +198,15 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
             navigationIcon = { IconButton(onClick = { panelBack?.invoke() ?: viewModel.setSection(MainSection.SERVICES) }) {
                 AppIcon(CodexIcons.ArrowBack, contentDescription = if (panelBack != null) "返回对话" else "切换服务器")
             } }, actions = {
+                TextButton(onClick = viewModel::reconnectGateway, enabled = !link.checking,
+                    modifier = Modifier.widthIn(min = 48.dp).semantics {
+                        contentDescription = "网关连接：${link.endpoint.orEmpty()}，${if (link.checking) "连接中" else link.latencyMs?.let { "${it}毫秒，点击重连" } ?: "检测失败，点击重连"}"
+                    }) {
+                    if (link.checking) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    else Text(link.latencyMs?.let { "${it}ms" } ?: "重试",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (link.error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 IconToggleButton(checked = mouseMode, onCheckedChange = { mouseMode = it },
                     enabled = installedVersion != null,
                     modifier = Modifier.semantics { stateDescription = if (mouseMode) "已开启" else "已关闭" }) {

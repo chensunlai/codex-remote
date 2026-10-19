@@ -2,6 +2,17 @@ package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import okio.ByteString
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -34,33 +45,185 @@ class GatewayApi {
         .readTimeout(90, TimeUnit.SECONDS)
         .writeTimeout(90, TimeUnit.SECONDS)
         .pingInterval(30, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val allowed = request.tag(HttpPermission::class.java)?.allowed ?: config?.allowHttp ?: false
+            if (!request.url.isHttps && !allowed) throw IOException("HTTP 接入需要先在实验性功能中开启")
+            chain.proceed(request)
+        }
         .build()
     private val configurationClient = client.newBuilder()
         .callTimeout(20, TimeUnit.SECONDS)
         .build()
 
+    private class HttpPermission(val allowed: Boolean)
+    private val probeClient = configurationClient.newBuilder().callTimeout(2500, TimeUnit.MILLISECONDS).build()
+    private val routeLock = Mutex()
+    private val sockets = ConcurrentHashMap.newKeySet<WebSocket>()
+    private val _link = MutableStateFlow(GatewayLinkState())
+    val link = _link.asStateFlow()
+    private val _reconnections = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    internal val reconnections = _reconnections.asSharedFlow()
+    @Volatile private var activeEndpoint: String? = null
+    @Volatile private var configurationGeneration = 0L
+    private val chatGeneration = AtomicLong()
+    @Volatile private var chatSocket: WebSocket? = null
+    @Volatile private var chatConnecting = false
+
     @Volatile
     private var config: GatewayConfig? = null
 
-    fun configure(value: GatewayConfig) {
+    fun configure(value: GatewayConfig, endpoint: String = gatewayEndpoints(value).first(), latencyMs: Long? = null) {
+        configurationGeneration++
+        chatGeneration.incrementAndGet()
+        chatSocket = null
+        chatConnecting = false
+        sockets.forEach(WebSocket::cancel)
         client.dispatcher.cancelAll()
         config = value.copy(baseUrl = value.baseUrl.trimEnd('/'))
+        activeEndpoint = endpoint
+        _link.value = GatewayLinkState(endpoint = endpoint, latencyMs = latencyMs, checking = latencyMs == null)
+    }
+
+    /** Updating experiments does not change the renderer/cache identity. */
+    fun updatePolicy(value: GatewayConfig) {
+        configurationGeneration++
+        config = value
+        if (runCatching { gatewayEndpoints(value) }.getOrDefault(emptyList()).none { it == activeEndpoint }) {
+            activeEndpoint = null
+            sockets.forEach(WebSocket::cancel)
+            _link.value = GatewayLinkState(error = "正在重新选择网关入口")
+        }
+    }
+
+    data class Selection(val endpoint: String, val metadata: JSONObject, val latencyMs: Long)
+
+    suspend fun selectConfiguration(value: GatewayConfig): Selection {
+        var failure: Exception? = null
+        for (endpoint in gatewayEndpoints(value)) {
+            try { return probe(value, endpoint) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { failure = error }
+        }
+        throw failure ?: IOException("没有可用的网关入口")
+    }
+
+    private suspend fun probe(value: GatewayConfig, endpoint: String): Selection {
+        val start = System.nanoTime()
+        val metadata = testConfiguration(value.copy(baseUrl = endpoint), probeClient)
+        return Selection(endpoint, metadata, ((System.nanoTime() - start) / 1_000_000).coerceAtLeast(1))
+    }
+
+    /** No business request is retried. Only an authenticated, read-only metadata probe selects routes. */
+    suspend fun checkConnection(preferPrimary: Boolean = false, reconnect: Boolean = false) = routeLock.withLock {
+        val current = config ?: return@withLock
+        val generation = configurationGeneration
+        val previous = activeEndpoint
+        if (reconnect || previous == null) _link.update { it.copy(checking = true, error = null) }
+        try {
+            val candidates = gatewayEndpoints(current)
+            val ordered = if (preferPrimary) candidates else listOfNotNull(previous).filter { it in candidates } + candidates
+            var selection: Selection? = null
+            var failure: Exception? = null
+            for (endpoint in ordered.distinct()) {
+                try { selection = probe(current, endpoint); break }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { failure = error }
+            }
+            val found = selection ?: throw failure ?: IOException("没有可用的网关入口")
+            if (generation != configurationGeneration) return@withLock
+            activeEndpoint = found.endpoint
+            val switched = previous != found.endpoint
+            _link.value = GatewayLinkState(found.endpoint, found.latencyMs,
+                checking = chatConnecting || ((switched || reconnect) && chatSocket != null))
+            if (switched) sockets.forEach(WebSocket::cancel)
+            if (reconnect) _reconnections.tryEmit(Unit)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            if (generation == configurationGeneration) {
+                _link.value = GatewayLinkState(previous, checking = false, error = error.message)
+            }
+            throw error
+        }
+    }
+
+    suspend fun prepareSocketConnection(): Boolean {
+        val previous = config ?: return false
+        if (previous.multipleEndpoints) checkConnection(preferPrimary = true)
+        return config?.let { it.baseUrl == previous.baseUrl && it.token == previous.token } == true
+    }
+
+    fun chatStopped(reason: String?) {
+        chatConnecting = false
+        _link.update { it.copy(checking = false, error = reason, latencyMs = null) }
+    }
+
+    fun chatConnecting() {
+        chatConnecting = true
+        _link.update { it.copy(checking = true) }
+    }
+
+    private fun openSocket(request: Request, listener: WebSocketListener, chat: Boolean = false): WebSocket {
+        val generation = if (chat) chatGeneration.incrementAndGet() else 0L
+        val started = System.nanoTime()
+        if (chat) chatConnecting()
+        return client.newWebSocket(request, object : WebSocketListener() {
+            private fun finished(webSocket: WebSocket) {
+                sockets.remove(webSocket)
+                if (chat && chatSocket === webSocket && generation == chatGeneration.get()) {
+                    chatSocket = null
+                    chatConnecting = true
+                    _link.update { it.copy(checking = true) }
+                }
+            }
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (chat && generation == chatGeneration.get()) {
+                    chatSocket = webSocket
+                    chatConnecting = false
+                    _link.update { it.copy(checking = false, error = null,
+                        latencyMs = it.latencyMs ?: ((System.nanoTime() - started) / 1_000_000).coerceAtLeast(1)) }
+                }
+                listener.onOpen(webSocket, response)
+            }
+            override fun onMessage(webSocket: WebSocket, text: String) = listener.onMessage(webSocket, text)
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) = listener.onMessage(webSocket, bytes)
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                finished(webSocket); listener.onClosing(webSocket, code, reason)
+            }
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                finished(webSocket); listener.onClosed(webSocket, code, reason)
+            }
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                finished(webSocket); listener.onFailure(webSocket, t, response)
+            }
+        }).also { sockets.add(it); if (chat) chatSocket = it }
     }
 
     fun clear() {
+        configurationGeneration++
+        chatGeneration.incrementAndGet()
+        chatSocket = null
+        chatConnecting = false
+        sockets.forEach(WebSocket::cancel)
+        sockets.clear()
+        activeEndpoint = null
+        _link.value = GatewayLinkState()
         config = null
         client.dispatcher.cancelAll()
     }
 
     suspend fun meta(): JSONObject = data(request("GET", "api/v1/meta")) as JSONObject
 
-    suspend fun testConfiguration(candidate: GatewayConfig): JSONObject = suspendCancellableCoroutine { continuation ->
+    suspend fun testConfiguration(candidate: GatewayConfig, httpClient: OkHttpClient = configurationClient): JSONObject = suspendCancellableCoroutine { continuation ->
         val target = candidate.baseUrl.ensureTrailingSlash().toHttpUrl().newBuilder()
             .addPathSegments("api/v1/meta").build()
         val request = Request.Builder().url(target)
+            .tag(HttpPermission::class.java, HttpPermission(candidate.allowHttp))
             .header("Authorization", "Bearer " + candidate.token)
             .header("Accept", "application/json").build()
-        val call = configurationClient.newCall(request)
+        val call = httpClient.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -131,20 +294,20 @@ class GatewayApi {
     fun extensionChannel(
         serviceId: String, clientId: String, rendererId: String, workspace: String,
         after: Long, epoch: String?, listener: WebSocketListener,
-    ): WebSocket = client.newWebSocket(
+    ): WebSocket = openSocket(
         Request.Builder().url(url("api/v4/services/$serviceId/extension", buildMap {
             put("clientId", clientId)
             put("rendererId", rendererId)
             put("workspace", workspace)
             put("after", after.toString())
             epoch?.let { put("epoch", it) }
-        })).authorized().build(), listener,
+        })).authorized().build(), listener, chat = true,
     )
 
     /** Runs on WebView's resource thread. Never exposes the Gateway token to page JavaScript. */
     internal fun extensionResource(serviceId: String, version: String, path: String, packageSha256: String? = null): ByteArray {
         val current = requireNotNull(config) { "Gateway is not configured" }
-        val target = current.baseUrl.ensureTrailingSlash().toHttpUrl().newBuilder()
+        val target = requireEndpoint().ensureTrailingSlash().toHttpUrl().newBuilder()
             .addPathSegments("api/v3/services/$serviceId/extension/resource")
             .addQueryParameter("version", version).addQueryParameter("path", path)
         packageSha256?.let { target.addQueryParameter("packageSha256", it) }
@@ -176,7 +339,7 @@ class GatewayApi {
             put("after", sequence.toString())
             if (epoch != null) put("epoch", epoch)
         }
-        return client.newWebSocket(
+        return openSocket(
             Request.Builder().url(url("api/v2/services/$serviceId/codex", query)).authorized().build(),
             listener,
         )
@@ -274,7 +437,7 @@ class GatewayApi {
             put("after", after.toString())
             serviceId?.let { put("serviceId", it) }
         }
-        return client.newWebSocket(
+        return openSocket(
             Request.Builder()
                 .url(url("api/v1/events/stream", query))
                 .authorized()
@@ -295,7 +458,7 @@ class GatewayApi {
             put("rows", rows.toString())
             cwd?.takeIf(String::isNotBlank)?.let { put("cwd", it) }
         }
-        return client.newWebSocket(
+        return openSocket(
             Request.Builder()
                 .url(url("api/v1/services/$serviceId/terminal", query))
                 .authorized()
@@ -358,12 +521,16 @@ class GatewayApi {
     private fun data(root: JSONObject): Any = root.opt("data") ?: JSONObject.NULL
 
     private fun url(path: String, query: Map<String, String>): HttpUrl {
-        val current = requireNotNull(config) { "Gateway is not configured" }
-        val base = current.baseUrl.ensureTrailingSlash().toHttpUrl()
+        val base = requireEndpoint().ensureTrailingSlash().toHttpUrl()
         val builder = base.newBuilder()
         path.trim('/').split('/').filter(String::isNotBlank).forEach(builder::addPathSegment)
         query.forEach(builder::addQueryParameter)
         return builder.build()
+    }
+
+    private fun requireEndpoint(): String {
+        val current = requireNotNull(config) { "Gateway is not configured" }
+        return activeEndpoint?.takeIf { it in gatewayEndpoints(current) } ?: gatewayEndpoints(current).first()
     }
 
     private fun Request.Builder.authorized(): Request.Builder {

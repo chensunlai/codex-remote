@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
@@ -38,25 +40,33 @@ fun GatewaySetupScreen(
     initial: GatewayConfig?,
     loading: Boolean,
     error: String?,
-    onSave: (String, String) -> Unit,
+    onSave: (String, String, String) -> Unit,
     onClearError: () -> Unit,
+    allowHttp: Boolean,
+    multipleEndpoints: Boolean,
+    onExperiments: (Boolean, Boolean) -> Unit,
 ) {
     Box(
         Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.safeDrawing)
-            .padding(horizontal = 24.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 16.dp),
         contentAlignment = Alignment.Center,
     ) {
-        GatewayForm(
-            initial = initial,
-            loading = loading,
-            error = error,
-            showBrand = true,
-            submitLabel = "连接网关",
-            onSave = onSave,
-            onChange = onClearError,
-        )
+        Column {
+            GatewayForm(
+                initial = initial,
+                loading = loading,
+                error = error,
+                showBrand = true,
+                submitLabel = "连接网关",
+                onSave = onSave,
+                onChange = onClearError,
+                multipleEndpoints = multipleEndpoints,
+            )
+            ExperimentalSettings(allowHttp, multipleEndpoints, !loading, onExperiments)
+        }
     }
 }
 
@@ -67,11 +77,13 @@ fun GatewayForm(
     error: String?,
     showBrand: Boolean,
     submitLabel: String,
-    onSave: (String, String) -> Unit,
+    onSave: (String, String, String) -> Unit,
     onChange: () -> Unit = {},
+    multipleEndpoints: Boolean = false,
 ) {
-    var address by remember(initial) { mutableStateOf(initial?.baseUrl.orEmpty()) }
-    var token by remember(initial) { mutableStateOf(initial?.token.orEmpty()) }
+    var address by remember(initial?.baseUrl) { mutableStateOf(initial?.baseUrl.orEmpty()) }
+    var endpoints by remember(initial?.baseUrl, initial?.endpoints) { mutableStateOf(initial?.endpoints.orEmpty().joinToString("\n")) }
+    var token by remember(initial?.baseUrl, initial?.token) { mutableStateOf(initial?.token.orEmpty()) }
     var revealToken by remember { mutableStateOf(false) }
     Column(
         Modifier.fillMaxWidth().widthIn(max = 520.dp),
@@ -100,6 +112,14 @@ fun GatewayForm(
             enabled = !loading,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
         )
+        if (multipleEndpoints) {
+            CodexTextField(value = endpoints, onValueChange = { endpoints = it; onChange() },
+                label = "优先入口（每行一个，按顺序）", modifier = Modifier.fillMaxWidth(),
+                placeholder = "http://192.168.1.10:6767\nhttps://gateway.example.com",
+                enabled = !loading, singleLine = false)
+            Text("只填写同一 Gateway 的入口，主地址作为最后兜底。内网入口可放第一行；HTTP 需单独开启。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         CodexTextField(
             value = token,
             onValueChange = { token = it; onChange() },
@@ -121,7 +141,7 @@ fun GatewayForm(
             Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         Button(
-            onClick = { onSave(address, token) },
+            onClick = { onSave(address, token, endpoints) },
             enabled = !loading && address.isNotBlank() && token.isNotBlank(),
             modifier = Modifier.height(48.dp).align(Alignment.End),
             shape = MaterialTheme.shapes.small,

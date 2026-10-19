@@ -34,6 +34,68 @@ import kotlin.concurrent.thread
 class OfficialChatReconnectInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun manualGatewayReconnectPreservesTheDocumentAndUnsentDraft() {
+        Fixture().use { fixture ->
+            fixture.start()
+            fixture.evaluate("document.getElementById('draft').value='unsent 图片🙂'")
+            val before = fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])")
+            kotlinx.coroutines.runBlocking { fixture.api.checkConnection(preferPrimary = true, reconnect = true) }
+            val second = fixture.server.nextConnection()
+            second.ready()
+            second.awaitPacket("visibility")
+            assertEquals(before, fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])"))
+            assertEquals(1, fixture.loads.get())
+            assertEquals(0, fixture.server.messages.size)
+        }
+    }
+
+    @Test fun changingExperimentsDuringHandshakeDoesNotLeaveTheIndicatorSpinning() {
+        val gate = CountDownLatch(1)
+        Fixture(handshakeGate = gate).use { fixture ->
+            fixture.api.updatePolicy(GatewayConfig("http://127.0.0.1:${fixture.server.port}", "fixture-token",
+                allowHttp = true, multipleEndpoints = true))
+            gate.countDown()
+            fixture.start()
+            eventually { !fixture.api.link.value.checking }
+            assertNotEquals(null, fixture.api.link.value.latencyMs)
+        }
+    }
+
+    @Test fun manualReconnectCanRestartAStoppedTransport() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            first.oversizedMessage()
+            eventually { fixture.statuses.any { it?.contains("传输已停止") == true } }
+            kotlinx.coroutines.runBlocking { fixture.api.checkConnection(reconnect = true) }
+            val second = fixture.server.nextConnection()
+            second.ready()
+            second.awaitPacket("visibility")
+            second.message(1, "after manual retry")
+            eventually { fixture.evaluate("received[0]") == "\"after manual retry\"" }
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
+    @Test fun switchingGatewayAddressPreservesRendererRecoveryIdentityAndDraft() {
+        Fixture().use { fixture ->
+            fixture.start()
+            fixture.evaluate("document.getElementById('draft').value='keep across endpoints'")
+            val before = fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])")
+            val alternative = "http://localhost:${fixture.server.port}"
+            fixture.api.updatePolicy(GatewayConfig("http://127.0.0.1:${fixture.server.port}", "fixture-token",
+                allowHttp = true, multipleEndpoints = true, endpoints = listOf(alternative)))
+            kotlinx.coroutines.runBlocking { fixture.api.checkConnection(preferPrimary = true) }
+            val second = fixture.server.nextConnection()
+            second.ready()
+            second.awaitPacket("visibility")
+            assertEquals(alternative, fixture.api.link.value.endpoint)
+            assertEquals(before, fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])"))
+            assertEquals(1, fixture.loads.get())
+            assertEquals(0, fixture.server.messages.size)
+            assertEquals(1, fixture.server.requests.map { android.net.Uri.parse(it).getQueryParameter("rendererId") }.distinct().size)
+        }
+    }
+
     @Test fun standardCompressionPreservesFragmentedMessagesInBothDirections() {
         Fixture(compression = true).use { fixture ->
             val first = fixture.start()
@@ -250,18 +312,19 @@ class OfficialChatReconnectInstrumentedTest {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private inner class Fixture(compression: Boolean = false) : Closeable {
-        val server = SocketFixture(compression)
+    private inner class Fixture(compression: Boolean = false, handshakeGate: CountDownLatch? = null) : Closeable {
+        val server = SocketFixture(compression, handshakeGate)
         val document = AtomicReference<String>()
         val loads = AtomicInteger()
         val statuses = CopyOnWriteArrayList<String?>()
         private lateinit var browser: WebView
         private lateinit var session: OfficialChatSession
+        val api = GatewayApi()
 
         init {
             instrumentation.runOnMainSync {
                 val context = instrumentation.targetContext
-                val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.port}", "fixture-token")) }
+                api.configure(GatewayConfig("http://127.0.0.1:${server.port}", "fixture-token", allowHttp = true))
                 val scope = "reconnect-instrumented-${UUID.randomUUID()}"
                 session = OfficialChatSession(context, api, OfficialFrontendStore(context), "service", scope, "client", "/tmp",
                     { statuses += it }, {}, { JSONArray() }, { null }, { _, _ -> null }, { false })
@@ -298,15 +361,16 @@ class OfficialChatReconnectInstrumentedTest {
         }
 
         override fun close() {
-            instrumentation.runOnMainSync { session.close(); browser.destroy() }
+            instrumentation.runOnMainSync { session.close(); api.clear(); browser.destroy() }
             server.close()
         }
     }
 
-    private class SocketFixture(private val compression: Boolean = false) : Closeable {
+    private class SocketFixture(private val compression: Boolean = false, private val handshakeGate: CountDownLatch? = null) : Closeable {
         private val listener = ServerSocket(0)
         val port: Int get() = listener.localPort
         val messages = CopyOnWriteArrayList<JSONObject>()
+        val requests = CopyOnWriteArrayList<String>()
         private val accepted = LinkedBlockingQueue<Connection>()
         private val connections = CopyOnWriteArrayList<Connection>()
         @Volatile private var stopped = false
@@ -345,6 +409,14 @@ class OfficialChatReconnectInstrumentedTest {
                         if (byte < 0) return
                         headers.append(byte.toChar())
                     }
+                    if (headers.startsWith("GET /api/v1/meta ")) {
+                        val body = "{\"data\":{\"version\":\"fixture\"}}".toByteArray()
+                        output.write("HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n".toByteArray() + body)
+                        output.flush()
+                        return
+                    }
+                    check(handshakeGate?.await(5, TimeUnit.SECONDS) != false)
+                    requests += headers.lineSequence().first().split(" ")[1]
                     val key = headers.lines().first { it.startsWith("Sec-WebSocket-Key:", ignoreCase = true) }.substringAfter(':').trim()
                     val accept = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-1")
                         .digest((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray()))

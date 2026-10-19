@@ -130,7 +130,7 @@ class AttachmentsInstrumentedTest {
 
     private class FixtureGateway(private val image: ByteArray) : AutoCloseable {
         private val server = ServerSocket(0)
-        val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture")) }
+        val api = GatewayApi().apply { configure(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture", allowHttp = true)) }
         val requests = CopyOnWriteArrayList<Pair<String, ByteArray>>()
         init {
             thread(isDaemon = true) {

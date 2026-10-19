@@ -1,6 +1,11 @@
 package dev.codexremote.app.ui
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.Column
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
@@ -21,6 +26,34 @@ class GatewayFormInstrumentedTest {
     val compose = createComposeRule()
 
     @Test
+    fun experimentalEntrancesRequireOptInWithoutClearingTheAddressDraft() {
+        val http = mutableStateOf(false)
+        val multiple = mutableStateOf(false)
+        compose.setContent {
+            CodexRemoteTheme {
+                Column {
+                    GatewayForm(null, false, null, false, "连接网关", { _, _, _ -> }, multipleEndpoints = multiple.value)
+                    ExperimentalSettings(http.value, multiple.value) { h, m -> http.value = h; multiple.value = m }
+                }
+            }
+        }
+        compose.onNodeWithContentDescription("网关地址").performTextInput("https://example.com")
+        compose.onNodeWithContentDescription("优先入口（每行一个，按顺序）").assertDoesNotExist()
+        compose.onNodeWithContentDescription("允许 HTTP 网关").assertDoesNotExist()
+        compose.onNodeWithText("实验性功能").performClick()
+        compose.onNodeWithContentDescription("允许 HTTP 网关").assertIsOff().performClick()
+        compose.onNodeWithContentDescription("多个网关入口").assertIsOff().performClick()
+        compose.onNodeWithText("完成").performClick()
+        compose.onNodeWithContentDescription("网关地址").assertTextContains("https://example.com")
+        compose.onNodeWithContentDescription("优先入口（每行一个，按顺序）")
+            .performTextInput("http://192.168.1.1:6767\nhttps://example.com")
+        compose.onNodeWithText("实验性功能").performClick()
+        compose.onNodeWithContentDescription("多个网关入口").performClick()
+        compose.onNodeWithText("完成").performClick()
+        compose.onNodeWithContentDescription("优先入口（每行一个，按顺序）").assertDoesNotExist()
+    }
+
+    @Test
     fun connectionProgressStaysSquareAndLocksOnlyThePendingForm() {
         val loading = mutableStateOf(true)
         compose.setContent {
@@ -31,7 +64,7 @@ class GatewayFormInstrumentedTest {
                     error = null,
                     showBrand = false,
                     submitLabel = "保存并测试",
-                    onSave = { _, _ -> },
+                    onSave = { _, _, _ -> },
                 )
             }
         }

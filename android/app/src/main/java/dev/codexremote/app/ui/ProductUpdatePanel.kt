@@ -32,10 +32,10 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 
 @Composable
-internal fun ProductUpdatePanel(config: GatewayConfig?, service: RemoteService?) {
+internal fun ProductUpdatePanel(config: GatewayConfig?, service: RemoteService?, sharedApi: GatewayApi? = null) {
     val releases = remember { ProductUpdates() }
-    val api = remember(config) { config?.let { GatewayApi().apply { configure(it) } } }
-    DisposableEffect(api, releases) { onDispose { api?.clear(); releases.close() } }
+    val api = remember(config, sharedApi) { sharedApi ?: config?.let { GatewayApi().apply { configure(it) } } }
+    DisposableEffect(api, releases) { onDispose { if (sharedApi == null) api?.clear(); releases.close() } }
     var release by remember { mutableStateOf<ProductRelease?>(null) }
     var currentAgent by remember(config, service?.id, service?.agentVersion) { mutableStateOf(service?.agentVersion) }
     var busy by remember { mutableStateOf(false) }

@@ -43,7 +43,7 @@ class GatewayConnectionInstrumentedTest {
                 }
             }
             val attempt = launch(Dispatchers.Default) {
-                GatewayApi().testConfiguration(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture-token"))
+                GatewayApi().testConfiguration(GatewayConfig("http://127.0.0.1:${server.localPort}", "fixture-token", allowHttp = true))
             }
             try {
                 withTimeout(5_000) { requestReceived.await() }

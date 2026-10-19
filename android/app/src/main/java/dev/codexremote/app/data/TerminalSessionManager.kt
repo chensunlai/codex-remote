@@ -2,6 +2,13 @@ package dev.codexremote.app.data
 
 import android.os.Handler
 import android.os.Looper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.CancellationException
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -43,6 +50,8 @@ internal class TerminalSession(
     initialCwd: String?,
 ) {
     private val main = Handler(Looper.getMainLooper())
+    private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var connectionJob: Job? = null
     private val output = TerminalOutputBuffer(MAX_BUFFER_CHARS)
     private var cwd = initialCwd
     private var observer: TerminalSessionObserver? = null
@@ -92,6 +101,7 @@ internal class TerminalSession(
     fun reconnect() = onMain {
         if (closed || !started) return@onMain
         generation += 1
+        connectionJob?.cancel()
         reconnectTask?.let(main::removeCallbacks)
         reconnectTask = null
         webSocket?.close(1000, "Terminal reconnect requested")
@@ -109,6 +119,7 @@ internal class TerminalSession(
     fun close() = onMain {
         if (closed) return@onMain
         closed = true
+        jobs.cancel()
         generation += 1
         reconnectTask?.let(main::removeCallbacks)
         reconnectTask = null
@@ -118,55 +129,58 @@ internal class TerminalSession(
     }
 
     private fun connect() {
-        if (closed || !started || exited) return
+        if (closed || !started || exited || connectionJob?.isActive == true) return
         reconnectTask?.let(main::removeCallbacks)
         reconnectTask = null
         generation += 1
         val activeGeneration = generation
         updateStatus("正在连接终端", false)
-        webSocket = runCatching {
-            api.terminal(serviceId, cols, rows, cwd, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    postIfCurrent(activeGeneration) {
-                        updateStatus("正在等待 Agent", false)
-                    }
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    val message = runCatching { JSONObject(text) }.getOrNull() ?: return
-                    postIfCurrent(activeGeneration) {
-                        when (message.optString("type")) {
-                            "ready" -> updateStatus("", false)
-                            "data" -> appendOutput(message.optString("data"))
-                            "exit" -> {
-                                exited = true
-                                updateStatus("终端已退出 (${message.optInt("exitCode")})", false)
-                            }
-                            "error" -> updateStatus(
-                                message.optString("message", "终端连接失败"),
-                                true,
-                            )
+        connectionJob?.cancel()
+        connectionJob = jobs.launch {
+            try {
+                if (!api.prepareSocketConnection()) return@launch
+                if (closed || activeGeneration != generation) return@launch
+                webSocket = api.terminal(serviceId, cols, rows, cwd, object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        postIfCurrent(activeGeneration) {
+                            updateStatus("正在等待 Agent", false)
                         }
                     }
-                }
 
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    postIfCurrent(activeGeneration) {
-                        this@TerminalSession.webSocket = null
-                        if (!exited) scheduleReconnect("终端连接已断开")
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val message = runCatching { JSONObject(text) }.getOrNull() ?: return
+                        postIfCurrent(activeGeneration) {
+                            when (message.optString("type")) {
+                                "ready" -> updateStatus("", false)
+                                "data" -> appendOutput(message.optString("data"))
+                                "exit" -> {
+                                    exited = true
+                                    updateStatus("终端已退出 (${message.optInt("exitCode")})", false)
+                                }
+                                "error" -> updateStatus(
+                                    message.optString("message", "终端连接失败"),
+                                    true,
+                                )
+                            }
+                        }
                     }
-                }
 
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    postIfCurrent(activeGeneration) {
-                        this@TerminalSession.webSocket = null
-                        scheduleReconnect(t.message ?: "终端连接失败")
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        postIfCurrent(activeGeneration) {
+                            this@TerminalSession.webSocket = null
+                            if (!exited) scheduleReconnect("终端连接已断开")
+                        }
                     }
-                }
-            })
-        }.getOrElse { error ->
-            scheduleReconnect(error.message ?: "终端连接失败")
-            null
+
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        postIfCurrent(activeGeneration) {
+                            this@TerminalSession.webSocket = null
+                            scheduleReconnect(t.message ?: "终端连接失败")
+                        }
+                    }
+                })
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { scheduleReconnect(error.message ?: "终端连接失败") }
         }
     }
 

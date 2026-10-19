@@ -35,7 +35,7 @@ Gateway 和 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，�
 
 - **Gateway / Agent**：glibc Linux，支持 x86_64 和 arm64。
 - **Agent**：运行用户已安装并登录 Codex CLI，能够执行 `codex`。安装包自带 Node.js 和扩展宿主，无需另装 Node.js。
-- **App**：Android 8.0 及以上，系统 WebView 可用；Release APK 使用 Gateway 的 **HTTPS 地址**。
+- **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**；可信内网的 HTTP 和同一网关的多个入口可在[实验性功能](docs/usage.md#网关连接状态与实验性入口)中开启。
 
 ### 1. Gateway
 
