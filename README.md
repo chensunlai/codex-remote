@@ -1,10 +1,32 @@
-# Codex Remote
+<p align="center">
+  <img src="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png" alt="Codex Remote 应用图标" width="112" height="112">
+</p>
+
+<h1 align="center">Codex Remote</h1>
 
 把官方 Codex VS Code 插件带到 Android。**直接复用官方聊天界面和 `extension.js`，不重写会话、模型选择、审批或多端协调逻辑。**
 
 我们负责手机宿主、连接和传输，聊天行为由官方插件与 Codex App Server 处理。前端和扩展来自同一份官方插件包，文件保持原样，可独立更新；无需为每次界面变化重新实现一套聊天客户端。
 
-[下载 Android APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk) · [版本发布](https://github.com/chensunlai/codex-remote/releases) · [使用与维护](docs/usage.md) · [开发与构建](docs/development.md)
+<p align="center">
+  <a href="https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk"><strong>下载 Android APK</strong></a> ·
+  <a href="https://github.com/chensunlai/codex-remote/releases">版本发布</a> ·
+  <a href="docs/usage.md">使用与维护</a> ·
+  <a href="docs/development.md">开发与构建</a>
+</p>
+
+<table>
+  <tr>
+    <td align="center" width="33%"><a href="docs/assets/screenshots/home-anthropic.jpg"><img src="docs/assets/screenshots/home-anthropic.jpg" alt="Anthropic 主题下的聊天首页" width="260"></a></td>
+    <td align="center" width="33%"><a href="docs/assets/screenshots/chat-dark.jpg"><img src="docs/assets/screenshots/chat-dark.jpg" alt="深色主题下的聊天界面" width="260"></a></td>
+    <td align="center" width="33%"><a href="docs/assets/screenshots/files-light.jpg"><img src="docs/assets/screenshots/files-light.jpg" alt="浅色主题下的文件浏览界面" width="260"></a></td>
+  </tr>
+  <tr>
+    <td align="center">聊天首页 · Anthropic</td>
+    <td align="center">对话 · 深色</td>
+    <td align="center">文件浏览 · 浅色</td>
+  </tr>
+</table>
 
 ## 架构
 
