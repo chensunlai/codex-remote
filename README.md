@@ -23,16 +23,7 @@
 
 ## 架构
 
-```text
-Android App
-  官方 WebView + 原生手机能力
-          ↕ HTTPS / WSS
-Gateway
-  认证、服务发现、资源与消息转发
-          ↕ WSS（Agent 主动连接）
-Agent
-  Node.js 宿主 → 官方 extension.js → Codex App Server
-```
+![Codex Remote 架构：Android App 经 Gateway 连接运行官方扩展与 Codex App Server 的 Agent](docs/assets/diagrams/architecture.svg)
 
 | 组件 | 部署位置与职责 |
 | --- | --- |
@@ -50,7 +41,7 @@ Gateway 和 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，�
 
 - **Gateway / Agent**：glibc Linux，支持 x86_64 和 arm64。
 - **Agent**：运行用户已安装并登录 Codex CLI，能够执行 `codex`。安装包自带 Node.js 和扩展宿主，无需另装 Node.js。
-- **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**；可信内网的 HTTP 和同一网关的多个入口可在[实验性功能](docs/usage.md#网关连接状态与实验性入口)中开启。
+- **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**。
 
 ### 1. Gateway
 
@@ -124,3 +115,12 @@ tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
 > **安装到其他目录或升级旧安装：** 安装命令添加 `--install-dir /原安装目录`，配置和数据会保留；Agent 更新后需自行重启。手动部署 Agent 时，二进制和 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
 
 使用 Sakura FRP 部署内外网访问，可参考 [Codex Remote 部署 Skill](skills/codex-remote-sakurafrp/SKILL.md)，包含隧道、HTTPS、systemd 与 App 多入口配置。
+
+## 实验性功能
+
+在 **App 设置 → 网关连接 → 实验性功能** 中按需开启，默认关闭：
+
+- **允许 HTTP 网关**：适合手机通过可信局域网 IP 直连 Gateway，无需为内网地址配置 HTTPS。HTTP 会明文传输令牌和会话，仅用于可信网络。
+- **多个网关入口**：适合 Gateway 部署在内网、同时通过穿透或域名提供公网访问的场景。将内网地址排在前面、公网地址作为兜底，可减少延迟和穿透流量；连接、网络变化或重连时按顺序选择，稳定连接不主动切换。内网地址使用 HTTP 时，还需开启上面的选项。
+
+具体配置见[网关连接状态与实验性入口](docs/usage.md#网关连接状态与实验性入口)。
