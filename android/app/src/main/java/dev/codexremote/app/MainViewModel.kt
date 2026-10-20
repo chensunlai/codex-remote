@@ -46,7 +46,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val api get() = gatewayApi
     internal val officialFrontends = OfficialFrontendStore(application)
     private val terminalSessions = TerminalSessionManager(api)
-    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints))
+    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints))
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var activeOperations = 0
     private var configurationGeneration = 0
@@ -155,7 +155,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 resetOperations()
                 terminalSessions.closeAll()
                 api.configure(config, selection.endpoint, selection.latencyMs)
-                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, theme = it.theme, allowHttp = it.allowHttp, multipleEndpoints = it.multipleEndpoints) }
+                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, maxChatPages = it.maxChatPages, theme = it.theme, allowHttp = it.allowHttp, multipleEndpoints = it.multipleEndpoints) }
                 applyMeta(selection.metadata)
                 launchOperation("正在刷新服务") { loadServicesAndSelect() }
             } catch (error: CancellationException) {
@@ -175,7 +175,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalSessions.closeAll()
         api.clear()
         secretStore.clear()
-        _state.value = AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
+        _state.value = AppState(fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
     }
 
     fun setSection(section: MainSection) {
@@ -186,6 +186,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun clearError() { _state.update { it.copy(error = null) } }
     fun updateFontScale(value: Float) { _state.update { it.copy(fontScale = uiPreferences.setFontScale(value)) } }
+    fun setMaxChatPages(value: Int) { _state.update { it.copy(maxChatPages = uiPreferences.setMaxChatPages(value)) } }
     fun setTheme(value: AppTheme) {
         uiPreferences.setTheme(value)
         _state.update { it.copy(theme = value) }

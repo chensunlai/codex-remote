@@ -4,6 +4,8 @@ package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import dev.codexremote.app.data.restartChatBackend
+import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.data.isRemoteAbsolutePath
 import dev.codexremote.app.data.joinRemotePath
 import dev.codexremote.app.data.remotePathBreadcrumbs
@@ -134,6 +136,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     var menu by remember(scopeKey) { mutableStateOf(false) }
     var mouseMode by remember(scopeKey) { mutableStateOf(false) }
     var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
+    var restartConfirmation by remember(scopeKey) { mutableStateOf(false) }
+    var restarting by remember(scopeKey) { mutableStateOf(false) }
     var workspace by remember(scopeKey) { mutableStateOf(store.workspace(scopeKey, service.home ?: "/")) }
     var chooseWorkspace by remember(scopeKey) { mutableStateOf(false) }
     var panelBack by remember(scopeKey) { mutableStateOf<(() -> Unit)?>(null) }
@@ -200,10 +204,13 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     }
 
     Scaffold(topBar = {
-        CodexTopBar(title = { Text(service.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-            navigationIcon = { IconButton(onClick = { panelBack?.invoke() ?: viewModel.setSection(MainSection.SERVICES) }) {
-                AppIcon(CodexIcons.ArrowBack, contentDescription = if (panelBack != null) "返回对话" else "切换服务器")
-            } }, actions = {
+        CodexTopBar(title = {
+            ServiceSelector(state.services, service.id, viewModel::selectService, compact = true, enabled = visible)
+        }, navigationIcon = {
+            if (panelBack != null) IconButton(onClick = { panelBack?.invoke() }) {
+                AppIcon(CodexIcons.ArrowBack, contentDescription = "返回对话")
+            }
+        }, actions = {
                 TextButton(onClick = viewModel::reconnectGateway, enabled = !link.checking,
                     modifier = Modifier.widthIn(min = 48.dp).semantics {
                         contentDescription = "网关连接：${link.endpoint.orEmpty()}，${if (link.checking) "连接中" else link.latencyMs?.let { "${it}毫秒，点击重连" } ?: "检测失败，点击重连"}"
@@ -231,6 +238,9 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                             onClick = { menu = false; update() })
                         DropdownMenuItem(text = { Text("重新加载前端") }, enabled = installedVersion != null && !busy,
                             onClick = { menu = false; rendererGeneration += 1; status = "正在重新加载官方前端" })
+                        DropdownMenuItem(text = { Text("重启 Codex 和扩展后端") },
+                            enabled = !busy && service.runtimeState == RuntimeState.CONNECTED,
+                            onClick = { menu = false; restartConfirmation = true })
                         DropdownMenuItem(text = { Text("App 设置") }, leadingIcon = { AppIcon(CodexIcons.Settings, null) },
                             onClick = { menu = false; viewModel.setSection(MainSection.SETTINGS) })
                     }
@@ -240,13 +250,14 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
         Column(Modifier.fillMaxSize().padding(padding)) {
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
             status?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) }
-            if (busy) FrontendDownloadPane(extension?.optJSONObject("progress"))
+            if (restarting) LinearProgressIndicator(Modifier.fillMaxWidth())
+            else if (busy) FrontendDownloadPane(extension?.optJSONObject("progress"))
             if (installedVersion != null) {
                 key(scopeKey, installedVersion, workspace, rendererGeneration) {
                     OfficialWebView(scopeKey, store.clientId(scopeKey), service.id, service.home ?: "/", workspace,
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
-                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation, Modifier.weight(1f))
+                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation, Modifier.weight(1f))
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
@@ -257,6 +268,28 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     if (visible && chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
         onSelect = { path -> store.setWorkspace(scopeKey, path); workspace = path; chooseWorkspace = false },
         onDismiss = { chooseWorkspace = false })
+    if (visible && restartConfirmation) CodexDialog(
+        onDismissRequest = { restartConfirmation = false }, title = { Text("重启 ${service.name} 的后端？") },
+        text = { Text("将重启该服务器由 Agent 管理的 Codex 和 extension.js，并重新连接工作页。正在运行的任务可能中断，未确认的操作不会自动重发；Codex 已退出时也可用此操作恢复。") },
+        confirmButton = { TextButton(onClick = {
+            restartConfirmation = false
+            requestInProgress = true
+            restarting = true
+            error = null
+            status = "正在重启 Codex 和扩展后端"
+            jobs.launch {
+                try {
+                    viewModel.gatewayApi.restartChatBackend(service.id)
+                    extension = viewModel.gatewayApi.extensionStatus(service.id)
+                    rendererGeneration += 1
+                    status = "后端已重启，正在重新连接"
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) { error = failure.message; status = null }
+                finally { requestInProgress = false; restarting = false }
+            }
+        }) { Text("重启并连接") } },
+        dismissButton = { TextButton(onClick = { restartConfirmation = false }) { Text("取消") } },
+    )
     if (visible && applyConfirmation && stagedVersion != null) CodexDialog(
         onDismissRequest = { applyConfirmation = false }, title = { Text("应用官方前端更新？") },
         text = { Text("版本 $stagedVersion 已准备好。应用更新将重新启动服务器上的扩展宿主，现有连接和正在进行的任务可能中断。") },

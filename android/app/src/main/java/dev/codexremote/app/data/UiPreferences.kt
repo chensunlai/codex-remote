@@ -10,6 +10,14 @@ class UiPreferences(context: Context) {
 
     val allowHttp: Boolean get() = preferences.getBoolean("allow_http", false)
     val multipleEndpoints: Boolean get() = preferences.getBoolean("multiple_endpoints", false)
+    val maxChatPages: Int get() = preferences.getInt("max_chat_pages", DEFAULT_MAX_CHAT_PAGES)
+        .coerceIn(MIN_CHAT_PAGES, MAX_CHAT_PAGES)
+
+    fun setMaxChatPages(value: Int): Int {
+        val normalized = value.coerceIn(MIN_CHAT_PAGES, MAX_CHAT_PAGES)
+        preferences.edit { putInt("max_chat_pages", normalized) }
+        return normalized
+    }
 
     fun setExperiments(http: Boolean, multiple: Boolean) {
         preferences.edit { putBoolean("allow_http", http); putBoolean("multiple_endpoints", multiple) }
@@ -37,6 +45,9 @@ class UiPreferences(context: Context) {
             .coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
 
     companion object {
+        const val DEFAULT_MAX_CHAT_PAGES = 3
+        const val MIN_CHAT_PAGES = 1
+        const val MAX_CHAT_PAGES = 10
         const val DEFAULT_FONT_SCALE = 1f
         const val MIN_FONT_SCALE = 0.85f
         const val MAX_FONT_SCALE = 1.30f

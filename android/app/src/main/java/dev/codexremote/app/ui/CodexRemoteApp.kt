@@ -185,6 +185,7 @@ private fun MainContent(
             availableIds = state.services.map { it.id }.toSet(),
             selectedId = state.selectedServiceId,
             visible = chatVisible,
+            maxPages = state.maxChatPages,
         ) { serviceId, active ->
             OfficialChatScreen(state.copy(selectedServiceId = serviceId), viewModel, visible = active && foreground)
         }

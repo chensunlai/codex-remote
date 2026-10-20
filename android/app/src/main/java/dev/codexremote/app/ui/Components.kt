@@ -25,6 +25,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,14 +68,17 @@ fun ServiceSelector(
     selectedId: String?,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
+    enabled: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    LaunchedEffect(enabled) { if (!enabled) expanded = false }
     val selected = services.firstOrNull { it.id == selectedId }
     Box(modifier) {
         androidx.compose.material3.TextButton(
             onClick = { expanded = true },
-            enabled = services.isNotEmpty(),
-            modifier = Modifier.widthIn(min = 160.dp, max = 280.dp),
+            enabled = enabled && services.isNotEmpty(),
+            modifier = Modifier.widthIn(min = if (compact) 0.dp else 160.dp, max = 280.dp),
             colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
             shape = MaterialTheme.shapes.medium,
         ) {
@@ -83,10 +87,11 @@ fun ServiceSelector(
                 selected?.name ?: "选择服务",
                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
                 maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )
             AppIcon(CodexIcons.ChevronDown, contentDescription = null)
         }
-        CodexDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        CodexDropdownMenu(expanded = enabled && expanded, onDismissRequest = { expanded = false }) {
             services.forEach { service ->
                 DropdownMenuItem(
                     text = {

@@ -12,6 +12,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import dev.codexremote.app.data.UiPreferences
+
+internal fun retainedServerPageIds(
+    retained: List<String>, availableIds: Set<String>, selectedId: String?, visible: Boolean, maxPages: Int,
+): List<String> {
+    val selected = selectedId?.takeIf { it in availableIds }
+    val valid = retained.filter { it in availableIds }
+    val ordered = if (selected != null && (visible || selected in valid)) valid - selected + selected else valid
+    return ordered.takeLast(maxPages.coerceIn(UiPreferences.MIN_CHAT_PAGES, UiPreferences.MAX_CHAT_PAGES))
+}
 
 /** Activity-owned pages: sockets and WebViews live until eviction, logout or Activity disposal. */
 @Composable
@@ -21,12 +31,12 @@ internal fun RetainedServerPanes(
     availableIds: Set<String>,
     selectedId: String?,
     visible: Boolean,
+    maxPages: Int = UiPreferences.DEFAULT_MAX_CHAT_PAGES,
     content: @Composable (String, Boolean) -> Unit,
 ) {
     var retained by remember(identity) { mutableStateOf(emptyList<String>()) }
     val selected = selectedId?.takeIf { identity != null && it in availableIds }
-    val valid = retained.filter { it in availableIds }
-    val pages = if (visible && selected != null) (valid - selected + selected).takeLast(3) else valid
+    val pages = retainedServerPageIds(retained, availableIds, selected, visible, maxPages)
     SideEffect { if (retained != pages) retained = pages }
 
     val currentSelection by rememberUpdatedState(selected)

@@ -43,6 +43,7 @@ class RetainedServerPanesInstrumentedTest {
     private val foreground = mutableStateOf(true)
     private val identity = mutableStateOf("gateway")
     private val mounted = mutableStateOf(true)
+    private val maxPages = mutableStateOf(3)
     private val browsers = ConcurrentHashMap<String, WebView>()
     private val loads = ConcurrentHashMap<String, AtomicInteger>()
     private val disposals = ConcurrentHashMap<String, AtomicInteger>()
@@ -51,7 +52,7 @@ class RetainedServerPanesInstrumentedTest {
     private fun mount(api: GatewayApi) {
         compose.setContent {
             Box(Modifier.fillMaxSize()) {
-                if (mounted.value) RetainedServerPanes(identity.value, available.value, selected.value, visible.value) { id, active ->
+                if (mounted.value) RetainedServerPanes(identity.value, available.value, selected.value, visible.value, maxPages.value) { id, active ->
                     val context = LocalContext.current
                     val ownedBrowser = remember { AtomicReference<WebView>() }
                     val session = remember {
@@ -184,6 +185,29 @@ class RetainedServerPanesInstrumentedTest {
         replacement.ready()
         compose.waitUntil(15_000) { loads.getValue("b").get() == 3 }
         assertEquals(2, disposals.getValue("b").get())
+        assertTrue(server.messages.isEmpty())
+    }
+
+    @Test fun changingLimitEvictsHiddenPagesButKeepsTheSelectedDraftAndConnection() = fixture { server, api ->
+        maxPages.value = 4
+        mount(api)
+        val a = connect(server, "a")
+        val b = connect(server, "b")
+        val c = connect(server, "c")
+        val d = connect(server, "d")
+        change { selected.value = "b" }
+        b.awaitVisibility(true)
+        evaluate("b", "document.getElementById('draft').value='保留这份草稿🙂'")
+        val original = evaluate("b", "JSON.stringify([identity,document.getElementById('draft').value])")
+        change { visible.value = false; maxPages.value = 1 }
+        compose.waitForIdle()
+        assertEquals(setOf("b"), browsers.keys.toSet())
+        listOf(a, c, d).forEach { assertTrue(it.closeReceived.await(5, TimeUnit.SECONDS)) }
+        change { maxPages.value = 4; visible.value = true }
+        b.awaitVisibility(true)
+        assertEquals(original, evaluate("b", "JSON.stringify([identity,document.getElementById('draft').value])"))
+        assertEquals(1, loads.getValue("b").get())
+        assertNull(server.pollConnection(300))
         assertTrue(server.messages.isEmpty())
     }
 }

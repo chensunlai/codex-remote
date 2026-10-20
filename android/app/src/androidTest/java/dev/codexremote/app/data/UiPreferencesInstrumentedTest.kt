@@ -13,6 +13,16 @@ import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class UiPreferencesInstrumentedTest {
+    @Test fun persistsAndBoundsChatPageLimit() {
+        val context = isolatedContext()
+        val preferences = UiPreferences(context)
+        assertEquals(3, preferences.maxChatPages)
+        assertEquals(8, preferences.setMaxChatPages(8))
+        assertEquals(8, UiPreferences(context).maxChatPages)
+        assertEquals(1, preferences.setMaxChatPages(0))
+        assertEquals(10, preferences.setMaxChatPages(100))
+    }
+
     @Test
     fun persistsAndNormalizesFontScale() {
         val context = isolatedContext()

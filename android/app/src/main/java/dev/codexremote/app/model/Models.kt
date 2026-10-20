@@ -54,6 +54,7 @@ data class AppState(
     val configured: Boolean = false,
     val gatewayConfig: GatewayConfig? = null,
     val fontScale: Float = 1f,
+    val maxChatPages: Int = 3,
     val theme: AppTheme = AppTheme.DARK,
     val section: MainSection = MainSection.SESSIONS,
     val connecting: Boolean = false,

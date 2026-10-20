@@ -105,6 +105,27 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                     Text("应用于界面、对话和终端", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                CodexSettingsGroup("工作页") {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("保留的服务器页面数", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { viewModel.setMaxChatPages(state.maxChatPages - 1) },
+                                    enabled = state.maxChatPages > UiPreferences.MIN_CHAT_PAGES) {
+                                    AppIcon(CodexIcons.Minus, "减少保留页面")
+                                }
+                                Text("${state.maxChatPages}", style = MaterialTheme.typography.bodyMedium)
+                                IconButton(onClick = { viewModel.setMaxChatPages(state.maxChatPages + 1) },
+                                    enabled = state.maxChatPages < UiPreferences.MAX_CHAT_PAGES) {
+                                    AppIcon(CodexIcons.Add, "增加保留页面")
+                                }
+                            }
+                        }
+                    }
+                    Text("在保留范围内切换服务器无需重新加载。数量越大，内存占用越多；超过上限或内存不足时释放未使用的页面，远端任务继续运行。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
                 GatewayAdministration(state, viewModel.gatewayApi, viewModel::refreshGatewayMetadata)
                 key(state.gatewayConfig, state.selectedServiceId) {
                     CodexSettingsGroup("应用与 Agent 更新") {

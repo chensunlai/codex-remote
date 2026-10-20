@@ -67,6 +67,26 @@ async function until(check: () => boolean | Promise<boolean>) {
 }
 
 describe("official extension process lifecycle", () => {
+  it("can restart the extension and launch Codex again after its app-server was killed", async () => {
+    const f = await fixture();
+    await f.send("task", encode("task"));
+    await until(() => f.service.runtimeStatus().length > 0);
+    const oldPid = Number(f.service.runtimeStatus()[0]!.channelId.split(":").at(-1));
+    await until(async () => readFile(join(f.root, "starts"), "utf8").then(value => value === "start\n", () => false));
+    process.kill(oldPid, "SIGKILL");
+    await until(() => f.service.runtimeStatus().length === 0);
+    await f.service.restart();
+    expect((await f.service.status()).hosts).toBe(0);
+    const attach = { ...f.attach, rendererId: "renderer-after-restart" };
+    const restored = await f.service.request("extension.view.attach", attach) as { epoch: string };
+    expect(restored.epoch).not.toBe(f.snapshot.epoch);
+    await f.service.request("extension.view.send", { ...attach, epoch: restored.epoch, messageId: "new-task", payload: encode("task") });
+    await until(() => f.service.runtimeStatus().length > 0);
+    expect(Number(f.service.runtimeStatus()[0]!.channelId.split(":").at(-1))).not.toBe(oldPid);
+    await until(async () => readFile(join(f.root, "starts"), "utf8").then(value => value === "start\nstart\n", () => false));
+    await f.service.restart();
+  });
+
   it("keeps the child host alive after an asynchronous file watcher permission error", async () => {
     const f = await fixture();
     await f.send("watcher", encode("watcher-error"));
