@@ -52,6 +52,7 @@ export class AgentService {
   }
 
   async request(method: string, rawParams: unknown): Promise<unknown> {
+    this.assertSupported(method);
     const params = record(rawParams);
     if (method.startsWith("extension.")) return this.extensions.request(method, params);
     switch (method) {
@@ -66,7 +67,7 @@ export class AgentService {
             "codex-raw-channels",
             "codex-runtime-control",
             "official-extension-host-v1",
-            "terminal",
+            ...(process.platform === "win32" ? [] : ["terminal"]),
             "files",
             "stream-transfer",
           ],
@@ -154,6 +155,7 @@ export class AgentService {
   }
 
   async notification(method: string, rawParams: unknown): Promise<void> {
+    this.assertSupported(method);
     const params = record(rawParams);
     switch (method) {
       case "terminal.write":
@@ -195,6 +197,10 @@ export class AgentService {
 
   private emit(event: string, payload: unknown): Promise<void> {
     return this.transport?.event(event, payload) ?? Promise.resolve();
+  }
+
+  private assertSupported(method: string): void {
+    if (process.platform === "win32" && method.startsWith("terminal.")) throw new Error("Windows Agent 暂不支持终端");
   }
 }
 

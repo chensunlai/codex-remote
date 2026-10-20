@@ -9,6 +9,7 @@ import type { AgentDisconnectedEvent, ExtensionViewEvent } from "./agent-registr
 import { AppError, errorMessage } from "./errors.js";
 import { ChunkedTransport } from "../../transport/websocket.cjs";
 import type { GatewaySettingsStore } from "./gateway-settings.js";
+import { isRemoteAbsolutePath } from "./remote-path.js";
 
 const LEGACY_BUFFER_BYTES = 16 * 1024 * 1024;
 // Resource downloads retain their existing, separate limit (including base64 headroom).
@@ -18,7 +19,7 @@ const serviceParams = z.object({ serviceId: z.string().uuid() });
 const viewQuery = z.object({
   clientId: z.string().uuid(),
   rendererId: z.string().uuid(),
-  workspace: z.string().min(1).max(4096).refine((value) => value.startsWith("/") && !value.includes("\0")),
+  workspace: z.string().min(1).max(4096).refine(isRemoteAbsolutePath),
   after: z.coerce.number().int().nonnegative().safe().default(0),
   epoch: z.string().min(1).max(255).optional(),
 });

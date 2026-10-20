@@ -32,7 +32,7 @@ process.on('message', async message => {
         child.once('spawn', () => {
           if (child.spawnargs?.includes('app-server')) {
             emit({ type: 'process-start', pid: child.pid, version: null });
-            execFile(message.options.cliExecutable, ['--version'], { timeout: 10_000 }, (error, stdout) => {
+            execFile(message.options.cliExecutable, ['--version'], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
               if (children.has(child) && child.exitCode === null && child.signalCode === null)
                 emit({ type: 'process-start', pid: child.pid, version: error ? null : String(stdout).trim().replace(/^codex(?:-cli)?\s+/, '') });
             });

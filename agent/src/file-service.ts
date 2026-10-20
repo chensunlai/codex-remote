@@ -13,7 +13,8 @@ import {
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, join } from "node:path";
+import { isNativeAbsolutePath } from "./native-path.js";
 import type { Readable } from "node:stream";
 
 interface UploadEntry {
@@ -137,5 +138,5 @@ export class FileService {
 }
 
 function assertAbsolute(path: string): void {
-  if (!isAbsolute(path)) throw new Error("远端路径必须是绝对路径");
+  if (!isNativeAbsolutePath(path)) throw new Error("远端路径必须是绝对路径");
 }

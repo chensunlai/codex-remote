@@ -46,15 +46,17 @@ export class ServiceStore {
       (candidate) => candidate.ownerId === ownerId && candidate.id === id,
     );
     const current = index >= 0 ? this.records![index] : undefined;
+    const metadata = description ?? current;
     const record: ServiceRecord = {
       id,
       ownerId,
       name,
-      ...(description?.hostname ? { hostname: description.hostname } : {}),
-      ...(description?.platform ? { platform: description.platform } : {}),
-      ...(description?.arch ? { arch: description.arch } : {}),
-      ...(description?.agentVersion ? { agentVersion: description.agentVersion } : {}),
-      ...(description?.home ? { home: description.home } : {}),
+      ...(metadata?.hostname ? { hostname: metadata.hostname } : {}),
+      ...(metadata?.platform ? { platform: metadata.platform } : {}),
+      ...(metadata?.arch ? { arch: metadata.arch } : {}),
+      ...(metadata?.agentVersion ? { agentVersion: metadata.agentVersion } : {}),
+      ...(metadata?.home ? { home: metadata.home } : {}),
+      ...(metadata?.capabilities ? { capabilities: [...metadata.capabilities] } : {}),
       createdAt: current?.createdAt ?? now,
       lastConnectedAt: now,
     };

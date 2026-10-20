@@ -373,7 +373,7 @@ class CodexChannel {
     const version = await readCodexVersion(this.executable);
     if (this.epoch !== startingEpoch) throw new Error("Codex 启动已取消");
     const child = spawn(this.executable, ["app-server", "--stdio"], {
-      stdio: ["pipe", "pipe", "pipe"], env: process.env,
+      stdio: ["pipe", "pipe", "pipe"], env: process.env, windowsHide: true,
     });
     this.child = child;
     let buffer = Buffer.alloc(0);
@@ -590,7 +590,7 @@ export function parseCodexVersion(output: string): string | null {
 
 export function commandOutput(executable: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout: 10_000, maxBuffer: 1024 * 1024, encoding: "utf8", env: process.env },
+    execFile(executable, args, { timeout: 10_000, maxBuffer: 1024 * 1024, encoding: "utf8", env: process.env, windowsHide: true },
       (error, stdout) => error ? reject(error) : resolve(stdout));
   });
 }

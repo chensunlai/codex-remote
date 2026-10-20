@@ -21,6 +21,7 @@ import { registerExtensionHostRoutes } from "./extension-host-routes.js";
 import { configureBunWebSocketServer } from "../../transport/bun-server.cjs";
 import { ChunkedTransport } from "../../transport/websocket.cjs";
 import { MAX_WEBSOCKET_BYTES } from "./websocket-limits.js";
+import { isRemoteAbsolutePath } from "./remote-path.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -42,7 +43,7 @@ export interface BuiltGateway {
 }
 
 const serviceParams = z.object({ serviceId: z.string().uuid() });
-const filePath = z.string().min(1).max(4096).refine((value) => value.startsWith("/"), {
+const filePath = z.string().min(1).max(4096).refine(isRemoteAbsolutePath, {
   message: "远端路径必须是绝对路径",
 });
 
@@ -358,21 +359,24 @@ function registerTerminalRoute(app: FastifyInstance, services: GatewayServices):
     };
     services.agents.on("terminal", listener);
 
-    void services.agents
-      .request<{ terminalId: string }>(
+    void services.agents.supportsTerminal(request.ownerId, serviceId).then((supported) => {
+      if (!supported) throw new AppError(409, "TERMINAL_UNSUPPORTED", "该服务器不支持远程终端");
+      return services.agents.request<{ terminalId: string }>(
         request.ownerId,
         serviceId,
         "terminal.open",
         query,
         15_000,
-      )
+      );
+    })
       .then((result) => {
         terminalId = result.terminalId;
         if (socket.readyState === socket.OPEN) {
           socket.send(JSON.stringify({ type: "ready", terminalId }));
         }
       })
-      .catch((error: unknown) => socket.close(1011, errorMessage(error).slice(0, 120)));
+      .catch((error: unknown) => socket.close(error instanceof AppError && error.code === "TERMINAL_UNSUPPORTED" ? 1008 : 1011,
+        errorMessage(error).slice(0, 120)));
 
     socket.on("message", (raw, binary) => {
       if (binary || !terminalId) return;

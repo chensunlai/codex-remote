@@ -128,6 +128,29 @@ describe("Gateway Agent relay", () => {
     expect((await api("/api/v1/meta", created.token)).status).toBe(401);
   });
 
+  it("relays Windows paths unchanged and rejects its terminal before opening one", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A, "win32");
+    await eventually(async () => {
+      const body = await (await api("/api/v1/services", TOKEN_A)).json() as { data: Array<{ platform?: string; capabilities?: string[] }> };
+      return body.data[0]?.platform === "win32" && body.data[0]?.capabilities?.includes("files") === true;
+    });
+    for (const path of ["C:\\Users\\test\\项目 a", "D:/Projects/file.txt", "\\\\server\\share\\目录"]) {
+      const response = await api(`/api/v1/services/${SERVICE_ID}/fs/list?path=${encodeURIComponent(path)}`, TOKEN_A);
+      expect(response.status).toBe(200);
+      expect(agent.listPaths.at(-1)).toBe(path);
+    }
+    for (const path of ["C:relative", "\\relative", "relative", "C:\\bad\0name"]) {
+      expect((await api(`/api/v1/services/${SERVICE_ID}/fs/list?path=${encodeURIComponent(path)}`, TOKEN_A)).status).toBe(400);
+    }
+    const terminal = new WebSocket(`${baseUrl.replace("http:", "ws:")}/api/v1/services/${SERVICE_ID}/terminal`, {
+      headers: { Authorization: `Bearer ${TOKEN_A}` },
+    });
+    const closed = new Promise<number>((resolve) => terminal.once("close", resolve));
+    await onceOpen(terminal);
+    expect(await closed).toBe(1008);
+    expect(agent.terminalOpens).toBe(0);
+  });
+
   it("tests Agent connectivity without starting Codex and removes an offline service", async () => {
     agent = await MockAgent.connect(baseUrl, TOKEN_A);
     const checked = await api(`/api/v1/services/${SERVICE_ID}/test`, TOKEN_A, { method: "POST" });
@@ -159,21 +182,23 @@ describe("Gateway Agent relay", () => {
 
 class MockAgent {
   readonly downloadStarts: string[] = [];
+  readonly listPaths: string[] = [];
+  terminalOpens = 0;
 
-  private constructor(private readonly socket: WebSocket) {
+  private constructor(private readonly socket: WebSocket, private readonly platform = "linux") {
     socket.on("message", (raw, binary) => {
       if (!binary) this.handle(raw);
     });
   }
 
-  static async connect(baseUrl: string, token: string): Promise<MockAgent> {
+  static async connect(baseUrl: string, token: string, platform = "linux"): Promise<MockAgent> {
     const url = new URL("/agent/v1/connect", baseUrl.replace("http:", "ws:"));
     url.searchParams.set("serviceId", SERVICE_ID);
     url.searchParams.set("name", "fixture");
     const socket = new WebSocket(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const agent = new MockAgent(socket);
+    const agent = new MockAgent(socket, platform);
     await onceOpen(socket);
     return agent;
   }
@@ -207,12 +232,15 @@ class MockAgent {
     if (message.method === "service.describe") {
       this.respond(message.id!, {
         hostname: "fixture-host",
-        platform: "linux",
+        platform: this.platform,
         arch: "x64",
         agentVersion: "fixture-version",
         home: "/home/fixture",
-        capabilities: ["terminal", "files"],
+        capabilities: this.platform === "win32" ? ["files"] : ["terminal", "files"],
       });
+    } else if (message.method === "fs.list") {
+      this.listPaths.push(String(params.path));
+      this.respond(message.id!, []);
     } else if (message.method === "fs.download.stat") {
       const path = String(params.path);
       this.respond(message.id!, {
@@ -229,6 +257,7 @@ class MockAgent {
         this.send({ type: "stream.end", id: streamId });
       });
     } else if (message.method === "terminal.open") {
+      this.terminalOpens++;
       this.respond(message.id!, { terminalId: "terminal-1" });
     } else {
       this.send({

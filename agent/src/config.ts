@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { isNativeAbsolutePath } from "./native-path.js";
 import { promptAgentSetup } from "./setup-tui.js";
 
 export interface AgentConfig {
@@ -76,6 +77,9 @@ export async function loadAgentConfig(
     configPath: args.configPath,
   };
   if (!config.token || !config.name) throw new Error("访问令牌和服务名不能为空");
+  if (process.platform === "win32" && (!isNativeAbsolutePath(config.codexExecutable) || !/\.exe$/i.test(config.codexExecutable))) {
+    throw new Error("Windows 需要指定 Codex 的绝对 .exe 路径；请在托盘设置中选择官方 codex.exe");
+  }
   await saveConfig(config);
   return config;
 }
@@ -126,6 +130,7 @@ function parseArguments(argv: string[], env: NodeJS.ProcessEnv): Arguments {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
     const value = argv[index + 1];
+    if (argument === "--desktop-control") continue;
     if (argument === "--configure") result.configure = true;
     else if (argument === "--gateway" && value) {
       result.gatewayUrl = value;

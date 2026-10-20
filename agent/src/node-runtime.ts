@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
@@ -14,7 +14,7 @@ export async function resolveNodeExecutable(programPath = process.execPath): Pro
     await verifyNodeExecutable(override);
     return override;
   }
-  const bundled = join(dirname(resolve(programPath)), "runtime", "node");
+  const bundled = join(dirname(resolve(programPath)), "runtime", process.platform === "win32" ? "node.exe" : "node");
   try {
     await access(bundled, constants.X_OK);
     await verifyNodeExecutable(bundled);
@@ -34,6 +34,7 @@ export async function resolveNodeExecutable(programPath = process.execPath): Pro
 export async function resolveExtensionHostDirectory(programPath = process.execPath): Promise<string> {
   const candidates = [
     join(dirname(resolve(programPath)), "runtime", "extension-host"),
+    join(dirname(resolve(programPath)), "extension-host"),
     join(import.meta.dirname, "extension-host"),
     join(import.meta.dirname, "..", "src", "extension-host"),
   ];
@@ -52,7 +53,7 @@ export async function verifyNodeExecutable(executable: string): Promise<void> {
 }
 
 function nodePathCandidates(): string[] {
-  return (process.env.PATH ?? "").split(":").filter((path) => path && isAbsolute(path)).map((path) => join(path, "node"));
+  return (process.env.PATH ?? "").split(delimiter).filter((path) => path && isAbsolute(path)).map((path) => join(path, process.platform === "win32" ? "node.exe" : "node"));
 }
 
 function versionAtLeast(actual: number[], required: number[]): boolean {

@@ -263,7 +263,7 @@ export class OfficialExtensionStore {
 }
 
 export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string): Promise<OfficialExtensionSource> {
-  const target = targetPlatform ?? (process.platform === "linux" && ["x64", "arm64"].includes(process.arch) ? `linux-${process.arch}` : "linux-x64");
+  const target = targetPlatform ?? officialExtensionTarget();
   const response = await fetch("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", {
     method: "POST",
     headers: { "Accept": "application/json;api-version=7.2-preview.1", "Content-Type": "application/json" },
@@ -282,6 +282,11 @@ export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetc
   validVersion(latest.version);
   officialUrl(downloadUrl);
   return { version: latest.version, downloadUrl };
+}
+
+export function officialExtensionTarget(platform: string = process.platform, arch: string = process.arch): string {
+  if (["linux", "win32"].includes(platform) && ["x64", "arm64"].includes(arch)) return `${platform}-${arch}`;
+  throw new Error(`暂不支持此平台的官方扩展：${platform}-${arch}`);
 }
 
 function compareVersion(a: string, b: string): number {
