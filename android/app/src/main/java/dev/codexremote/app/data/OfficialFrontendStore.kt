@@ -17,7 +17,7 @@ class OfficialFrontendStore(context: Context) {
     fun workspace(scope: String, home: String): String = preferences.getString("workspace-$scope", home) ?: home
 
     fun setWorkspace(scope: String, path: String) {
-        require(path.startsWith('/')) { "工作目录必须为远端绝对路径" }
+        require(isRemoteAbsolutePath(path)) { "工作目录必须为远端绝对路径" }
         preferences.edit { putString("workspace-$scope", path) }
     }
 

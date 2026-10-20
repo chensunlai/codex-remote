@@ -67,6 +67,7 @@ private val destinations = listOf(
 
 @Composable
 fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
+    val terminalEnabled = state.services.firstOrNull { it.id == state.selectedServiceId }?.supportsTerminal != false
     if (!state.configured) {
         GatewaySetupScreen(
             initial = state.gatewayConfig,
@@ -96,6 +97,7 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                     destinations.forEach { destination ->
                         NavigationRailItem(
                             selected = state.section == destination.section,
+                            enabled = destination.section != MainSection.TERMINAL || terminalEnabled,
                             colors = NavigationRailItemDefaults.colors(indicatorColor = Color.Transparent),
                             onClick = { viewModel.setSection(destination.section) },
                             icon = { AppIcon(destination.icon, contentDescription = stringResource(destination.label)) },
@@ -129,10 +131,15 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
                             Row(Modifier.fillMaxWidth().selectableGroup()) {
                                 destinations.forEach { destination ->
                                     val selected = state.section == destination.section
-                                    val color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant
+                                    val enabled = destination.section != MainSection.TERMINAL || terminalEnabled
+                                    val color = when {
+                                        !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                        selected -> MaterialTheme.colorScheme.onSurface
+                                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
                                     Column(
                                         Modifier.weight(1f).heightIn(min = 56.dp)
-                                            .selectable(selected, role = Role.Tab, onClick = { viewModel.setSection(destination.section) })
+                                            .selectable(selected, enabled = enabled, role = Role.Tab, onClick = { viewModel.setSection(destination.section) })
                                             .padding(vertical = 6.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally,
                                         verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),

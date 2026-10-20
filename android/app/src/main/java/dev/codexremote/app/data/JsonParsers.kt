@@ -21,6 +21,9 @@ fun parseServices(array: JSONArray): List<RemoteService> = array.objects().map {
             RuntimeState.CONNECTED
         } else RuntimeState.DISCONNECTED,
         runtimeMessage = runtime.nullableString("message"),
+        capabilities = value.optJSONArray("capabilities")?.let { entries ->
+            (0 until entries.length()).mapNotNull { entries.optString(it).takeIf(String::isNotBlank) }.toSet()
+        },
     )
 }
 

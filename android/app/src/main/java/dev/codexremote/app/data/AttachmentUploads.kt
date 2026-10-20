@@ -43,7 +43,7 @@ internal suspend fun uploadAttachments(
         if (params.optBoolean("imagesOnly")) require(resolver.getType(uris[index])?.startsWith("image/") == true) { "请选择图片：$name" }
     }
     try {
-        val root = "${home.trimEnd('/')}/.codex-remote-uploads"
+        val root = joinRemotePath(home, ".codex-remote-uploads")
         if (api.files(serviceId, home).objects().none { it.optString("name") == ".codex-remote-uploads" }) {
             try { api.mkdir(serviceId, root) }
             catch (failure: GatewayException) {
@@ -54,9 +54,9 @@ internal suspend fun uploadAttachments(
             currentCoroutineContext().ensureActive()
             val (name, size) = metadata[index]
             onStatus("正在上传 ${index + 1}/${uris.size}：$name")
-            val directory = "$root/${UUID.randomUUID()}"
+            val directory = joinRemotePath(root, UUID.randomUUID().toString())
             api.mkdir(serviceId, directory)
-            val path = "$directory/$name"
+            val path = joinRemotePath(directory, name)
             api.upload(serviceId, path, name, resolver.getType(uri), size) {
                 resolver.openInputStream(uri) ?: error("无法读取 $name")
             }

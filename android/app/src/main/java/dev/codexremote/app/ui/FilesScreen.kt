@@ -43,6 +43,7 @@ import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import java.text.DateFormat
 import java.util.Date
+import dev.codexremote.app.data.remotePathBreadcrumbs
 import kotlin.math.ln
 import kotlin.math.pow
 
@@ -140,14 +141,14 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
             text = {
                 CodexTextField(
                     value = name,
-                    onValueChange = { name = it.replace("/", "") },
+                    onValueChange = { name = it.replace("/", "").replace("\\", "") },
                     label = "目录名",
                 )
             },
             confirmButton = {
                 Button(
                     onClick = { viewModel.createDirectory(name) { createDirectory = false } },
-                    enabled = name.isNotBlank(),
+                    enabled = name.isNotBlank() && name != "." && name != "..",
                 ) { Text("创建") }
             },
             dismissButton = { TextButton(onClick = { createDirectory = false }) { Text("取消") } },
@@ -173,18 +174,17 @@ fun FilesScreen(state: AppState, viewModel: MainViewModel) {
 
 @Composable
 private fun Breadcrumb(path: String, onNavigate: (String) -> Unit) {
-    val segments = path.split('/').filter(String::isNotBlank)
+    val breadcrumbs = remotePathBreadcrumbs(path)
     Row(
         Modifier
             .fillMaxWidth()
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        TextButton(onClick = { onNavigate("/") }) { Text("/") }
-        segments.forEachIndexed { index, segment ->
-            Text("/", modifier = Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outline)
-            TextButton(onClick = { onNavigate("/" + segments.take(index + 1).joinToString("/")) }) {
-                Text(segment, maxLines = 1)
+        breadcrumbs.forEachIndexed { index, (label, target) ->
+            if (index > 0) Text("/", modifier = Modifier.padding(top = 12.dp), color = MaterialTheme.colorScheme.outline)
+            TextButton(onClick = { onNavigate(target) }) {
+                Text(label, maxLines = 1)
             }
         }
     }

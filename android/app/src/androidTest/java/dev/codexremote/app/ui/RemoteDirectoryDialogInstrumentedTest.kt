@@ -27,6 +27,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
 import dev.codexremote.app.data.GatewayApi
+import dev.codexremote.app.data.joinRemotePath
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.GatewayConfig
 import org.json.JSONArray
@@ -134,6 +135,38 @@ class RemoteDirectoryDialogInstrumentedTest {
         }
     }
 
+    @Test fun windowsPathsNavigateWithoutCrossingDriveOrUncRoots() {
+        DirectoryGateway { path, _ ->
+            listing(path, *if (path == "C:\\Users\\用户") arrayOf("项目") else emptyArray())
+        }.use { gateway ->
+            val selected = AtomicReference<String>()
+            compose.setContent {
+                CodexRemoteTheme {
+                    RemoteDirectoryDialog(gateway.api, "windows", "C:\\Users\\用户", { selected.set(it) }, {})
+                }
+            }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("项目").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithText("项目").performClick()
+            compose.waitUntil(5_000) { gateway.requests.contains("C:/Users/用户/项目") }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("没有子文件夹").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithContentDescription("返回父目录").performClick()
+            compose.waitUntil(5_000) { gateway.requests.contains("C:/Users/用户") }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("正在读取目录…").fetchSemanticsNodes().isEmpty() }
+            compose.onNodeWithContentDescription("绝对路径").performTextReplacement("D:\\")
+            compose.onNodeWithContentDescription("绝对路径").performImeAction()
+            compose.waitUntil(5_000) { gateway.requests.contains("D:\\") }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("正在读取目录…").fetchSemanticsNodes().isEmpty() }
+            compose.onNodeWithContentDescription("返回父目录").assertIsNotEnabled()
+            compose.onNodeWithContentDescription("绝对路径").performTextReplacement("\\\\server\\share")
+            compose.onNodeWithContentDescription("绝对路径").performImeAction()
+            compose.waitUntil(5_000) { gateway.requests.contains("\\\\server\\share") }
+            compose.waitUntil(5_000) { compose.onAllNodesWithText("正在读取目录…").fetchSemanticsNodes().isEmpty() }
+            compose.onNodeWithContentDescription("返回父目录").assertIsNotEnabled()
+            compose.onNodeWithText("使用此目录").assertIsEnabled().performClick()
+            assertEquals("\\\\server\\share", selected.get())
+        }
+    }
+
     @Test
     fun landscapeKeyboardKeepsTheFooterVisibleAndUsable() {
         assumeTrue(Build.VERSION.SDK_INT >= 29)
@@ -204,8 +237,8 @@ class RemoteDirectoryDialogInstrumentedTest {
     private data class Response(val status: Int, val body: String)
 
     private fun listing(path: String, vararg folders: String) = Response(200, JSONObject().put("data", JSONArray().apply {
-        folders.forEach { name -> put(JSONObject().put("name", name).put("path", "${path.trimEnd('/')}/$name").put("type", "directory")) }
-        put(JSONObject().put("name", "file.txt").put("path", "${path.trimEnd('/')}/file.txt").put("type", "file"))
+        folders.forEach { name -> put(JSONObject().put("name", name).put("path", joinRemotePath(path, name)).put("type", "directory")) }
+        put(JSONObject().put("name", "file.txt").put("path", joinRemotePath(path, "file.txt")).put("type", "file"))
     }).toString())
 
     private class DirectoryGateway(private val respond: (String, Int) -> Response) : AutoCloseable {

@@ -56,7 +56,7 @@ internal fun ProductUpdatePanel(config: GatewayConfig?, service: RemoteService?,
             Text(if (appUpdate == true) "App 有可用更新" else "App 已是当前或更新版本")
             service?.let {
                 Text(when (productUpdateAvailable(currentAgent, latest.version)) {
-                    true -> "该 Agent 有可用更新，请在 Agent 所在服务器运行安装器更新。"
+                    true -> if (service.platform == "win32") "该 Agent 有可用更新，请退出托盘程序后下载新版 Windows ZIP，解压替换应用。配置会保留。" else "该 Agent 有可用更新，请在 Agent 所在服务器运行安装器更新。"
                     false -> "该 Agent 已是当前或更新版本。"
                     null -> "无法识别该 Agent 的版本，请查看发布说明。"
                 })

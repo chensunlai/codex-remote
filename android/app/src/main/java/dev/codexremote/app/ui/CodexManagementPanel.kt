@@ -45,7 +45,7 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
     }
 
     fun operate(update: Boolean, confirmed: Boolean = false) {
-        if (busy) return
+        if (busy || (update && service.platform == "win32")) return
         busy = true
         error = null
         scope.launch {
@@ -92,7 +92,7 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
             } else {
                 OutlinedButton(onClick = { operate(false) }, enabled = enabled, shape = MaterialTheme.shapes.small) { Text("重启") }
             }
-            val canUpdate = enabled && current?.optBoolean("updateSupported", false) == true
+            val canUpdate = enabled && service.platform != "win32" && current?.optBoolean("updateSupported", false) == true
             if (current?.optBoolean("updateAvailable") == true) {
                 Button(onClick = { operate(true) }, enabled = canUpdate, shape = MaterialTheme.shapes.small) { Text("更新") }
             } else {
@@ -100,7 +100,9 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
             }
             TextButton(onClick = { refresh += 1 }, enabled = !busy) { Text("刷新") }
         }
-        if (current != null && !current.optBoolean("updateSupported", false)) {
+        if (service.platform == "win32") {
+            Text("Windows Codex CLI 请使用官方安装器手动更新。", style = MaterialTheme.typography.bodySmall)
+        } else if (current != null && !current.optBoolean("updateSupported", false)) {
             Text("当前 CLI 不支持 update 命令。", style = MaterialTheme.typography.bodySmall)
         }
     }
