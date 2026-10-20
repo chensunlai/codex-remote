@@ -11,6 +11,8 @@ internal static class SelfTest
         using var output = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
         try
         {
+            SettingsWindowLifecycle();
+            await output.WriteLineAsync("PASS settings layout, small-window scrolling and close-to-tray behavior");
             ConfigRoundTrip();
             await output.WriteLineAsync("PASS configuration validation, stable identity and UTF-8 paths");
             await JobOwnsOnlyItsTree();
@@ -26,6 +28,62 @@ internal static class SelfTest
             await output.WriteLineAsync($"FAIL {error}");
             return 1;
         }
+    }
+
+    private static void SettingsWindowLifecycle()
+    {
+        // Run before the first await: WinForms needs the entry point's STA thread.
+        var previousContext = SynchronizationContext.Current;
+        ApplicationConfiguration.Initialize();
+        try
+        {
+            var saves = 0;
+            using var form = new SettingsForm(SystemIcons.Application, (_, _) =>
+            {
+                saves++;
+                return Task.FromResult(true);
+            });
+            form.Show();
+            Application.DoEvents();
+            form.PerformLayout();
+            var save = (Control)form.AcceptButton!;
+            RequireInsideClient(form, save, "save button at initial size");
+            Require(form.Bounds.Height <= Screen.FromControl(form).WorkingArea.Height, "initial window fits screen");
+
+            form.Size = form.MinimumSize;
+            form.PerformLayout();
+            form.ScrollControlIntoView(save);
+            Application.DoEvents();
+            RequireInsideClient(form, save, "save button remains reachable at minimum size");
+
+            form.Close();
+            Require(!form.Visible && !form.IsDisposed, "closing settings hides the same form");
+            form.Show();
+            Application.DoEvents();
+            Require(form.Visible && !form.IsDisposed, "hidden settings can reopen");
+            Require(saves == 0, "layout and close must not save or start Agent");
+            form.LoadSettings(new AgentSettings("https://gateway.example.com", "unused-fixture-token", "fixture", Environment.ProcessPath!));
+            form.ScrollControlIntoView(save);
+            RequireInsideClient(form, save, "save button is visible before click");
+            ((Button)save).PerformClick();
+            Application.DoEvents();
+            Require(saves == 1 && !form.Visible, "save button invokes only the supplied callback and hides settings");
+            form.AllowClose = true;
+            form.Close();
+            Require(form.IsDisposed, "explicit application disposal can close settings");
+        }
+        finally
+        {
+            // Subsequent process tests have no message loop; don't capture the WinForms context.
+            SynchronizationContext.SetSynchronizationContext(previousContext);
+        }
+    }
+
+    private static void RequireInsideClient(Form form, Control control, string message)
+    {
+        var bounds = form.RectangleToClient(control.Parent!.RectangleToScreen(control.Bounds));
+        Require(bounds.Width > 0 && bounds.Height > 0 && form.ClientRectangle.Contains(bounds),
+            $"{message}: control={bounds}, client={form.ClientRectangle}");
     }
 
     private static void ConfigRoundTrip()

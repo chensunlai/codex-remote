@@ -19,14 +19,15 @@ internal sealed class SettingsForm : Form
         Icon = icon;
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(640, 470);
-        MinimumSize = new Size(600, 470);
+        ClientSize = new Size(640, 620);
+        MinimumSize = new Size(600, 420);
+        AutoScroll = true;
         Font = new Font("Segoe UI", 10);
         BackColor = SystemColors.Window;
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(28), ColumnCount = 2, RowCount = 12,
-            AutoSize = true
+            Dock = DockStyle.Top, Padding = new Padding(28), ColumnCount = 2, RowCount = 12,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -73,6 +74,14 @@ internal sealed class SettingsForm : Form
                 Hide();
             }
         };
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        MinimumSize = new Size(Math.Min(MinimumSize.Width, workingArea.Width), Math.Min(MinimumSize.Height, workingArea.Height));
+        Size = new Size(Math.Min(Width, workingArea.Width), Math.Min(Height, workingArea.Height));
+        base.OnLoad(e);
     }
 
     private static void AddField(TableLayoutPanel layout, string label, Control input, int row, bool span = true)
