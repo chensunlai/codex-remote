@@ -39,8 +39,9 @@ Gateway 和 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，�
 
 准备好以下环境：
 
-- **Gateway / Agent**：glibc Linux，支持 x86_64 和 arm64。
+- **Gateway / Linux Agent**：glibc Linux，支持 x86_64 和 arm64。
 - **Agent**：运行用户已安装并登录 Codex CLI，能够执行 `codex`。安装包自带 Node.js 和扩展宿主，无需另装 Node.js。
+- **Windows Agent（分支测试版）**：提供原生 x64 托盘应用，下载 ZIP 解压启动；与 Linux 共用 Gateway，详见 [Windows 使用说明](docs/windows.md)。
 - **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**。
 
 ### 1. Gateway
