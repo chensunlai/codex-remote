@@ -94,16 +94,21 @@ describe.runIf(supervised && !!process.env.CODEX_REMOTE_TEST_CODEX_EXE)("complet
     const installed = await store.activate();
     const digest = async (): Promise<string> => createHash("sha256").update(await readFile(join(installed.directory, installed.manifest.main))).digest("hex");
     const before = await digest();
-    const frames: ExtensionViewFrame[] = [], service = new OfficialExtensionService(join(root, "state"), cli, frame => frames.push(frame), store);
-    cleanups.push(async () => { await service.restart(); service.close(); });
-    const attach = { viewId: "official-windows-smoke", rendererId: "windows", workspace: root };
-    const first = await service.request("extension.view.attach", attach) as { epoch: string; html: string };
-    expect(first.html).toMatch(/<html|<!doctype/i);
-    expect(frames.filter(frame => frame.type === "status" && (frame.payload as { state?: string }).state === "error")).toEqual([]);
-    await service.restart();
-    const second = await service.request("extension.view.attach", attach) as { epoch: string; html: string };
-    expect(second.epoch).not.toBe(first.epoch); expect(second.html).toMatch(/<html|<!doctype/i);
-    expect(await digest()).toBe(before);
+    for (const extension of ["exe", "cmd", "bat"]) {
+      const executable = extension === "exe" ? cli : join(root, `Codex 入口.${extension}`);
+      if (extension !== "exe") await writeFile(executable, `@"${cli}" %*\r\n`, "utf8");
+      const frames: ExtensionViewFrame[] = [], service = new OfficialExtensionService(join(root, `state-${extension}`), executable, frame => frames.push(frame), store);
+      cleanups.push(async () => { await service.restart(); service.close(); });
+      const attach = { viewId: `official-windows-smoke-${extension}`, rendererId: "windows", workspace: root };
+      const first = await service.request("extension.view.attach", attach) as { epoch: string; html: string };
+      expect(first.html).toMatch(/<html|<!doctype/i);
+      expect(frames.filter(frame => frame.type === "status" && (frame.payload as { state?: string }).state === "error")).toEqual([]);
+      await service.restart();
+      const second = await service.request("extension.view.attach", attach) as { epoch: string; html: string };
+      expect(second.epoch).not.toBe(first.epoch); expect(second.html).toMatch(/<html|<!doctype/i);
+      expect(await digest()).toBe(before);
+      await service.restart(); service.close();
+    }
     // No model request or login is performed; active-conversation synchronization
     // remains a separate manual acceptance check on a signed-in Windows machine.
   }, 240_000);

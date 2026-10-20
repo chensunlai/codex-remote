@@ -4,13 +4,11 @@ Windows x64 首版使用原生 Codex，不依赖 WSL。Gateway 与 Linux 共用�
 
 ## 准备 Codex
 
-使用 [OpenAI 官方独立版安装器](https://learn.chatgpt.com/docs/enterprise/windows-deployment) 按当前 Windows 用户安装 Codex，先完成登录和首次运行。默认命令目录：
+通过 [OpenAI 官方独立版安装器](https://learn.chatgpt.com/docs/enterprise/windows-deployment) 或其他官方支持的安装方式准备 Codex，先完成登录和首次运行。保留安装方式生成的完整运行文件。Agent 不会复制 Codex，也不会读取 VS Code 或其他软件的内部安装布局。
 
-```text
-%LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
-```
+配置窗口依次扫描当前进程的 PATH，以及几个常见命令目录：`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`、`%APPDATA%\npm`、`%ProgramFiles%\nodejs`，查找 `codex.exe`、`codex.cmd` 和 `codex.bat` 并去重。只找到一个时自动填入；找到多个时需要从列表选择一个，也可以输入其他启动文件的完整路径；没有找到时要求手动选择或输入。已保存的手动路径始终优先，失效时提示修正，不静默换用其他安装。保存后记录所选文件的绝对路径。
 
-保留官方安装器生成的完整运行文件。Agent 不会复制 Codex，也不会读取其内部安装布局。配置中的 Codex 路径可以留空：先按当前进程的 PATH 顺序查找 `codex.exe`，再检查官方默认目录；也可以手动选择实际的 EXE，手动路径优先，不会在路径失效后静默换用其他安装。首次保存时会记录检测到的绝对路径。首版不接受 npm 的 `.cmd`、`.bat` 包装入口。
+EXE 直接运行；CMD、BAT 通过系统命令解释器启动。自定义脚本必须将参数、标准输入输出和退出码原样交给 Codex，不能向 App Server 的标准输出写入欢迎文字等额外内容。
 
 如果在托盘程序运行期间修改了 PATH，请退出并重新启动托盘程序，使其取得新的环境变量。
 
@@ -18,7 +16,7 @@ Windows x64 首版使用原生 Codex，不依赖 WSL。Gateway 与 Linux 共用�
 
 1. 下载 `codex-remote-windows-x64.zip`，完整解压到固定位置。
 2. 双击 `CodexRemote.exe`，填写 Gateway 地址、Token 和服务器名称。
-3. Codex 路径留空自动检测，或手动选择 EXE，保存后启动 Agent。
+3. 选择检测到的 Codex，或浏览、输入 EXE、CMD、BAT 的完整路径，保存后启动 Agent。
 4. 窗口关闭后收起到右下角托盘；在手机 App 中选择这台服务器。
 
 ZIP 已包含 Node.js 和 .NET 运行环境，无需额外安装。连接配置、日志、官方插件缓存保存在 `%LOCALAPPDATA%\CodexRemote`，升级 ZIP 时保留该目录即可延续服务 ID 和配置。

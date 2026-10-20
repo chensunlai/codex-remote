@@ -5,9 +5,16 @@ internal sealed class SettingsForm : Form
     private readonly TextBox gateway = new() { Dock = DockStyle.Fill };
     private readonly TextBox token = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly TextBox name = new() { Dock = DockStyle.Fill };
-    private readonly TextBox codex = new()
+    private readonly ComboBox codex = new()
     {
-        Dock = DockStyle.Fill, PlaceholderText = "留空自动查找 PATH 和官方默认安装目录"
+        Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown,
+        AutoCompleteMode = AutoCompleteMode.SuggestAppend, AutoCompleteSource = AutoCompleteSource.ListItems,
+        DropDownWidth = 700
+    };
+    private readonly Label discovery = new()
+    {
+        Text = "从检测结果中选择，或输入 EXE、CMD、BAT 的完整路径。",
+        AutoSize = true, MaximumSize = new Size(560, 0), ForeColor = SystemColors.GrayText
     };
     private readonly CheckBox startup = new() { AutoSize = true, Text = "登录 Windows 后自动启动" };
     private readonly Label status = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
@@ -29,7 +36,7 @@ internal sealed class SettingsForm : Form
         BackColor = SystemColors.Window;
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Top, Padding = new Padding(28), ColumnCount = 2, RowCount = 12,
+            Dock = DockStyle.Top, Padding = new Padding(28), ColumnCount = 2, RowCount = 13,
             AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -55,8 +62,11 @@ internal sealed class SettingsForm : Form
         var browse = new Button { Text = "浏览…", AutoSize = true, Margin = new Padding(8, 0, 0, 14) };
         browse.Click += (_, _) => BrowseCodex();
         layout.Controls.Add(browse, 1, 9);
+        discovery.Margin = new Padding(0, 0, 0, 10);
+        layout.Controls.Add(discovery, 0, 10);
+        layout.SetColumnSpan(discovery, 2);
         startup.Margin = new Padding(0, 4, 0, 12);
-        layout.Controls.Add(startup, 0, 10);
+        layout.Controls.Add(startup, 0, 11);
         layout.SetColumnSpan(startup, 2);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -65,7 +75,7 @@ internal sealed class SettingsForm : Form
         footer.Controls.Add(status, 0, 0);
         save.Click += async (_, _) => await SaveAsync();
         footer.Controls.Add(save, 1, 0);
-        layout.Controls.Add(footer, 0, 11);
+        layout.Controls.Add(footer, 0, 12);
         layout.SetColumnSpan(footer, 2);
         Controls.Add(layout);
         AcceptButton = save;
@@ -102,7 +112,17 @@ internal sealed class SettingsForm : Form
         gateway.Text = settings.GatewayUrl;
         token.Text = settings.Token;
         name.Text = settings.Name;
-        codex.Text = settings.CodexExecutable;
+        var candidates = AgentSettings.DiscoverCodexExecutables();
+        codex.Items.Clear();
+        codex.Items.AddRange(candidates.Cast<object>().ToArray());
+        codex.Text = string.IsNullOrWhiteSpace(settings.CodexExecutable) && candidates.Count == 1
+            ? candidates[0] : settings.CodexExecutable;
+        discovery.Text = candidates.Count switch
+        {
+            0 => "未检测到 Codex，请浏览或输入 EXE、CMD、BAT 的完整路径。",
+            1 => "已检测到一个 Codex；也可浏览或输入其他路径。",
+            _ => $"检测到 {candidates.Count} 个 Codex，请选择一个，或输入其他路径。"
+        };
         startup.Checked = LoginStartup.Enabled;
     }
 
@@ -116,7 +136,7 @@ internal sealed class SettingsForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "选择已安装的 Codex", Filter = "Windows 可执行文件 (*.exe)|*.exe",
+            Title = "选择已安装的 Codex", Filter = "Codex 启动文件 (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat",
             CheckFileExists = true, FileName = codex.Text
         };
         if (dialog.ShowDialog(this) == DialogResult.OK) codex.Text = dialog.FileName;

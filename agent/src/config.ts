@@ -77,8 +77,8 @@ export async function loadAgentConfig(
     configPath: args.configPath,
   };
   if (!config.token || !config.name) throw new Error("访问令牌和服务名不能为空");
-  if (process.platform === "win32" && (!isNativeAbsolutePath(config.codexExecutable) || !/\.exe$/i.test(config.codexExecutable))) {
-    throw new Error("Windows 需要指定 Codex 的绝对 .exe 路径；请在托盘设置中选择官方 codex.exe");
+  if (process.platform === "win32" && (!isNativeAbsolutePath(config.codexExecutable) || !/\.(?:exe|cmd|bat)$/i.test(config.codexExecutable))) {
+    throw new Error("Windows 需要指定 Codex 的绝对 EXE、CMD 或 BAT 路径；请在托盘设置中扫描或选择文件");
   }
   await saveConfig(config);
   return config;

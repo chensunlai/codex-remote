@@ -16,6 +16,12 @@ internal static class Program
             return SelfTest.Run().GetAwaiter().GetResult();
         if (args.Length == 2 && args[0] == "--self-test-worker")
             return SelfTest.RunWorker(args[1]);
+        if (args.Length >= 1 && args[0] == "--self-test-codex-script-worker")
+            return CodexScriptLauncherSelfTest.RunWorker(args[1..]);
+
+        // Set only on Codex child invocations. Supervisor/control modes above always take priority.
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CODEX_REMOTE_CODEX_SCRIPT")))
+            return CodexScriptLauncher.Run(args).GetAwaiter().GetResult();
 
         ApplicationConfiguration.Initialize();
         var user = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;

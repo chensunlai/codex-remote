@@ -9,9 +9,6 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
     public static string DataDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexRemote");
     public static string ConfigPath => Path.Combine(DataDirectory, "agent.json");
-    public static string DefaultCodexPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Programs", "OpenAI", "Codex", "bin", "codex.exe");
 
     public static AgentSettings Load(string path)
     {
@@ -33,32 +30,64 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
             throw new InvalidOperationException("Gateway 地址仅支持 HTTP 或 HTTPS，不能包含账号、查询参数或片段。");
         if (Token.Trim().Length == 0) throw new InvalidOperationException("请填写访问令牌。");
         if (Name.Trim().Length == 0) throw new InvalidOperationException("请填写服务器名称。");
-        var executable = CodexExecutable.Trim();
-        if (executable.Length == 0
-            || executable.Equals("codex", StringComparison.OrdinalIgnoreCase)
-            || executable.Equals("codex.exe", StringComparison.OrdinalIgnoreCase))
-            executable = FindCodexExecutable();
-        if (!Path.IsPathFullyQualified(executable)
-            || !string.Equals(Path.GetExtension(executable), ".exe", StringComparison.OrdinalIgnoreCase)
-            || !File.Exists(executable))
-            throw new InvalidOperationException("未找到 Codex EXE。请将 codex.exe 所在目录加入 PATH，或选择已安装的 EXE 文件；不支持 CMD 或 BAT 入口。");
+        var executable = ResolveCodexExecutable(CodexExecutable);
         return this with
         {
             GatewayUrl = url.AbsoluteUri.TrimEnd('/'), Token = Token.Trim(),
-            Name = Name.Trim(), CodexExecutable = Path.GetFullPath(executable)
+            Name = Name.Trim(), CodexExecutable = executable
         };
     }
 
-    private static string FindCodexExecutable()
+    public static string ResolveCodexExecutable(string input, IReadOnlyList<string>? candidates = null)
     {
-        foreach (var entry in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        var executable = input.Trim().Trim('"');
+        if (executable.Length == 0 || new[] { "codex", "codex.exe", "codex.cmd", "codex.bat" }
+            .Contains(executable, StringComparer.OrdinalIgnoreCase))
+        {
+            candidates ??= DiscoverCodexExecutables();
+            if (candidates.Count == 0)
+                throw new InvalidOperationException("未找到 Codex。请在 PATH 或常见安装目录中安装，或选择、输入 EXE、CMD 或 BAT 文件的完整路径。");
+            if (candidates.Count > 1)
+                throw new InvalidOperationException("检测到多个 Codex，请从列表中选择一个，或输入其他 EXE、CMD 或 BAT 文件的完整路径。");
+            executable = candidates[0];
+        }
+        if (!Path.IsPathFullyQualified(executable)
+            || !new[] { ".exe", ".cmd", ".bat" }.Contains(Path.GetExtension(executable), StringComparer.OrdinalIgnoreCase)
+            || !File.Exists(executable))
+            throw new InvalidOperationException("Codex 路径无效。请选择存在的 EXE、CMD 或 BAT 文件，或输入其完整路径。");
+        return Path.GetFullPath(executable);
+    }
+
+    public static IReadOnlyList<string> DiscoverCodexExecutables(string? searchPath = null, IEnumerable<string>? defaultDirectories = null)
+    {
+        var candidates = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var directories = (searchPath ?? Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Concat(defaultDirectories ?? DefaultCodexDirectories());
+        foreach (var entry in directories)
         {
             var directory = entry.Trim().Trim('"');
             if (!Path.IsPathFullyQualified(directory)) continue;
-            var candidate = Path.Combine(directory, "codex.exe");
-            if (File.Exists(candidate)) return candidate;
+            foreach (var file in new[] { "codex.exe", "codex.cmd", "codex.bat" })
+            {
+                try
+                {
+                    var candidate = Path.GetFullPath(Path.Combine(directory, file));
+                    if (File.Exists(candidate) && seen.Add(candidate)) candidates.Add(candidate);
+                }
+                catch (ArgumentException) { }
+                catch (NotSupportedException) { }
+            }
         }
-        return DefaultCodexPath;
+        return candidates;
+    }
+
+    private static IEnumerable<string> DefaultCodexDirectories()
+    {
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs", "OpenAI", "Codex", "bin");
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "npm");
+        yield return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs");
     }
 
     public void Save(string path)

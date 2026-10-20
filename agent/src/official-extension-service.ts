@@ -6,6 +6,7 @@ import { isNativeAbsolutePath } from "./native-path.js";
 import { OfficialExtensionStore, type OfficialExtensionPackage } from "./official-extension-store.js";
 import { resolveExtensionHostDirectory, resolveNodeExecutable } from "./node-runtime.js";
 import { superviseWindowsHost, type HostSupervisor } from "./windows-host-supervisor.js";
+import { codexCommand } from "./codex-command.js";
 
 export interface ExtensionViewFrame {
   viewId: string;
@@ -260,8 +261,9 @@ export class OfficialExtensionService {
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     if (this.closed) throw new Error("官方扩展宿主已关闭");
     const origin = "https://v" + viewId.slice(0, 40) + ".codex-remote.invalid";
+    const command = codexCommand(this.executable);
     const child = spawn(node, [join(hostDirectory, "runtime.cjs")], {
-      cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env,
+      cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: command.env,
       detached: process.platform === "linux", windowsHide: true,
     });
     let resolveStart!: () => void, rejectStart!: (error: Error) => void;
@@ -336,7 +338,7 @@ export class OfficialExtensionService {
       if (view.stopping || this.closed) throw new Error("官方扩展启动已取消");
       await this.send(view, { type: "start", options: {
         extensionDirectory: extension.directory, main: extension.manifest.main, stateDirectory, workspace,
-        clientId: viewId, hostId: view.epoch, origin, cliExecutable: this.executable,
+        clientId: viewId, hostId: view.epoch, origin, cliExecutable: command.executable,
       } });
     } catch (error) {
       clearTimeout(timer);

@@ -13,6 +13,8 @@ import { resolveExtensionHostDirectory, resolveNodeExecutable } from "./node-run
 import { officialExtensionTarget } from "./official-extension-store.js";
 import { FileService } from "./file-service.js";
 import { isNativeAbsolutePath } from "./native-path.js";
+import { commandOutput } from "./codex-channels.js";
+import { codexCommand } from "./codex-command.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { vi.unstubAllEnvs(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -111,7 +113,21 @@ describe.runIf(process.platform === "win32")("native Windows Agent", () => {
     const first = await loadAgentConfig(argv, {}), second = await loadAgentConfig(argv, {});
     expect(second.serviceId).toBe(first.serviceId);
     expect(JSON.parse(await readFile(configPath, "utf8")).codexExecutable).toBe(process.execPath);
-    await expect(loadAgentConfig(argv.map(value => value === process.execPath ? "C:\\Program Files\\Codex\\codex.cmd" : value), {})).rejects.toThrow(".exe");
+    await expect(loadAgentConfig(argv.map(value => value === process.execPath ? "C:\\Program Files\\Codex\\codex.ps1" : value), {})).rejects.toThrow("EXE、CMD 或 BAT");
+  });
+
+  it.runIf(!!process.env.CODEX_REMOTE_WINDOWS_SUPERVISOR).each(["cmd", "bat"])("preserves a selected %s entry in configuration and launches it through the native adapter", async extension => {
+    const root = await directory(), script = join(root, `Codex 测试.${extension}`), configPath = join(root, "agent.json");
+    await writeFile(script, `@"${process.execPath}" --version\r\n`, "utf8");
+    const args = ["--gateway", "https://gateway.example", "--token", "test", "--name", "PC", "--codex", script, "--config", configPath];
+    const config = await loadAgentConfig(args, {});
+    expect(config.codexExecutable).toBe(script);
+    expect(JSON.parse(await readFile(configPath, "utf8")).codexExecutable).toBe(script);
+    const command = codexCommand(script);
+    expect(command.executable).toBe(process.env.CODEX_REMOTE_WINDOWS_SUPERVISOR);
+    expect(command.env.CODEX_REMOTE_CODEX_SCRIPT).toBe(script);
+    expect(process.env.CODEX_REMOTE_CODEX_SCRIPT).toBeUndefined();
+    expect((await commandOutput(script, ["--version"])).trim()).toBe(process.version);
   });
 
   it("uses real Node IPC from a path containing spaces and Chinese characters", async () => {
