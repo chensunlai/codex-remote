@@ -5,6 +5,7 @@ import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.provider.MediaStore
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.result.ActivityResultRegistry
@@ -44,6 +45,63 @@ import kotlin.concurrent.thread
 
 class AttachmentsInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun binaryDownloadSurvivesHiddenChatAndPickerCancellation() {
+        val visible = mutableStateOf(true)
+        val bytes = ByteArray(5_877_760).also {
+            java.util.Random(42).nextBytes(it)
+            it[0] = 'M'.code.toByte()
+            it[1] = 'Z'.code.toByte()
+        }
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val destination = File.createTempFile("download-", ".exe", context.cacheDir)
+        val registry = object : ActivityResultRegistry() {
+            var launchedCode = 0
+            override fun <I, O> onLaunch(requestCode: Int, contract: ActivityResultContract<I, O>, input: I, options: ActivityOptionsCompat?) {
+                launchedCode = requestCode
+                assertEquals(Intent.ACTION_CREATE_DOCUMENT, contract.createIntent(context, input).action)
+                visible.value = false // The system save picker backgrounds the chat Activity.
+            }
+        }
+        val owner = object : ActivityResultRegistryOwner { override val activityResultRegistry = registry }
+        try {
+            FixtureGateway(bytes).use { gateway ->
+                compose.setContent {
+                    CompositionLocalProvider(LocalActivityResultRegistryOwner provides owner) {
+                        CodexRemoteTheme {
+                            FilePreviewDialog(
+                                FilePreview("binary.exe", "/binary.exe", PreviewContent.Unsupported("二进制文件")),
+                                api = gateway.api, serviceId = "fixture", visible = visible.value,
+                            ) {}
+                        }
+                    }
+                }
+                compose.onNodeWithText("下载").performClick()
+                compose.waitForIdle()
+                compose.onNodeWithText("binary.exe").assertDoesNotExist()
+                compose.runOnIdle {
+                    registry.dispatchResult(registry.launchedCode, Activity.RESULT_CANCELED, null)
+                    visible.value = true
+                }
+                compose.waitForIdle()
+                assertTrue(gateway.requests.isEmpty())
+                compose.onNodeWithText("下载").performClick()
+                compose.waitForIdle()
+                compose.onNodeWithText("binary.exe").assertDoesNotExist()
+                compose.runOnIdle {
+                    registry.dispatchResult(registry.launchedCode, Activity.RESULT_OK, Intent().setData(Uri.fromFile(destination)))
+                }
+                // Deliver while still hidden, so a resumed recomposition cannot repair a lost callback.
+                compose.waitUntil(15_000) { destination.length() == bytes.size.toLong() }
+                compose.runOnIdle { visible.value = true }
+                compose.waitUntil(5_000) {
+                    compose.onAllNodes(androidx.compose.ui.test.hasText("已保存到所选位置")).fetchSemanticsNodes().isNotEmpty()
+                }
+                assertArrayEquals(bytes, destination.readBytes())
+                assertEquals(1, gateway.requests.count { it.first.contains("/fs/download?") })
+            }
+        } finally { destination.delete() }
+    }
 
     @Test fun windowsAttachmentUploadPreservesBytesAndUsesTheRemoteHome() = runBlocking {
         val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver

@@ -465,7 +465,7 @@ private fun OfficialWebView(
             }) { Text("在浏览器打开") } },
             dismissButton = { TextButton(onClick = { result.complete(false) }) { Text("取消") } })
     }
-    preview?.takeIf { visible }?.let { FilePreviewDialog(it, onDismiss = { preview = null }, api = viewModel.gatewayApi, serviceId = serviceId) }
+    preview?.let { FilePreviewDialog(it, onDismiss = { preview = null }, api = viewModel.gatewayApi, serviceId = serviceId, visible = visible) }
 }
 
 @SuppressLint("SetJavaScriptEnabled")

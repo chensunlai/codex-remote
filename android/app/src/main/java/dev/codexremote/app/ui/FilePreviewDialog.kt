@@ -31,28 +31,37 @@ import dev.codexremote.app.data.PreviewContent
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.model.FilePreview
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
-internal fun FilePreviewDialog(preview: FilePreview, api: GatewayApi? = null, serviceId: String? = null, onDismiss: () -> Unit) {
+internal fun FilePreviewDialog(preview: FilePreview, api: GatewayApi? = null, serviceId: String? = null, visible: Boolean = true, onDismiss: () -> Unit) {
     val resolver = LocalContext.current.contentResolver
     val jobs = rememberCoroutineScope()
     var downloading by remember(preview) { mutableStateOf(false) }
+    var saved by remember(preview) { mutableStateOf(false) }
     var error by remember(preview) { mutableStateOf<String?>(null) }
     val download = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null && api != null && serviceId != null) jobs.launch {
             downloading = true
             error = null
             try {
-                val output = resolver.openOutputStream(uri) ?: throw java.io.IOException("无法创建下载文件")
-                output.use { api.download(serviceId, preview.path, it) }
+                withContext(Dispatchers.IO) {
+                    val output = resolver.openOutputStream(uri) ?: throw java.io.IOException("无法创建下载文件")
+                    output.use { api.download(serviceId, preview.path, it) }
+                }
+                saved = true
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { error = failure.message }
             finally { downloading = false }
-        }
+        } else downloading = false
     }
+    // Keep the result registration and download coroutine alive while Android's
+    // document picker backgrounds the Activity. Only hide the dialog itself.
+    if (!visible) return
     CodexDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!downloading) onDismiss() },
         title = { Text(preview.name, maxLines = 1) },
         text = {
             Column {
@@ -81,12 +90,19 @@ internal fun FilePreviewDialog(preview: FilePreview, api: GatewayApi? = null, se
                     is PreviewContent.Unsupported -> Text(content.reason)
                 }
                 if (downloading) Text("正在下载…", modifier = Modifier.padding(top = 8.dp))
+                if (saved) Text("已保存到所选位置", modifier = Modifier.padding(top = 8.dp))
                 error?.let { Text(it, modifier = Modifier.padding(top = 8.dp)) }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        confirmButton = { TextButton(onClick = onDismiss, enabled = !downloading) { Text("关闭") } },
         dismissButton = {
-            if (api != null && serviceId != null) TextButton(onClick = { download.launch(preview.name) }, enabled = !downloading) { Text("下载") }
+            if (api != null && serviceId != null) TextButton(onClick = {
+                downloading = true
+                saved = false
+                error = null
+                try { download.launch(preview.name) }
+                catch (failure: Exception) { downloading = false; error = failure.message }
+            }, enabled = !downloading) { Text("下载") }
         },
     )
 }
