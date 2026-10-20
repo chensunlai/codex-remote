@@ -6,9 +6,19 @@ namespace CodexRemote.Windows;
 
 internal sealed record AgentSettings(string GatewayUrl, string Token, string Name, string CodexExecutable)
 {
-    public static string DataDirectory => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CodexRemote");
+    public static string DataDirectory => Path.Combine(AppContext.BaseDirectory, "data");
     public static string ConfigPath => Path.Combine(DataDirectory, "agent.json");
+
+    public static void ImportLegacyConfig()
+    {
+        var legacy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CodexRemote", "agent.json");
+        if (File.Exists(ConfigPath) || !File.Exists(legacy)) return;
+        // Preserve the existing service ID and token without rewriting or deleting the old file.
+        ReadDocument(legacy);
+        Directory.CreateDirectory(DataDirectory);
+        File.Copy(legacy, ConfigPath, overwrite: false);
+    }
 
     public static AgentSettings Load(string path)
     {

@@ -13,6 +13,8 @@ internal static class SelfTest
         {
             SettingsWindowLifecycle();
             await output.WriteLineAsync("PASS settings layout, small-window scrolling and close-to-tray behavior");
+            await AgentUpdatesSelfTest.Run();
+            await output.WriteLineAsync("PASS update versions, release URLs, SHA-256, download sizes, progress and cancellation");
             ConfigRoundTrip();
             await output.WriteLineAsync("PASS configuration validation, stable identity and UTF-8 paths");
             CodexPathDiscovery();
@@ -50,6 +52,11 @@ internal static class SelfTest
             form.Show();
             Application.DoEvents();
             form.PerformLayout();
+            var updates = 0;
+            form.UpdateRequested += () => updates++;
+            var update = (Button)form.Controls.Find("checkUpdates", true).Single();
+            update.PerformClick();
+            Require(updates == 1 && saves == 0, "update button must not save settings or restart Agent");
             var save = (Control)form.AcceptButton!;
             RequireInsideClient(form, save, "save button at initial size");
             Require(form.Bounds.Height <= Screen.FromControl(form).WorkingArea.Height, "initial window fits screen");

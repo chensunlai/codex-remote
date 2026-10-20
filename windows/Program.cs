@@ -45,6 +45,8 @@ internal static class Program
         }
 
         using var cancellation = new CancellationTokenSource();
+        // Inno Setup checks this mutex before replacing or uninstalling program files.
+        using var setupMutex = new Mutex(false, @"Local\CodexRemote.Setup");
         try
         {
             using var application = new TrayApplicationContext(args.Contains("--autostart", StringComparer.Ordinal));

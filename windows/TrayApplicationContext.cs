@@ -14,6 +14,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem stop = new("停止 Agent") { Enabled = false };
     private readonly ToolStripMenuItem login = new("登录后自动启动") { CheckOnClick = false };
     private SettingsForm? settings;
+    private UpdateForm? updates;
     private bool exiting;
     private bool busy;
 
@@ -25,6 +26,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(state);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("连接设置…", null, (_, _) => ShowSettings());
+        menu.Items.Add("检查更新…", null, (_, _) => ShowUpdates());
         start.Click += async (_, _) => await StartAsync();
         stop.Click += async (_, _) => await StopAsync(confirm: true);
         menu.Items.Add(start);
@@ -56,6 +58,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private async Task InitializeAsync(bool autostart)
     {
+        try { AgentSettings.ImportLegacyConfig(); }
+        catch (Exception error) { ShowError($"无法导入旧配置：{error.Message}"); }
         if (!File.Exists(AgentSettings.ConfigPath))
         {
             if (!autostart) ShowSettings();
@@ -76,6 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (settings is null || settings.IsDisposed)
                 {
                     settings = new SettingsForm(icon, ApplySettingsAsync);
+                    settings.UpdateRequested += ShowUpdates;
                     settings.LoadSettings(AgentSettings.Load(AgentSettings.ConfigPath));
                 }
                 else if (!settings.Visible)
@@ -89,6 +94,40 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             catch (Exception error) { ShowError(error.Message); }
         });
+    }
+
+    private void ShowUpdates()
+    {
+        if (exiting) return;
+        if (updates is null || updates.IsDisposed) updates = new UpdateForm(icon, InstallUpdateAsync);
+        updates.Show();
+        updates.Activate();
+    }
+
+    private async Task<bool> InstallUpdateAsync(string path)
+    {
+        if (busy || exiting) return false;
+        if (MessageBox.Show(updates,
+            "安装更新会退出 Agent，正在运行的任务可能中断。配置和数据会保留，是否继续？",
+            "安装更新", MessageBoxButtons.OKCancel, MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2) != DialogResult.OK) return false;
+        busy = true;
+        try
+        {
+            await controller.StopAsync();
+            if (controller.IsRunning || controller.Status.State == "error")
+                throw new InvalidOperationException("Agent 未能正常停止，请稍后重试。");
+            var launch = new ProcessStartInfo(path) { UseShellExecute = true };
+            launch.ArgumentList.Add("/DIR=" + AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+            launch.ArgumentList.Add("/NORESTART");
+            // The standard installer waits for this tray process to release its files.
+            launch.ArgumentList.Add("/WAITPID=" + Environment.ProcessId);
+            if (Process.Start(launch) is null) throw new InvalidOperationException("无法启动安装程序。");
+            exiting = true;
+            ExitThread();
+            return true;
+        }
+        finally { busy = false; UpdateStatus(controller.Status); }
     }
 
     private async Task<bool> ApplySettingsAsync(AgentSettings value, bool startOnLogin)
@@ -185,6 +224,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             controller.Dispose();
             tray.Visible = false;
             tray.Dispose();
+            updates?.Dispose();
             if (settings is not null)
             {
                 settings.AllowClose = true;

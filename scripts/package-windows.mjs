@@ -51,8 +51,14 @@ if (process.platform === "win32") {
 } else {
   await run("python3", ["-c", "import pathlib,sys,zipfile\np=pathlib.Path(sys.argv[1])\nwith zipfile.ZipFile(sys.argv[2],'w',zipfile.ZIP_DEFLATED) as z:\n for f in sorted(p.rglob('*')):\n  if f.is_file(): z.write(f,f.relative_to(p.parent))", stage, zip]);
 }
-await writeFile(join(output, "SHA256SUMS"), `${digest(await readFile(zip))}  codex-remote-windows-x64.zip\n`);
+const iscc = process.env.CODEX_REMOTE_ISCC || join(process.env["ProgramFiles(x86)"] || "C:/Program Files (x86)", "Inno Setup 6/ISCC.exe");
+await run(iscc, [`/DAppVersion=${version}`, `/DStageDir=${stage}`, `/DOutputDir=${output}`, "windows/installer.iss"]);
+const installer = join(output, "codex-remote-windows-x64-setup.exe");
+await writeFile(join(output, "SHA256SUMS"),
+  `${digest(await readFile(zip))}  codex-remote-windows-x64.zip\n` +
+  `${digest(await readFile(installer))}  codex-remote-windows-x64-setup.exe\n`);
 console.log(zip);
+console.log(installer);
 
 function digest(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
 function run(command, args, extraEnv = {}) {

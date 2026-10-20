@@ -75,10 +75,14 @@ jobs:
           $env:CODEX_REMOTE_NODE_PATH = Join-Path $PWD 'release/windows/CodexRemote/runtime/node.exe'
           $env:CODEX_REMOTE_TEST_CODEX_EXE = Join-Path $env:LOCALAPPDATA 'Programs/OpenAI/Codex/bin/codex.exe'
           node scripts/test-windows.mjs
+      - name: Check installer, upgrade and uninstall
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: windows-agent-x64-test
           path: |
             release/windows/codex-remote-windows-x64.zip
+            release/windows/codex-remote-windows-x64-setup.exe
             release/windows/SHA256SUMS
           if-no-files-found: error

@@ -20,6 +20,7 @@ internal sealed class SettingsForm : Form
     private readonly Label status = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
     private readonly Button save = new() { Text = "保存并连接", AutoSize = true };
     private readonly Func<AgentSettings, bool, Task<bool>> apply;
+    public event Action? UpdateRequested;
     internal bool AllowClose;
 
     public SettingsForm(Icon icon, Func<AgentSettings, bool, Task<bool>> apply)
@@ -68,13 +69,17 @@ internal sealed class SettingsForm : Form
         startup.Margin = new Padding(0, 4, 0, 12);
         layout.Controls.Add(startup, 0, 11);
         layout.SetColumnSpan(startup, 2);
-        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Margin = Padding.Empty };
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         status.Margin = new Padding(0, 6, 14, 0);
         footer.Controls.Add(status, 0, 0);
+        var update = new Button { Name = "checkUpdates", Text = "检查更新", AutoSize = true };
+        update.Click += (_, _) => UpdateRequested?.Invoke();
+        footer.Controls.Add(update, 1, 0);
         save.Click += async (_, _) => await SaveAsync();
-        footer.Controls.Add(save, 1, 0);
+        footer.Controls.Add(save, 2, 0);
         layout.Controls.Add(footer, 0, 12);
         layout.SetColumnSpan(footer, 2);
         Controls.Add(layout);

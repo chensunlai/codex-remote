@@ -41,7 +41,7 @@ Gateway 和 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，�
 
 - **Gateway / Linux Agent**：glibc Linux，支持 x86_64 和 arm64。
 - **Agent**：运行用户已安装并登录 Codex CLI，能够执行 `codex`。安装包自带 Node.js 和扩展宿主，无需另装 Node.js。
-- **Windows Agent（分支测试版）**：提供原生 x64 托盘应用，下载 ZIP 解压启动；与 Linux 共用 Gateway，详见 [Windows 使用说明](docs/windows.md)。
+- **Windows Agent**：原生 Windows x64，使用安装程序或 ZIP 便携包；与 Linux 共用 Gateway。
 - **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**。
 
 ### 1. Gateway
@@ -74,6 +74,8 @@ sudo /opt/codex-remote/codex-remote-gateway
 
 ### 2. Agent
 
+#### Linux
+
 在运行 Codex 的服务器上，**以已登录 Codex 的用户**执行：
 
 ```bash
@@ -102,7 +104,21 @@ tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
 
 按 `Ctrl+B`，再按 `D` 离开；`tmux attach -t codex-remote-agent` 返回。不要同时运行同一配置的多个 Agent；tmux 不会随服务器重启自动恢复。
 
-### 3. App
+#### Windows
+
+先在 Windows 上安装 Codex CLI，完成登录和首次运行。从[版本发布](https://github.com/chensunlai/codex-remote/releases)下载 `codex-remote-windows-x64-setup.exe`，按向导安装；默认目录为 **`C:\Program Files\CodexRemote`**，可自行修改。安装包自带 Node.js 和 .NET，无需另装。
+
+1. 填写 Gateway 地址、访问令牌和服务器名称。
+2. 程序自动扫描 PATH 和常见安装目录；找到多个 Codex 时选择一个，也可手动指定 `.exe`、`.cmd` 或 `.bat`。
+3. 保存并启动，在手机 App 中选择这台服务器。
+
+关闭窗口会收起到右下角托盘，可从托盘启动、停止、修改配置，也可开启 **“登录后自动启动”**。配置、日志和插件缓存统一保存在 **安装目录下的 `data` 文件夹**。
+
+通过设置窗口或托盘菜单中的 **“检查更新”** 下载并安装新版 Agent，配置会保留。也提供 `codex-remote-windows-x64.zip` 便携包，完整解压后双击 `CodexRemote.exe` 即可使用。
+
+Windows 支持聊天和文件操作，手机端的终端入口置灰；Codex CLI 由用户自行更新。首次使用需配套更新 Gateway 和 Android App，详见 [Windows 使用说明](docs/windows.md)。
+
+### 3. Android App
 
 安装 [Android APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk)，然后：
 

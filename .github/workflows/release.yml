@@ -9,7 +9,33 @@ permissions:
   contents: write
 
 jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          package-manager-cache: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.402
+      - run: npm ci
+      - run: node scripts/package-windows.mjs
+      - name: Verify Windows installer
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/windows/codex-remote-windows-x64.zip
+            release/windows/codex-remote-windows-x64-setup.exe
+            release/windows/SHA256SUMS
+          if-no-files-found: error
   release:
+    needs: windows
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -85,6 +111,14 @@ jobs:
             "$RUNNER_TEMP/apk-signature.txt"
           cp "$apk" release/codex-remote-android.apk
           (cd release && sha256sum codex-remote-android.apk >> SHA256SUMS)
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release/windows-release
+      - name: Stage Windows packages
+        run: |
+          cp release/windows-release/*.zip release/windows-release/*.exe release/
+          cat release/windows-release/SHA256SUMS >> release/SHA256SUMS
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,5 +133,7 @@ jobs:
             release/codex-remote-gateway-linux-x64 \
             release/codex-remote-gateway-linux-arm64 \
             release/codex-remote-android.apk \
+            release/codex-remote-windows-x64.zip \
+            release/codex-remote-windows-x64-setup.exe \
             release/SHA256SUMS \
             --clobber
