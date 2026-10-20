@@ -12,10 +12,13 @@ internal static class CodexScriptLauncherSelfTest
         try
         {
             // Script text is ASCII; Unicode paths and arguments must not depend on the CMD codepage.
-            foreach (var extension in new[] { ".bat", ".cmd" })
+            foreach (var extension in new[] { ".bat", ".cmd", "-npm.cmd" })
             {
                 var script = Path.Combine(directory, "codex 测试 & (shim)" + extension);
-                await File.WriteAllTextAsync(script, "@echo off\r\nsetlocal DisableDelayedExpansion\r\n\"%CODEX_REMOTE_SCRIPT_TEST_EXE%\" --self-test-codex-script-worker %*\r\nexit /b %errorlevel%\r\n", Encoding.ASCII);
+                var contents = extension == "-npm.cmd"
+                    ? "@echo off\r\nsetlocal\r\nset \"_prog=%CODEX_REMOTE_SCRIPT_TEST_EXE%\"\r\nendlocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\" --self-test-codex-script-worker %*\r\n"
+                    : "@echo off\r\nsetlocal DisableDelayedExpansion\r\n\"%CODEX_REMOTE_SCRIPT_TEST_EXE%\" --self-test-codex-script-worker %*\r\nexit /b %errorlevel%\r\n";
+                await File.WriteAllTextAsync(script, contents, Encoding.ASCII);
                 var arguments = new[] { "app-server", "--config", "model=\"中文 & (配置)^%!\"", "", "中文 空格", "()[]", "%PATH%", "!UNCHANGED!", "caret^", "a\"b", "trailing\\", "\\\"", "\"(foo|bar>baz)\"" };
                 var report = Path.Combine(directory, "arguments.json");
                 using var launcher = Start(script, report, arguments);
@@ -84,7 +87,8 @@ internal static class CodexScriptLauncherSelfTest
             start.ArgumentList.Add("--self-test-worker");
             start.ArgumentList.Add("leaf");
             using var child = Process.Start(start)!;
-            File.WriteAllText(report, JsonSerializer.Serialize(new[] { Environment.ProcessId, child.Id }));
+            File.WriteAllText(report + ".tmp", JsonSerializer.Serialize(new[] { Environment.ProcessId, child.Id }));
+            File.Move(report + ".tmp", report);
             Thread.Sleep(Timeout.Infinite);
         }
         File.WriteAllText(report, JsonSerializer.Serialize(args));

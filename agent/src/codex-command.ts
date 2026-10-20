@@ -6,9 +6,7 @@ export function codexCommand(executable: string): { executable: string; env: Nod
   if (process.platform !== "win32" || !/\.(?:cmd|bat)$/i.test(executable)) {
     return { executable, env: process.env };
   }
-  const supervisor = process.env.CODEX_REMOTE_WINDOWS_SUPERVISOR;
-  const launcher = process.env.CODEX_REMOTE_WINDOWS_CODEX_LAUNCHER
-    ?? supervisor ?? "";
+  const launcher = process.env.CODEX_REMOTE_WINDOWS_SUPERVISOR ?? "";
   if (!isNativeAbsolutePath(launcher) || !/\.exe$/i.test(launcher) || !existsSync(launcher)) {
     throw new Error("缺少 Windows Codex 脚本启动器，请完整解压新版 Windows ZIP 后重试");
   }
