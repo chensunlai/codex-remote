@@ -52,26 +52,30 @@ internal static class CodexScriptLauncherSelfTest
 
             var waitScript = Path.Combine(directory, "wait.cmd");
             await File.WriteAllTextAsync(waitScript, "@echo off\r\n\"%CODEX_REMOTE_SCRIPT_TEST_EXE%\" --self-test-codex-script-worker %*\r\n", Encoding.ASCII);
-            var waitReport = Path.Combine(directory, "processes.json");
-            using var waiting = Start(waitScript, waitReport, ["wait-for-stop"]);
-            using var waitingJob = new WindowsJob();
-            waitingJob.Assign(waiting);
-            await waiting.StandardInput.WriteLineAsync("start");
-            await waiting.StandardInput.FlushAsync();
-            var deadline = Stopwatch.StartNew();
-            while (!File.Exists(waitReport))
+            foreach (var killLauncherOnly in new[] { false, true })
             {
-                if (deadline.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Script worker did not start.");
-                await Task.Delay(25);
+                var waitReport = Path.Combine(directory, $"processes-{killLauncherOnly}.json");
+                using var waiting = Start(waitScript, waitReport, ["wait-for-stop"]);
+                using var waitingJob = new WindowsJob();
+                waitingJob.Assign(waiting);
+                await waiting.StandardInput.WriteLineAsync("start");
+                await waiting.StandardInput.FlushAsync();
+                var deadline = Stopwatch.StartNew();
+                while (!File.Exists(waitReport))
+                {
+                    if (deadline.Elapsed > TimeSpan.FromSeconds(10)) throw new TimeoutException("Script worker did not start.");
+                    await Task.Delay(25);
+                }
+                var pids = JsonSerializer.Deserialize<int[]>(await File.ReadAllTextAsync(waitReport))!;
+                using var worker = Process.GetProcessById(pids[0]);
+                using var descendant = Process.GetProcessById(pids[1]);
+                _ = worker.Handle;
+                _ = descendant.Handle;
+                if (killLauncherOnly) waiting.Kill(entireProcessTree: false);
+                else await waitingJob.TerminateAndWaitAsync();
+                await Task.WhenAll(waiting.WaitForExitAsync(), worker.WaitForExitAsync(), descendant.WaitForExitAsync())
+                    .WaitAsync(TimeSpan.FromSeconds(10));
             }
-            var pids = JsonSerializer.Deserialize<int[]>(await File.ReadAllTextAsync(waitReport))!;
-            using var worker = Process.GetProcessById(pids[0]);
-            using var descendant = Process.GetProcessById(pids[1]);
-            _ = worker.Handle;
-            _ = descendant.Handle;
-            await waitingJob.TerminateAndWaitAsync();
-            await Task.WhenAll(waiting.WaitForExitAsync(), worker.WaitForExitAsync(), descendant.WaitForExitAsync())
-                .WaitAsync(TimeSpan.FromSeconds(10));
         }
         finally { Directory.Delete(directory, recursive: true); }
     }

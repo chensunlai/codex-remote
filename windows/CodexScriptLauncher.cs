@@ -7,6 +7,9 @@ namespace CodexRemote.Windows;
 internal static class CodexScriptLauncher
 {
     private const string MetaCharacters = "()[]%!^\"`<>&|;, *?";
+    // Keep this handle rooted until process teardown: this job owns the launcher itself.
+    // Closing it on normal return would terminate the launcher before Main returns its exit code.
+    private static WindowsJob? processLifetimeJob;
 
     internal static async Task<int> Run(string[] args)
     {
@@ -32,6 +35,9 @@ internal static class CodexScriptLauncher
                 UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true
             };
+            processLifetimeJob = new WindowsJob();
+            using (var owner = Process.GetCurrentProcess()) processLifetimeJob.Assign(owner);
+            // Children inherit the job from birth, including when only our PID is killed by Node.
             using var child = Process.Start(start) ?? throw new InvalidOperationException("无法启动 Codex 脚本。");
             using var output = Console.OpenStandardOutput();
             using var errors = Console.OpenStandardError();
