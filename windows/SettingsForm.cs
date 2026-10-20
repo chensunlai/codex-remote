@@ -5,7 +5,10 @@ internal sealed class SettingsForm : Form
     private readonly TextBox gateway = new() { Dock = DockStyle.Fill };
     private readonly TextBox token = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly TextBox name = new() { Dock = DockStyle.Fill };
-    private readonly TextBox codex = new() { Dock = DockStyle.Fill };
+    private readonly TextBox codex = new()
+    {
+        Dock = DockStyle.Fill, PlaceholderText = "留空自动查找 PATH 和官方默认安装目录"
+    };
     private readonly CheckBox startup = new() { AutoSize = true, Text = "登录 Windows 后自动启动" };
     private readonly Label status = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
     private readonly Button save = new() { Text = "保存并连接", AutoSize = true };

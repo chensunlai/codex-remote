@@ -15,6 +15,8 @@ internal static class SelfTest
             await output.WriteLineAsync("PASS settings layout, small-window scrolling and close-to-tray behavior");
             ConfigRoundTrip();
             await output.WriteLineAsync("PASS configuration validation, stable identity and UTF-8 paths");
+            CodexPathDiscovery();
+            await output.WriteLineAsync("PASS Codex PATH discovery, explicit path priority and default fallback");
             await JobOwnsOnlyItsTree();
             await output.WriteLineAsync("PASS job cleanup leaves independent processes running");
             await WatcherCleansDescendants(closeInput: false);
@@ -117,6 +119,52 @@ internal static class SelfTest
             Reject(() => AgentSettings.Load(path));
         }
         finally { Directory.Delete(directory, recursive: true); }
+    }
+
+    private static void CodexPathDiscovery()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "Codex PATH 测试 " + Guid.NewGuid());
+        var previousPath = Environment.GetEnvironmentVariable("PATH");
+        var previousDirectory = Environment.CurrentDirectory;
+        try
+        {
+            var first = Directory.CreateDirectory(Path.Combine(directory, "first 空格")).FullName;
+            var second = Directory.CreateDirectory(Path.Combine(directory, "second")).FullName;
+            var relative = Directory.CreateDirectory(Path.Combine(directory, "relative")).FullName;
+            var executable = Path.Combine(first, "codex.exe");
+            File.WriteAllText(executable, "first");
+            File.WriteAllText(Path.Combine(second, "codex.exe"), "second");
+            File.WriteAllText(Path.Combine(relative, "codex.exe"), "must not use cwd");
+            Environment.CurrentDirectory = directory;
+            Environment.SetEnvironmentVariable("PATH", $";relative;\"{first}\";{second}");
+            var automatic = new AgentSettings("https://gateway.example.com", "unused-fixture-token", "fixture", "");
+            foreach (var input in new[] { "", "  ", "codex", "CODEX.EXE" })
+                Require((automatic with { CodexExecutable = input }).Validate().CodexExecutable == executable,
+                    "PATH order, quoted UTF-8 directory and automatic input");
+            var explicitPath = Path.Combine(second, "codex.exe");
+            Require((automatic with { CodexExecutable = explicitPath }).Validate().CodexExecutable == explicitPath,
+                "explicit path takes priority over PATH");
+            Reject(() => (automatic with { CodexExecutable = Path.Combine(directory, "missing.exe") }).Validate());
+            var configPath = Path.Combine(directory, "agent.json");
+            Require(AgentSettings.Load(configPath).CodexExecutable == "", "new configuration enables automatic lookup");
+            automatic.Save(configPath);
+            Require(AgentSettings.Load(configPath).CodexExecutable == executable, "save records resolved absolute EXE");
+
+            File.Delete(executable);
+            File.WriteAllText(Path.Combine(first, "codex.cmd"), "unsupported wrapper");
+            File.WriteAllText(Path.Combine(first, "codex.bat"), "unsupported wrapper");
+            Environment.SetEnvironmentVariable("PATH", $";relative;{first}");
+            if (File.Exists(AgentSettings.DefaultCodexPath))
+                Require(automatic.Validate().CodexExecutable == AgentSettings.DefaultCodexPath,
+                    "official default fallback ignores CMD, BAT, cwd and relative PATH");
+            else Reject(() => automatic.Validate());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", previousPath);
+            Environment.CurrentDirectory = previousDirectory;
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static async Task JobOwnsOnlyItsTree()

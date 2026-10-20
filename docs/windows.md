@@ -10,13 +10,15 @@ Windows x64 首版使用原生 Codex，不依赖 WSL。Gateway 与 Linux 共用�
 %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe
 ```
 
-保留官方安装器生成的完整运行文件。Agent 不会复制 Codex，也不会读取其内部安装布局；如果自定义了安装目录，在配置中选择实际的 `codex.exe`。首版不接受 npm 的 `.cmd`、`.bat` 包装入口。
+保留官方安装器生成的完整运行文件。Agent 不会复制 Codex，也不会读取其内部安装布局。配置中的 Codex 路径可以留空：先按当前进程的 PATH 顺序查找 `codex.exe`，再检查官方默认目录；也可以手动选择实际的 EXE，手动路径优先，不会在路径失效后静默换用其他安装。首次保存时会记录检测到的绝对路径。首版不接受 npm 的 `.cmd`、`.bat` 包装入口。
+
+如果在托盘程序运行期间修改了 PATH，请退出并重新启动托盘程序，使其取得新的环境变量。
 
 ## 启动与配置
 
 1. 下载 `codex-remote-windows-x64.zip`，完整解压到固定位置。
 2. 双击 `CodexRemote.exe`，填写 Gateway 地址、Token 和服务器名称。
-3. 确认检测到的 Codex 路径，保存后启动 Agent。
+3. Codex 路径留空自动检测，或手动选择 EXE，保存后启动 Agent。
 4. 窗口关闭后收起到右下角托盘；在手机 App 中选择这台服务器。
 
 ZIP 已包含 Node.js 和 .NET 运行环境，无需额外安装。连接配置、日志、官方插件缓存保存在 `%LOCALAPPDATA%\CodexRemote`，升级 ZIP 时保留该目录即可延续服务 ID 和配置。

@@ -20,7 +20,7 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
             document["gatewayUrl"]?.GetValue<string>() ?? "",
             document["token"]?.GetValue<string>() ?? "",
             document["name"]?.GetValue<string>() ?? Environment.MachineName,
-            document["codexExecutable"]?.GetValue<string>() ?? DefaultCodexPath);
+            document["codexExecutable"]?.GetValue<string>() ?? "");
     }
 
     public AgentSettings Validate()
@@ -34,15 +34,31 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
         if (Token.Trim().Length == 0) throw new InvalidOperationException("请填写访问令牌。");
         if (Name.Trim().Length == 0) throw new InvalidOperationException("请填写服务器名称。");
         var executable = CodexExecutable.Trim();
+        if (executable.Length == 0
+            || executable.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            || executable.Equals("codex.exe", StringComparison.OrdinalIgnoreCase))
+            executable = FindCodexExecutable();
         if (!Path.IsPathFullyQualified(executable)
             || !string.Equals(Path.GetExtension(executable), ".exe", StringComparison.OrdinalIgnoreCase)
             || !File.Exists(executable))
-            throw new InvalidOperationException("请选择已安装的 Codex EXE 文件；不支持 CMD 或 BAT 入口。");
+            throw new InvalidOperationException("未找到 Codex EXE。请将 codex.exe 所在目录加入 PATH，或选择已安装的 EXE 文件；不支持 CMD 或 BAT 入口。");
         return this with
         {
             GatewayUrl = url.AbsoluteUri.TrimEnd('/'), Token = Token.Trim(),
             Name = Name.Trim(), CodexExecutable = Path.GetFullPath(executable)
         };
+    }
+
+    private static string FindCodexExecutable()
+    {
+        foreach (var entry in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+        {
+            var directory = entry.Trim().Trim('"');
+            if (!Path.IsPathFullyQualified(directory)) continue;
+            var candidate = Path.Combine(directory, "codex.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        return DefaultCodexPath;
     }
 
     public void Save(string path)
