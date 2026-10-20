@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { APP_VERSION } from "./version.js";
 import { ClientCoordination, type CoordinationMessage } from "./client-coordination.js";
+import { codexCommand } from "./codex-command.js";
 
 export type RawRpc = Record<string, unknown>;
 type RpcId = string | number;
@@ -372,8 +373,9 @@ class CodexChannel {
     const startingEpoch = this.epoch;
     const version = await readCodexVersion(this.executable);
     if (this.epoch !== startingEpoch) throw new Error("Codex 启动已取消");
-    const child = spawn(this.executable, ["app-server", "--stdio"], {
-      stdio: ["pipe", "pipe", "pipe"], env: process.env,
+    const command = codexCommand(this.executable);
+    const child = spawn(command.executable, ["app-server", "--stdio"], {
+      stdio: ["pipe", "pipe", "pipe"], env: command.env, windowsHide: true,
     });
     this.child = child;
     let buffer = Buffer.alloc(0);
@@ -590,7 +592,8 @@ export function parseCodexVersion(output: string): string | null {
 
 export function commandOutput(executable: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(executable, args, { timeout: 10_000, maxBuffer: 1024 * 1024, encoding: "utf8", env: process.env },
+    const command = codexCommand(executable);
+    execFile(command.executable, args, { timeout: 10_000, maxBuffer: 1024 * 1024, encoding: "utf8", env: command.env, windowsHide: true },
       (error, stdout) => error ? reject(error) : resolve(stdout));
   });
 }

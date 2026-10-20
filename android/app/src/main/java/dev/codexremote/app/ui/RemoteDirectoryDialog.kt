@@ -63,6 +63,9 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.objects
+import dev.codexremote.app.data.isRemoteAbsolutePath
+import dev.codexremote.app.data.remotePathParent
+import dev.codexremote.app.data.remotePathBreadcrumbs
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
 
@@ -85,7 +88,7 @@ internal fun RemoteDirectoryDialog(
     val colors = MaterialTheme.colorScheme
 
     fun navigate(nextPath: String) {
-        if (busy || !nextPath.startsWith('/')) return
+        if (busy || !isRemoteAbsolutePath(nextPath)) return
         // Invalidate the old directory immediately, before the new request starts.
         busy = true
         entries = emptyList()
@@ -165,7 +168,7 @@ internal fun RemoteDirectoryDialog(
                                     keyboardActions = KeyboardActions(onGo = { navigate(input) }),
                                     trailingIcon = {
                                         IconButton(
-                                            onClick = { navigate(input) }, enabled = !busy && input.startsWith('/'),
+                                            onClick = { navigate(input) }, enabled = !busy && isRemoteAbsolutePath(input),
                                             colors = IconButtonDefaults.iconButtonColors(contentColor = colors.tertiary),
                                         ) {
                                             AppIcon(CodexIcons.ArrowBack, "打开路径", Modifier.rotate(180f))
@@ -177,8 +180,8 @@ internal fun RemoteDirectoryDialog(
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     TextButton(
-                                        onClick = { navigate(path.trimEnd('/').substringBeforeLast('/').ifBlank { "/" }) },
-                                        enabled = !busy && path != "/",
+                                        onClick = { navigate(remotePathParent(path)) },
+                                        enabled = !busy && remotePathBreadcrumbs(path).size > 1,
                                         contentPadding = PaddingValues(horizontal = 8.dp),
                                     ) {
                                         AppIcon(CodexIcons.ArrowUp, "返回父目录", Modifier.size(16.dp))

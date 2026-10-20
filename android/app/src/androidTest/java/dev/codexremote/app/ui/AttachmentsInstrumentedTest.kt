@@ -24,6 +24,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.PreviewContent
 import dev.codexremote.app.data.readPreview
+import dev.codexremote.app.data.uploadAttachments
 import dev.codexremote.app.model.FilePreview
 import dev.codexremote.app.model.GatewayConfig
 import kotlinx.coroutines.launch
@@ -36,12 +37,36 @@ import org.junit.Test
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.ServerSocket
+import java.net.URLDecoder
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class AttachmentsInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test fun windowsAttachmentUploadPreservesBytesAndUsesTheRemoteHome() = runBlocking {
+        val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "手机图片.png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+        })!!
+        val bytes = png()
+        resolver.openOutputStream(uri)!!.use { it.write(bytes) }
+        try {
+            FixtureGateway(bytes).use { gateway ->
+                val selection = uploadAttachments(gateway.api, "windows", "C:\\Users\\用户", resolver,
+                    listOf(uri), JSONObject().put("imagesOnly", true)) {}
+                val file = selection.getJSONObject(0)
+                assertTrue(file.getString("path").startsWith("C:/Users/用户/.codex-remote-uploads/"))
+                assertTrue(file.getString("path").endsWith("/手机图片.png"))
+                assertEquals(file.getString("path"), file.getString("fsPath"))
+                val upload = gateway.requests.single { it.first.contains("/fs/upload?") }
+                assertTrue(URLDecoder.decode(upload.first, "UTF-8").contains(file.getString("path")))
+                assertTrue(upload.second.toString(Charsets.ISO_8859_1).contains(bytes.toString(Charsets.ISO_8859_1)))
+            }
+        } finally { resolver.delete(uri, null, null) }
+    }
 
     @Test fun hiddenPageDefersPickerAndBackgroundingDoesNotCancelAnOpenPicker() {
         val visible = mutableStateOf(false)
@@ -176,14 +201,25 @@ class AttachmentsInstrumentedTest {
                         }
                         val request = line()
                         var length = 0
+                        var chunked = false
                         while (true) {
                             val header = line()
                             if (header.isEmpty()) break
                             if (header.startsWith("Content-Length:", true)) length = header.substringAfter(':').trim().toInt()
+                            if (header.startsWith("Transfer-Encoding:", true)) chunked = header.substringAfter(':').trim().equals("chunked", true)
                         }
-                        val body = ByteArray(length)
-                        var offset = 0
-                        while (offset < length) { val count = input.read(body, offset, length - offset); if (count < 0) break; offset += count }
+                        fun readBytes(size: Int): ByteArray = ByteArray(size).apply {
+                            var offset = 0
+                            while (offset < size) { val count = input.read(this, offset, size - offset); check(count >= 0); offset += count }
+                        }
+                        val body = if (chunked) ByteArrayOutputStream().apply {
+                            while (true) {
+                                val size = line().substringBefore(';').toInt(16)
+                                if (size == 0) { while (line().isNotEmpty()) Unit; break }
+                                write(readBytes(size))
+                                check(line().isEmpty())
+                            }
+                        }.toByteArray() else readBytes(length)
                         requests += request to body
                         val response = if (request.contains("/fs/download?")) image else
                             (if (request.contains("/fs/list?")) "{\"data\":[]}" else "{\"data\":{}}").toByteArray()

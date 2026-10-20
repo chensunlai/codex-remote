@@ -7,6 +7,7 @@ export interface ServiceRecord {
   arch?: string;
   agentVersion?: string;
   home?: string;
+  capabilities?: string[];
   createdAt: string;
   lastConnectedAt: string;
 }
@@ -19,6 +20,7 @@ export interface ServiceView {
   arch?: string;
   agentVersion?: string;
   home?: string;
+  capabilities?: string[];
   connectedAt?: string;
   runtime: {
     state: "connected" | "disconnected";

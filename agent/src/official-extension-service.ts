@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import { isNativeAbsolutePath } from "./native-path.js";
 import { OfficialExtensionStore, type OfficialExtensionPackage } from "./official-extension-store.js";
 import { resolveExtensionHostDirectory, resolveNodeExecutable } from "./node-runtime.js";
+import { superviseWindowsHost, type HostSupervisor } from "./windows-host-supervisor.js";
+import { codexCommand } from "./codex-command.js";
 
 export interface ExtensionViewFrame {
   viewId: string;
@@ -37,11 +40,13 @@ interface ExtensionView {
   frames: SavedFrame[];
   bytes: number;
   child: ChildProcess;
+  supervisor?: HostSupervisor;
   started: Promise<void>;
   deliveries: Map<string, string>;
   pending: Map<string, NativeRequest>;
   processes: Map<number, string | null>;
   stopping: boolean;
+  stopped?: Promise<void>;
 }
 // Replay storage is independent of the fragmented WebSocket message limit.
 const maxFramesBytes = 48 * 1024 * 1024;
@@ -207,10 +212,11 @@ export class OfficialExtensionService {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(viewId)) throw new Error("无效的页面 ID");
     const rendererId = text(params.rendererId, "rendererId");
     const workspace = text(params.workspace, "workspace");
-    if (!isAbsolute(workspace)) throw new Error("工作目录必须是绝对路径");
+    if (!isNativeAbsolutePath(workspace)) throw new Error("工作目录必须是绝对路径");
     if (!(await stat(workspace)).isDirectory()) throw new Error("工作目录不存在");
     const canonicalWorkspace = await realpath(workspace);
     let view = this.views.get(viewId);
+    if (view?.stopping) { await this.stop(view); view = this.views.get(viewId); }
     if (!view) {
       const extension = await this.store.active();
       if (!extension) throw new Error("尚未安装官方前端，请点击检查并更新前端");
@@ -229,7 +235,8 @@ export class OfficialExtensionService {
     }
     view.rendererId = rendererId;
     view.attached = true;
-    await view.started;
+    try { await view.started; }
+    catch (error) { await this.stop(view); throw error; }
     await this.send(view, { type: "visibility", visible: true });
     return {
       viewId, epoch: view.epoch, sequence: view.sequence, version: view.version, packageSha256: view.packageSha256, origin: view.origin, html: view.html,
@@ -254,8 +261,10 @@ export class OfficialExtensionService {
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     if (this.closed) throw new Error("官方扩展宿主已关闭");
     const origin = "https://v" + viewId.slice(0, 40) + ".codex-remote.invalid";
+    const command = codexCommand(this.executable);
     const child = spawn(node, [join(hostDirectory, "runtime.cjs")], {
-      cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: process.env, detached: true,
+      cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: command.env,
+      detached: process.platform === "linux", windowsHide: true,
     });
     let resolveStart!: () => void, rejectStart!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => { resolveStart = resolve; rejectStart = reject; });
@@ -311,19 +320,32 @@ export class OfficialExtensionService {
     // Keep diagnostics bounded and out of the public event journal.
     child.stderr?.on("data", () => {});
     child.once("error", error => { clearTimeout(timer); rejectStart(error); });
-    child.once("exit", (code, signal) => {
+    child.once("exit", async (code, signal) => {
       clearTimeout(timer);
       // The host may have exited before a child honored SIGTERM. Its isolated
       // process group must be gone before a replacement can acquire writers.
-      try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
+      if (process.platform === "linux") {
+        try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
+      }
       rejectStart(new Error(`官方扩展已退出 (${String(code ?? signal)})`));
-      if (this.views.get(viewId) === view) this.views.delete(viewId);
-      if (!view.stopping) this.frame(view, "status", { state: "error", message: "官方扩展已退出，请重新连接", retryable: true, reloadRequired: true });
+      const unexpected = !view.stopping;
+      await this.stop(view);
+      if (unexpected) this.frame(view, "status", { state: "error", message: "官方扩展已退出，请重新连接", retryable: true, reloadRequired: true });
     });
-    await this.send(view, { type: "start", options: {
-      extensionDirectory: extension.directory, main: extension.manifest.main, stateDirectory, workspace,
-      clientId: viewId, hostId: view.epoch, origin, cliExecutable: this.executable,
-    } });
+    try {
+      const supervisor = await superviseWindowsHost(child);
+      if (supervisor) view.supervisor = supervisor;
+      if (view.stopping || this.closed) throw new Error("官方扩展启动已取消");
+      await this.send(view, { type: "start", options: {
+        extensionDirectory: extension.directory, main: extension.manifest.main, stateDirectory, workspace,
+        clientId: viewId, hostId: view.epoch, origin, cliExecutable: command.executable,
+      } });
+    } catch (error) {
+      clearTimeout(timer);
+      rejectStart(error instanceof Error ? error : new Error(String(error)));
+      await this.stop(view);
+      throw error;
+    }
     return view;
   }
 
@@ -365,21 +387,26 @@ export class OfficialExtensionService {
     }));
   }
 
-  private async stop(view: ExtensionView): Promise<void> {
-    if (view.stopping) return;
+  private stop(view: ExtensionView): Promise<void> {
+    if (view.stopped) return view.stopped;
     view.stopping = true;
-    if (this.views.get(view.viewId) === view) this.views.delete(view.viewId);
-    await new Promise<void>(resolve => {
-      if (view.child.exitCode !== null || view.child.signalCode !== null) { resolve(); return; }
-      const timer = setTimeout(() => {
-        // Each host has its own process group. A stuck deactivation must not
-        // leave its app-server holding a conversation's writer after restart.
-        try { if (view.child.pid) process.kill(-view.child.pid, "SIGKILL"); } catch { view.child.kill("SIGKILL"); }
-        resolve();
-      }, 5_000);
-      view.child.once("exit", () => { clearTimeout(timer); resolve(); });
-      void this.send(view, { type: "stop" }).catch(() => view.child.kill("SIGTERM"));
-    });
+    view.stopped = (async () => {
+      await new Promise<void>(resolve => {
+        if (view.child.exitCode !== null || view.child.signalCode !== null) { resolve(); return; }
+        const timer = setTimeout(() => {
+          // A stuck deactivation must release its app-server before a replacement starts.
+          if (process.platform === "linux" && view.child.pid) {
+            try { process.kill(-view.child.pid, "SIGKILL"); } catch { view.child.kill("SIGKILL"); }
+          } else view.child.kill("SIGKILL");
+          resolve();
+        }, 5_000);
+        view.child.once("exit", () => { clearTimeout(timer); resolve(); });
+        void this.send(view, { type: "stop" }).catch(() => view.child.kill("SIGTERM"));
+      });
+      await view.supervisor?.close();
+      if (this.views.get(view.viewId) === view) this.views.delete(view.viewId);
+    })();
+    return view.stopped;
   }
 }
 

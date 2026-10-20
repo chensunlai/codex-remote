@@ -18,6 +18,7 @@ import dev.codexremote.app.data.TerminalSessionManager
 import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseServices
+import dev.codexremote.app.data.joinRemotePath
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
@@ -177,7 +178,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.value = AppState(fontScale = uiPreferences.fontScale, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
     }
 
-    fun setSection(section: MainSection) { _state.update { it.copy(section = section) } }
+    fun setSection(section: MainSection) {
+        _state.update { current ->
+            if (section == MainSection.TERMINAL && current.services.firstOrNull { it.id == current.selectedServiceId }?.supportsTerminal == false) current
+            else current.copy(section = section)
+        }
+    }
     fun clearError() { _state.update { it.copy(error = null) } }
     fun updateFontScale(value: Float) { _state.update { it.copy(fontScale = uiPreferences.setFontScale(value)) } }
     fun setTheme(value: AppTheme) {
@@ -206,7 +212,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectService(serviceId: String) {
         if (_state.value.selectedServiceId == serviceId) return
-        _state.update { it.copy(selectedServiceId = serviceId, remotePath = "", remoteFiles = emptyList(), filePreview = null) }
+        _state.update { current ->
+            val unsupportedTerminal = current.services.firstOrNull { it.id == serviceId }?.supportsTerminal == false
+            current.copy(selectedServiceId = serviceId, remotePath = "", remoteFiles = emptyList(), filePreview = null,
+                section = if (current.section == MainSection.TERMINAL && unsupportedTerminal) MainSection.SESSIONS else current.section)
+        }
         launchOperation("正在读取目录") { loadServiceWorkspace(serviceId) }
     }
 
@@ -233,7 +243,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val serviceId = _state.value.selectedServiceId ?: return
         val currentPath = _state.value.remotePath
         launchOperation("正在创建目录") {
-            api.mkdir(serviceId, joinRemote(currentPath, name))
+            api.mkdir(serviceId, joinRemotePath(currentPath, name))
             browseNow(serviceId, currentPath)
             onComplete()
         }
@@ -251,8 +261,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val serviceId = _state.value.selectedServiceId ?: return
         val metadata = resolver.documentMetadata(uri)
         val name = remoteName?.takeIf(String::isNotBlank) ?: metadata.first
-        val remotePath = joinRemote(_state.value.remotePath, name)
+        val directory = _state.value.remotePath
         launchOperation("正在上传 " + name) {
+            val remotePath = joinRemotePath(directory, name)
             api.upload(
                 serviceId = serviceId,
                 path = remotePath,
@@ -314,8 +325,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(filePreview = null) }
     }
 
-    internal fun terminalSession(serviceId: String, cwd: String?): TerminalSession =
-        terminalSessions.session(serviceId, cwd)
+    internal fun terminalSession(serviceId: String, cwd: String?): TerminalSession {
+        check(_state.value.services.firstOrNull { it.id == serviceId }?.supportsTerminal != false) { "该服务器不支持远程终端" }
+        return terminalSessions.session(serviceId, cwd)
+    }
 
     override fun onCleared() { setForeground(false); terminalSessions.closeAll(); api.clear(); operationScope.coroutineContext[Job]?.cancel() }
 
@@ -339,7 +352,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val selected = _state.value.selectedServiceId?.takeIf { id -> services.any { it.id == id } }
             ?: services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }?.id
             ?: services.firstOrNull()?.id
-        _state.update { it.copy(services = services, selectedServiceId = selected) }
+        services.filterNot { it.supportsTerminal }.forEach { terminalSessions.close(it.id) }
+        _state.update { current ->
+            current.copy(services = services, selectedServiceId = selected,
+                section = if (current.section == MainSection.TERMINAL && services.firstOrNull { it.id == selected }?.supportsTerminal == false) MainSection.SESSIONS else current.section)
+        }
         if (selected != null && services.any { it.id == selected && it.runtimeState == RuntimeState.CONNECTED }) {
             if (_state.value.remotePath.isBlank()) loadServiceWorkspace(selected)
         } else _state.update { it.copy(section = MainSection.SERVICES) }
@@ -385,9 +402,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]),
     )
 }
-
-private fun joinRemote(parent: String, name: String): String =
-    if (parent == "/") "/" + name.trim('/') else parent.trimEnd('/') + "/" + name.trim('/')
 
 private fun formatBytes(bytes: Long): String {
     if (bytes < 1024) return bytes.toString() + " B"

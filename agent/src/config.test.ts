@@ -11,8 +11,9 @@ import {
 
 describe("Agent configuration", () => {
   it("stores its default configuration beside the program", () => {
-    expect(configPathBesideProgram("/srv/codex-remote/codex-remote-agent"))
-      .toBe("/srv/codex-remote/agent.json");
+    const directory = join(tmpdir(), "codex-remote");
+    expect(configPathBesideProgram(join(directory, "codex-remote-agent")))
+      .toBe(join(directory, "agent.json"));
   });
 
   it("uses normal scheme ports and maps HTTPS to WSS", () => {
@@ -39,6 +40,7 @@ describe("Agent configuration", () => {
         "--token", "first-token",
         "--name", "first-name",
         "--config", path,
+        ...(process.platform === "win32" ? ["--codex", process.execPath] : []),
       ], {});
       const second = await loadAgentConfig([
         "--configure",
@@ -46,6 +48,7 @@ describe("Agent configuration", () => {
         "--token", "second-token",
         "--name", "second-name",
         "--config", path,
+        ...(process.platform === "win32" ? ["--codex", process.execPath] : []),
       ], {});
       expect(second.serviceId).toBe(first.serviceId);
       expect(JSON.parse(await readFile(path, "utf8"))).toEqual(

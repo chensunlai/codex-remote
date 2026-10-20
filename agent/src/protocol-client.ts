@@ -31,6 +31,11 @@ interface ProtocolHandlers {
   stream: (message: GatewayStream) => Promise<void> | void;
 }
 
+interface ProtocolClientOptions {
+  connected?: () => void;
+  log?: (message: string) => void;
+}
+
 export class ProtocolClient {
   private socket: WebSocket | undefined;
   private closed = false;
@@ -40,6 +45,7 @@ export class ProtocolClient {
     private readonly url: URL,
     private readonly token: string,
     private readonly handlers: ProtocolHandlers,
+    private readonly options: ProtocolClientOptions = {},
   ) {}
 
   run(): Promise<void> {
@@ -58,7 +64,8 @@ export class ProtocolClient {
           onMessage: text => this.handleMessage(text),
           onFatal: (error, code) => reject(code === 4400 || code === 4409 ? new FatalTransportError(error.message) : error),
         });
-        process.stdout.write(`已连接 Gateway: ${this.url.origin}\n`);
+        if (this.options.connected) this.options.connected();
+        else process.stdout.write(`已连接 Gateway: ${this.url.origin}\n`);
       });
 
       socket.on("error", (error) => {
@@ -81,9 +88,8 @@ export class ProtocolClient {
           return;
         }
         if (opened) {
-          process.stderr.write(
-            `Gateway 连接已断开 (code=${code}, reason=${reason.toString() || "none"})\n`,
-          );
+          const message = `Gateway 连接已断开 (code=${code}, reason=${reason.toString() || "none"})\n`;
+          if (this.options.log) this.options.log(message); else process.stderr.write(message);
           resolve();
         } else {
           reject(
@@ -123,7 +129,8 @@ export class ProtocolClient {
   close(): void {
     this.closed = true;
     this.transport?.dispose();
-    this.socket?.close(1000, "Agent stopped");
+    if (this.socket?.readyState === WebSocket.CONNECTING) this.socket.terminate();
+    else this.socket?.close(1000, "Agent stopped");
   }
 
   private handleMessage(raw: RawData | string): void {

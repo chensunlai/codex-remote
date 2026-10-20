@@ -18,6 +18,21 @@ class OfficialNativeRequestLifecycleInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
     @Test
+    fun openDialogReturnsWindowsFileUrisWithoutAndroidPathConversion() {
+        val session = session { JSONArray().put(JSONObject().put("path", "C:\\Project Files\\项目\\image.png"))
+            .put(JSONObject().put("path", "\\\\server\\share\\image.png")) }
+        try {
+            receive(session, snapshot("epoch-one", "windows-pick"))
+            instrumentation.runOnMainSync {
+                val responses = session.javaClass.getDeclaredField("hostResponses").apply { isAccessible = true }.get(session) as Map<*, *>
+                val result = (responses["windows-pick"] as JSONObject).getJSONArray("result")
+                assertEquals("file:///C:/Project%20Files/%E9%A1%B9%E7%9B%AE/image.png", result.getString(0))
+                assertEquals("file://server/share/image.png", result.getString(1))
+            }
+        } finally { instrumentation.runOnMainSync { session.close() } }
+    }
+
+    @Test
     fun panelHasItsOwnDocumentMessagesAndStateAndClosingPreservesChat() {
         val session = session { JSONArray() }
         try {

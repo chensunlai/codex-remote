@@ -470,7 +470,7 @@ internal class OfficialChatSession(
             val selection = onPickFiles(JSONObject().put("kind", if (folders && files) "mixed" else if (folders) "directory" else "file")
                 .put("allowMultiple", params.optBoolean("canSelectMany"))
                 .put("acceptedFileExtensions", extensions))
-            JSONArray().apply { selection.objects().forEach { file -> put(Uri.fromFile(java.io.File(file.getString("path"))).toString()) } }
+            JSONArray().apply { selection.objects().forEach { file -> put(remotePathToFileUri(file.getString("path"))) } }
         }
         "showSaveDialog" -> onSaveFile(params)
         "showInformationMessage", "showWarningMessage", "showErrorMessage" -> onNotification(method, params)
@@ -484,7 +484,7 @@ internal class OfficialChatSession(
         "openExternal" -> onExternalUrl(params.getString("url"))
         "openFile" -> {
             val path = params.getString("path")
-            onOpenFile(FilePreview(path.substringAfterLast('/'), path, api.preview(serviceId, path)))
+            onOpenFile(FilePreview(remotePathName(path), path, api.preview(serviceId, path)))
             true
         }
         else -> error("当前移动端宿主不支持：$method")

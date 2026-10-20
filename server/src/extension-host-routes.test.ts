@@ -51,6 +51,12 @@ describe("Official extension host relay", () => {
     delete process.env.LOG_LEVEL;
   });
 
+  it.each(["C:\\Projects\\项目 a", "D:/Projects", "\\\\server\\share\\项目"])("passes Windows workspace %s unchanged to its Agent", async (workspace) => {
+    const { messages } = await connectView({ workspace });
+    await messages.next("ready");
+    expect(calls.find(call => call.method === "extension.view.attach")?.params.workspace).toBe(workspace);
+  });
+
   it("asks for an Agent upgrade before negotiating a new renderer against a legacy Agent", async () => {
     const url = new URL(`/api/v4/services/${SERVICE_ID}/extension`, baseUrl.replace("http:", "ws:"));
     for (const [key, value] of Object.entries({ clientId: CLIENT_ID, rendererId: RENDERER_ID, workspace: WORKSPACE })) url.searchParams.set(key, value);

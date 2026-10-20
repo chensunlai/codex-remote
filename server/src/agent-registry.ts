@@ -374,6 +374,7 @@ export class AgentRegistry extends EventEmitter {
         ...(record.arch ? { arch: record.arch } : {}),
         ...(record.agentVersion ? { agentVersion: record.agentVersion } : {}),
         ...(record.home ? { home: record.home } : {}),
+        ...(record.capabilities ? { capabilities: record.capabilities } : {}),
         ...(peer ? { connectedAt: peer.connectedAt } : {}),
         runtime: peer
           ? { state: "connected" as const }
@@ -384,6 +385,11 @@ export class AgentRegistry extends EventEmitter {
 
   isOnline(ownerId: string, serviceId: string): boolean {
     return this.peers.has(this.key(ownerId, serviceId));
+  }
+
+  async supportsTerminal(ownerId: string, serviceId: string): Promise<boolean> {
+    const record = await this.services.get(ownerId, serviceId);
+    return record.platform !== "win32" && (record.capabilities === undefined || record.capabilities.includes("terminal"));
   }
 
   transportLimit(ownerId: string, serviceId: string): number | undefined {

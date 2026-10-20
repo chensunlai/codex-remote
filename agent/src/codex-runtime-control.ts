@@ -61,6 +61,7 @@ export class CodexRuntimeControl {
   }
 
   update(): RuntimeOperation {
+    if (process.platform === "win32") throw new Error("Windows 暂不支持自动更新 Codex CLI，请手动更新官方安装");
     if (this.operation?.state === "running") return this.operation;
     const operation = this.begin("update");
     void this.performUpdate(operation);
@@ -142,7 +143,7 @@ export class CodexRuntimeControl {
     this.probing = (async () => {
       const [version, help] = await Promise.all([
         readCodexVersion(this.executable),
-        commandOutput(this.executable, ["--help"]).catch(() => ""),
+        process.platform === "win32" ? Promise.resolve("") : commandOutput(this.executable, ["--help"]).catch(() => ""),
       ]);
       this.installedVersion = version;
       this.updateSupported = /^\s{2,}update(?:\s|$)/m.test(help);
@@ -153,6 +154,7 @@ export class CodexRuntimeControl {
   }
 
   private async checkLatest(): Promise<void> {
+    if (process.platform === "win32") return;
     if (this.latestChecking) return this.latestChecking;
     if (this.latestChecked && Date.now() - this.latestChecked < 6 * 60 * 60_000) return;
     this.latestChecking = (async () => {

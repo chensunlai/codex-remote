@@ -4,6 +4,11 @@ package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import dev.codexremote.app.data.isRemoteAbsolutePath
+import dev.codexremote.app.data.joinRemotePath
+import dev.codexremote.app.data.remotePathBreadcrumbs
+import dev.codexremote.app.data.remotePathToFileUri
+import dev.codexremote.app.data.remoteFileUriToPath
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
@@ -412,10 +417,10 @@ private fun OfficialWebView(
             }, dismissButton = { if (actions != null && actions.length() > 0) TextButton(onClick = { item.result.complete(null) }) { Text("取消") } })
     }
     saveRequest?.takeIf { visible }?.let { (params, result) ->
-        var path by remember(result) { mutableStateOf(params.version("defaultUri")?.let { Uri.parse(it).path } ?: "$workspace/untitled") }
+        var path by remember(result) { mutableStateOf(params.version("defaultUri")?.let(::remoteFileUriToPath) ?: joinRemotePath(workspace, "untitled")) }
         CodexDialog(onDismissRequest = { result.complete(null) }, title = { Text("保存到服务器") },
             text = { CodexTextField(path, { path = it }, label = "绝对路径") },
-            confirmButton = { TextButton(onClick = { result.complete(Uri.fromFile(java.io.File(path)).toString()) }, enabled = path.startsWith('/') && !path.endsWith('/')) { Text("保存") } },
+            confirmButton = { TextButton(onClick = { result.complete(remotePathToFileUri(path)) }, enabled = isRemoteAbsolutePath(path) && !path.endsWith('/') && !path.endsWith('\\') && remotePathBreadcrumbs(path).size > 1) { Text("保存") } },
             dismissButton = { TextButton(onClick = { result.complete(null) }) { Text("取消") } })
     }
     externalUrl?.takeIf { visible }?.let { (url, result) ->

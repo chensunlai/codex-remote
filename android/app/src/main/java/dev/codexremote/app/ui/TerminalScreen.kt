@@ -39,7 +39,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
     val serviceId = state.selectedServiceId
     val service = state.services.firstOrNull { it.id == serviceId }
 
-    if (serviceId != null && service?.runtimeState == RuntimeState.CONNECTED) {
+    if (serviceId != null && service?.runtimeState == RuntimeState.CONNECTED && service.supportsTerminal) {
         key(serviceId) {
             val session = remember(serviceId) {
                 viewModel.terminalSession(serviceId, service.home)
@@ -97,7 +97,7 @@ fun TerminalScreen(state: AppState, viewModel: MainViewModel) {
         },
     ) { padding ->
         EmptyPane(
-            title = if (serviceId == null) "选择服务" else "服务未连接",
+            title = if (serviceId == null) "选择服务" else if (service?.supportsTerminal == false) "该服务器不支持远程终端" else "服务未连接",
             icon = CodexIcons.Terminal,
             modifier = Modifier.fillMaxSize().padding(padding),
         )

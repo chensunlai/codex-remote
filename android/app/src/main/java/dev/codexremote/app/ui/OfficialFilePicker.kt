@@ -20,6 +20,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.foundation.layout.Column
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.uploadAttachments
+import dev.codexremote.app.data.remotePathName
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -76,7 +77,7 @@ internal fun rememberOfficialFilePicker(
             try {
                 val path = selection.await()
                 JSONArray().apply {
-                    if (path != null) put(JSONObject().put("label", path.substringAfterLast('/')).put("path", path).put("fsPath", path))
+                    if (path != null) put(JSONObject().put("label", remotePathName(path)).put("path", path).put("fsPath", path))
                 }
             } finally { if (directory === selection) directory = null }
         } else {

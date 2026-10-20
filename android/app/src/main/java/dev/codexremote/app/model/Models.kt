@@ -26,7 +26,10 @@ data class RemoteService(
     val home: String?,
     val runtimeState: RuntimeState,
     val runtimeMessage: String?,
-)
+    val capabilities: Set<String>? = null,
+) {
+    val supportsTerminal: Boolean get() = platform != "win32" && (capabilities == null || "terminal" in capabilities)
+}
 
 enum class RemoteFileType { DIRECTORY, FILE, SYMLINK, OTHER }
 

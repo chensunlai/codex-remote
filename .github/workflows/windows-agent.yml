@@ -1,0 +1,84 @@
+name: Windows Agent validation
+
+on:
+  push:
+    branches: [main, feature/windows-agent]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          package-manager-cache: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run package:binaries -- --targets linux-x64 --output release/linux-validation
+      - name: Check Linux standalone runtime and transport
+        run: |
+          node scripts/smoke-gateway-binary.mjs release/linux-validation/codex-remote-gateway-linux-x64
+          node scripts/smoke-gateway-binary.mjs release/linux-validation/codex-remote-gateway-linux-x64 --no-compression
+          tar -xzf release/linux-validation/codex-remote-agent-runtime-linux-x64.tar.gz -C release/linux-validation
+          CODEX_REMOTE_TEST_AGENT_BINARY=release/linux-validation/codex-remote-agent-linux-x64 npm test --workspace server -- src/extension-host.integration.test.ts
+      - name: Build Android test APK
+        working-directory: android
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintRelease :app:assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-windows-test
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          package-manager-cache: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.402
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Build portable Windows ZIP
+        run: node scripts/package-windows.mjs
+      - name: Install official native Codex for activation check
+        shell: pwsh
+        run: |
+          $env:CODEX_NON_INTERACTIVE = '1'
+          Invoke-WebRequest 'https://chatgpt.com/codex/install.ps1' -OutFile "$env:RUNNER_TEMP/codex-install.ps1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP/codex-install.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'Official Codex installation failed' }
+      - name: Check Windows process supervision, paths and official activation
+        shell: pwsh
+        run: |
+          $env:CODEX_REMOTE_WINDOWS_SUPERVISOR = Join-Path $PWD 'release/windows/CodexRemote/CodexRemote.exe'
+          $env:CODEX_REMOTE_NODE_PATH = Join-Path $PWD 'release/windows/CodexRemote/runtime/node.exe'
+          $env:CODEX_REMOTE_TEST_CODEX_EXE = Join-Path $env:LOCALAPPDATA 'Programs/OpenAI/Codex/bin/codex.exe'
+          node scripts/test-windows.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-agent-x64-test
+          path: |
+            release/windows/codex-remote-windows-x64.zip
+            release/windows/SHA256SUMS
+          if-no-files-found: error
