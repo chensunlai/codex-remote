@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -34,6 +35,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.model.RemoteService
 import dev.codexremote.app.model.RuntimeState
@@ -70,6 +73,7 @@ fun ServiceSelector(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     enabled: Boolean = true,
+    residentWebViewIds: Set<String> = emptySet(),
 ) {
     var expanded by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
@@ -97,7 +101,13 @@ fun ServiceSelector(
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StatusDot(service.runtimeState)
-                            Text(service.name, Modifier.padding(start = 10.dp))
+                            Text(service.name, Modifier.weight(1f, fill = false).padding(start = 10.dp),
+                                maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+                            if (service.id in residentWebViewIds) {
+                                Box(Modifier.padding(start = 8.dp).size(7.dp)
+                                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                    .semantics { contentDescription = "WebView 已保留" })
+                            }
                         }
                     },
                     onClick = {

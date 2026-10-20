@@ -118,7 +118,8 @@ internal fun OfficialSettingsConfirmationDialog(confirmation: OfficialSettingsCo
 private fun JSONObject.version(name: String): String? = optString(name).takeIf { it.isNotBlank() && it != "null" }
 
 @Composable
-fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true) {
+fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true,
+    residentWebViewIds: Set<String> = emptySet(), onWebViewRetainedChanged: (Boolean) -> Unit = {}) {
     val service = state.services.firstOrNull { it.id == state.selectedServiceId }
     val link by viewModel.gatewayApi.link.collectAsStateWithLifecycle()
     val config = state.gatewayConfig
@@ -205,7 +206,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
 
     Scaffold(topBar = {
         CodexTopBar(title = {
-            ServiceSelector(state.services, service.id, viewModel::selectService, compact = true, enabled = visible)
+            ServiceSelector(state.services, service.id, viewModel::selectService, compact = true, enabled = visible,
+                residentWebViewIds = residentWebViewIds)
         }, navigationIcon = {
             if (panelBack != null) IconButton(onClick = { panelBack?.invoke() }) {
                 AppIcon(CodexIcons.ArrowBack, contentDescription = "返回对话")
@@ -257,7 +259,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                     OfficialWebView(scopeKey, store.clientId(scopeKey), service.id, service.home ?: "/", workspace,
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
-                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation, Modifier.weight(1f))
+                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation, Modifier.weight(1f),
+                        onWebViewRetainedChanged)
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
@@ -347,7 +350,7 @@ private fun OfficialWebView(
     scope: String, clientId: String, serviceId: String, home: String, workspace: String,
     theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, viewModel: MainViewModel,
     onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
-    nativeModalOpen: Boolean, modifier: Modifier,
+    nativeModalOpen: Boolean, modifier: Modifier, onWebViewRetainedChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val pointerContainers = remember { mutableStateMapOf<String, MouseModeWebViewContainer>() }
@@ -428,7 +431,10 @@ private fun OfficialWebView(
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             OfficialSurfaceWebView(session, "main", serviceId, theme, fontScale, visible && panels.isEmpty(), mouseMode && !modalOpen,
-                confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove("main") else pointerContainers["main"] = it })
+                confirmation, viewModel, onStatus, onRendererGone, {
+                    if (it == null) pointerContainers.remove("main") else pointerContainers["main"] = it
+                    onWebViewRetainedChanged(it != null)
+                })
             panels.forEachIndexed { index, panel -> key(panel.id) {
                 OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, mouseMode && !modalOpen,
                     confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove(panel.id) else pointerContainers[panel.id] = it })
@@ -527,6 +533,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                     (view.parent as? ViewGroup)?.removeView(view)
                     view.destroy()
                     browser = null
+                    onPointerContainerChanged(null)
                     onRendererGone()
                     return true
                 }

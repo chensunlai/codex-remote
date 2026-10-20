@@ -35,6 +35,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -179,6 +180,9 @@ private fun MainContent(
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val foreground = lifecycle.isAtLeast(Lifecycle.State.STARTED)
     val chatVisible = state.section == MainSection.SESSIONS
+    val residentWebViews = remember(state.gatewayConfig?.let { frontendScope(it, "") }) {
+        mutableStateMapOf<String, Boolean>()
+    }
     Box(modifier.fillMaxSize()) {
         RetainedServerPanes(
             identity = state.gatewayConfig?.let { frontendScope(it, "") },
@@ -187,7 +191,11 @@ private fun MainContent(
             visible = chatVisible,
             maxPages = state.maxChatPages,
         ) { serviceId, active ->
-            OfficialChatScreen(state.copy(selectedServiceId = serviceId), viewModel, visible = active && foreground)
+            OfficialChatScreen(state.copy(selectedServiceId = serviceId), viewModel, visible = active && foreground,
+                residentWebViewIds = residentWebViews.keys.toSet(),
+                onWebViewRetainedChanged = { retained ->
+                    if (retained) residentWebViews[serviceId] = true else residentWebViews.remove(serviceId)
+                })
         }
         if (chatVisible && (state.gatewayConfig == null || state.services.none { it.id == state.selectedServiceId })) {
             EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
