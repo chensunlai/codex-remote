@@ -178,7 +178,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 | 参数 | 用途 |
 | --- | --- |
-| `--gateway <url>` | Gateway 地址，省略协议时使用 HTTPS |
+| `--gateway <url>` | Gateway 地址，多个用逗号分隔并按顺序尝试；省略协议时使用 HTTPS |
 | `--token <token>` | Gateway 访问令牌 |
 | `--name <name>` | App 中显示的服务器名称 |
 | `--codex <path>` | Codex 可执行文件，默认 `codex` |
@@ -186,6 +186,29 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 | `--configure` | 重新输入连接配置 |
 
 运行 `~/.local/codex-remote/codex-remote-agent --help` 可查看参数说明。
+
+### Agent 多地址接入
+
+同一个 Gateway 的内网与公网入口可以同时配置，内网地址放在前面。Linux 首次配置或 `--configure` 的 Gateway 输入框、Windows 设置的 Gateway 输入框都支持逗号分隔：
+
+```text
+http://192.168.1.20:6767,https://codex.example.com
+```
+
+命令行 `--gateway` 和环境变量 `CODEX_REMOTE_GATEWAY` 也接受相同格式；显式传入时替换整个已保存的地址列表。配置保存后重启 Agent 生效，服务 ID 保持不变。
+
+手动编辑 `agent.json` 时，保留原有令牌等字段，将地址列表写入 `gatewayUrls`；有该字段时以它为准，`gatewayUrl` 保存第一个地址供旧版本使用：
+
+```json
+{
+  "gatewayUrl": "http://192.168.1.20:6767",
+  "gatewayUrls": ["http://192.168.1.20:6767", "https://codex.example.com"]
+}
+```
+
+启动及每次断线重连都从第一个地址尝试。多地址模式下每个地址的 WebSocket 握手最多等待 5 秒；失败立即尝试下一个，全部失败才进入 1～30 秒退避重试。单地址沿用原来的 20 秒握手等待。连接稳定时不定时探测、不主动抢切内网；要立即切换可重启 Agent（会中断其管理的任务）。协议不兼容、消息超限等确定性错误仍停止重试并提示，不靠换地址绕过。
+
+地址必须指向同一个 Gateway，使用同一个 Token。切换连接不会重启 Agent 中的官方扩展或 Codex；不修改会话协议，不重发未确认的用户操作。App 页面是否需要重新同步仍取决于现有缓存与恢复机制。
 
 ## 常见问题
 

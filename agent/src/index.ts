@@ -42,13 +42,23 @@ if (!desktop) process.stdout.write(
   ].join("\n"),
 );
 
+const endpoints = config.gatewayUrls ?? [config.gatewayUrl];
+let endpointIndex = 0;
 while (!stopping) {
   desktop?.status(retryDelay === 1_000 ? "connecting" : "reconnecting");
-  client = new ProtocolClient(toAgentWebSocketUrl(config), config.token, {
+  let connected = false;
+  client = new ProtocolClient(toAgentWebSocketUrl(config, endpoints[endpointIndex]), config.token, {
     request: (method, params) => agent.request(method, params),
     notification: (method, params) => agent.notification(method, params),
     stream: (message) => agent.stream(message),
-  }, desktop ? { connected: () => desktop.status("connected"), log } : {});
+  }, {
+    handshakeTimeout: endpoints.length > 1 ? 5_000 : 20_000,
+    connected: () => {
+      connected = true;
+      desktop?.status("connected");
+      log(`已连接 Gateway: ${endpoints[endpointIndex]}\n`);
+    }, log,
+  });
   agent.setTransport({
     event: (event, payload) => client?.event(event, payload) ?? Promise.resolve(),
     stream: (streamId, input) => client?.sendStream(streamId, input) ?? Promise.resolve(),
@@ -67,9 +77,17 @@ while (!stopping) {
       `连接 Gateway 失败: ${errorMessage(error)}\n`,
     );
   } finally {
+    client.close();
     agent.setTransport(undefined);
   }
   if (!stopping) {
+    // Only one socket at a time. A disconnected healthy connection starts a new
+    // priority sweep; failed handshakes try the next address without backoff.
+    if (!connected && endpointIndex + 1 < endpoints.length) {
+      endpointIndex += 1;
+      continue;
+    }
+    endpointIndex = 0;
     desktop?.status("reconnecting");
     log(`${retryDelay}ms 后重连\n`);
     await delay(retryDelay, undefined, { signal: retryAbort.signal }).catch(() => {});

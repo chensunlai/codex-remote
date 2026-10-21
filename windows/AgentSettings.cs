@@ -24,7 +24,9 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
     {
         var document = ReadDocument(path);
         return new AgentSettings(
-            document["gatewayUrl"]?.GetValue<string>() ?? "",
+            document["gatewayUrls"] is JsonArray endpoints
+                ? string.Join(", ", endpoints.Select(value => value?.GetValue<string>() ?? ""))
+                : document["gatewayUrl"]?.GetValue<string>() ?? "",
             document["token"]?.GetValue<string>() ?? "",
             document["name"]?.GetValue<string>() ?? Environment.MachineName,
             document["codexExecutable"]?.GetValue<string>() ?? "");
@@ -32,20 +34,30 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
 
     public AgentSettings Validate()
     {
-        var input = GatewayUrl.Trim();
-        if (!input.Contains("://", StringComparison.Ordinal)) input = "https://" + input;
-        if (!Uri.TryCreate(input, UriKind.Absolute, out var url)
-            || (url.Scheme != "https" && url.Scheme != "http")
-            || url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0)
-            throw new InvalidOperationException("Gateway 地址仅支持 HTTP 或 HTTPS，不能包含账号、查询参数或片段。");
+        var endpoints = NormalizeGatewayUrls(GatewayUrl);
         if (Token.Trim().Length == 0) throw new InvalidOperationException("请填写访问令牌。");
         if (Name.Trim().Length == 0) throw new InvalidOperationException("请填写服务器名称。");
         var executable = ResolveCodexExecutable(CodexExecutable);
         return this with
         {
-            GatewayUrl = url.AbsoluteUri.TrimEnd('/'), Token = Token.Trim(),
+            GatewayUrl = string.Join(", ", endpoints), Token = Token.Trim(),
             Name = Name.Trim(), CodexExecutable = executable
         };
+    }
+
+    public static string[] NormalizeGatewayUrls(string value)
+    {
+        return value.Split(new[] { ',', '\n' }).Select(entry =>
+        {
+            var input = entry.Trim();
+            if (input.Length == 0) throw new InvalidOperationException("Gateway 地址不能为空。");
+            if (!input.Contains("://", StringComparison.Ordinal)) input = "https://" + input;
+            if (!Uri.TryCreate(input, UriKind.Absolute, out var url)
+                || (url.Scheme != "https" && url.Scheme != "http")
+                || url.UserInfo.Length != 0 || url.Query.Length != 0 || url.Fragment.Length != 0)
+                throw new InvalidOperationException("Gateway 地址仅支持 HTTP 或 HTTPS，不能包含账号、查询参数或片段。");
+            return url.AbsoluteUri.TrimEnd('/');
+        }).Distinct(StringComparer.Ordinal).ToArray();
     }
 
     public static string ResolveCodexExecutable(string input, IReadOnlyList<string>? candidates = null)
@@ -105,7 +117,9 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
         var settings = Validate();
         var document = ReadDocument(path);
         document["version"] = 1;
-        document["gatewayUrl"] = settings.GatewayUrl;
+        var endpoints = NormalizeGatewayUrls(settings.GatewayUrl);
+        document["gatewayUrl"] = endpoints[0];
+        document["gatewayUrls"] = new JsonArray(endpoints.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
         document["token"] = settings.Token;
         document["name"] = settings.Name;
         document["codexExecutable"] = settings.CodexExecutable;

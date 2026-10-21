@@ -74,7 +74,7 @@ export async function promptAgentSetup(
   const gatewayUrl = input.gatewayUrl
     ? normalizeGatewayUrl(input.gatewayUrl)
     : normalizeGatewayUrl(await requirePrompt(ui, ui.text({
-      message: "Gateway 地址",
+      message: "Gateway 地址（多个用逗号分隔，内网优先放前面）",
       placeholder: "https://gateway.example.com",
       validate(value) {
         if (!value?.trim()) return "请输入 Gateway 地址";

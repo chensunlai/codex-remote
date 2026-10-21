@@ -56,7 +56,7 @@ internal sealed class SettingsForm : Form
         };
         layout.Controls.Add(description, 0, 1);
         layout.SetColumnSpan(description, 2);
-        AddField(layout, "Gateway 地址", gateway, 2);
+        AddField(layout, "Gateway 地址（逗号分隔，按先后顺序连接）", gateway, 2);
         AddField(layout, "访问令牌", token, 4);
         AddField(layout, "服务器名称", name, 6);
         AddField(layout, "Codex 可执行文件", codex, 8, span: false);

@@ -15,7 +15,7 @@ EXE 直接运行；CMD、BAT 通过系统命令解释器启动。自定义脚本
 ## 启动与配置
 
 1. 运行 `codex-remote-windows-x64-setup.exe`，按向导安装。默认目录为 `C:\Program Files\CodexRemote`，可修改；安装时需要管理员授权。也可下载 `codex-remote-windows-x64.zip`，完整解压到自己有写入权限的固定位置。
-2. 双击 `CodexRemote.exe`，填写 Gateway 地址、Token 和服务器名称。
+2. 双击 `CodexRemote.exe`，填写 Gateway 地址、Token 和服务器名称。Gateway 可填写同一网关的多个地址，用逗号分隔、内网放前面；连接失败依次尝试，断线后重新从首个地址选择，连接正常时不主动切换。
 3. 选择检测到的 Codex，或浏览、输入 EXE、CMD、BAT 的完整路径，保存后启动 Agent。
 4. 窗口关闭后收起到右下角托盘；在手机 App 中选择这台服务器。
 

@@ -119,7 +119,20 @@ internal static class SelfTest
             document = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
             Require(document["serviceId"]!.GetValue<string>() == serviceId, "stable service ID");
             Require(document["futureField"]!.GetValue<string>() == "preserve", "preserve unknown fields");
-            foreach (var url in new[] { "ftp://example.com", "https://user:secret@example.com", "https://example.com?token=a" })
+            (saved with { GatewayUrl = "http://lan:6767/, gateway.example.com, http://lan:6767" }).Save(path);
+            var routed = AgentSettings.Load(path);
+            Require(routed.GatewayUrl == "http://lan:6767, https://gateway.example.com", "ordered Gateway addresses");
+            document = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            Require(document["gatewayUrl"]!.GetValue<string>() == "http://lan:6767", "legacy primary address");
+            Require(document["gatewayUrls"]!.AsArray().Count == 2, "deduplicated address list");
+            Require(document["serviceId"]!.GetValue<string>() == serviceId, "routing keeps service identity");
+            (routed with { GatewayUrl = "new.example" }).Save(path);
+            Require(AgentSettings.Load(path).GatewayUrl == "https://new.example", "single address replaces saved list");
+            document = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+            document.Remove("gatewayUrls");
+            File.WriteAllText(path, document.ToJsonString());
+            Require(AgentSettings.Load(path).GatewayUrl == "https://new.example", "legacy config remains readable");
+            foreach (var url in new[] { "", "http://lan,", "ftp://example.com", "https://user:secret@example.com", "https://example.com?token=a" })
                 Reject(() => (saved with { GatewayUrl = url }).Validate());
             Reject(() => (saved with { CodexExecutable = @"relative\custom.cmd" }).Validate());
             Reject(() => (saved with { CodexExecutable = Path.Combine(directory, "missing.exe") }).Validate());

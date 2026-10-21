@@ -29,3 +29,18 @@ it("marks malformed transport configuration as fatal instead of entering reconne
   cleanups.push(async () => client.close());
   await expect(client.run()).rejects.toBeInstanceOf(FatalTransportError);
 });
+
+
+it("bounds an unresponsive endpoint's handshake so routing can continue", async () => {
+  const server = createServer();
+  const sockets = new Set<import("node:net").Socket>();
+  server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+  server.on("upgrade", () => {}); // Accept TCP but never complete the WebSocket upgrade.
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  cleanups.push(() => { sockets.forEach(socket => socket.destroy()); return new Promise(resolve => server.close(() => resolve())); });
+  const client = new ProtocolClient(new URL(`ws://127.0.0.1:${(server.address() as {port:number}).port}`),
+    "fixture", handlers, {handshakeTimeout: 100});
+  cleanups.push(async () => client.close());
+  await expect(client.run()).rejects.toThrow(/timed out/i);
+});

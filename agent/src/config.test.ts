@@ -6,10 +6,34 @@ import {
   configPathBesideProgram,
   loadAgentConfig,
   normalizeGatewayUrl,
+  normalizeGatewayUrls,
   toAgentWebSocketUrl,
 } from "./config.js";
 
 describe("Agent configuration", () => {
+  it("normalizes ordered endpoints and rejects malformed lists", () => {
+    expect(normalizeGatewayUrls("http://lan:6767/,public.example,http://lan:6767"))
+      .toEqual(["http://lan:6767", "https://public.example"]);
+    for (const value of [[], [12], "", "http://lan,", ["https://user:secret@host"]])
+      expect(() => normalizeGatewayUrls(value)).toThrow();
+  });
+
+  it("persists endpoints and lets explicit settings replace the entire list", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-routes-"));
+    const path = join(directory, "agent.json");
+    const common = ["--config", path, "--codex", process.execPath];
+    try {
+      const first = await loadAgentConfig([...common, "--gateway", "http://lan:6767,public.example",
+        "--token", "fixture", "--name", "fixture"], {});
+      const restored = await loadAgentConfig(common, {});
+      expect(restored.gatewayUrls).toEqual(["http://lan:6767", "https://public.example"]);
+      expect(restored.gatewayUrl).toBe("http://lan:6767");
+      const replaced = await loadAgentConfig(common, { CODEX_REMOTE_GATEWAY: "new.example" });
+      expect(replaced.gatewayUrls).toEqual(["https://new.example"]);
+      expect(replaced.serviceId).toBe(first.serviceId);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
   it("stores its default configuration beside the program", () => {
     const directory = join(tmpdir(), "codex-remote");
     expect(configPathBesideProgram(join(directory, "codex-remote-agent")))

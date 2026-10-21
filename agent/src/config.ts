@@ -6,6 +6,7 @@ import { promptAgentSetup } from "./setup-tui.js";
 
 export interface AgentConfig {
   gatewayUrl: string;
+  gatewayUrls?: string[];
   token: string;
   name: string;
   serviceId: string;
@@ -16,6 +17,7 @@ export interface AgentConfig {
 interface StoredConfig {
   version: 1;
   gatewayUrl: string;
+  gatewayUrls?: string[];
   token: string;
   name: string;
   serviceId: string;
@@ -38,7 +40,9 @@ export async function loadAgentConfig(
   const args = parseArguments(argv, env);
   const existing = await readStored(args.configPath);
   const stored = args.configure ? undefined : existing;
-  let gatewayUrl = args.gatewayUrl ?? env.CODEX_REMOTE_GATEWAY ?? stored?.gatewayUrl;
+  // Explicit CLI/environment addresses replace the saved list, not just its first entry.
+  let gatewayUrl = args.gatewayUrl ?? env.CODEX_REMOTE_GATEWAY
+    ?? (stored?.gatewayUrls === undefined ? stored?.gatewayUrl : normalizeGatewayUrls(stored.gatewayUrls).join(","));
   let token = args.token ?? env.CODEX_REMOTE_TOKEN ?? stored?.token;
   let name = args.name ?? env.CODEX_REMOTE_SERVICE_NAME ?? stored?.name;
   let codexExecutable =
@@ -60,7 +64,7 @@ export async function loadAgentConfig(
         ...(codexExecutable !== undefined ? { codexExecutable } : {}),
         configPath: args.configPath,
       },
-      normalizeGatewayUrl,
+      value => normalizeGatewayUrls(value).join(","),
     );
     gatewayUrl = setup.gatewayUrl;
     token = setup.token;
@@ -68,8 +72,10 @@ export async function loadAgentConfig(
     codexExecutable = setup.codexExecutable;
   }
 
+  const gatewayUrls = normalizeGatewayUrls(gatewayUrl);
   const config: AgentConfig = {
-    gatewayUrl: normalizeGatewayUrl(gatewayUrl),
+    gatewayUrl: gatewayUrls[0]!,
+    gatewayUrls,
     token: token.trim(),
     name: name.trim(),
     serviceId: existing?.serviceId ?? randomUUID(),
@@ -84,14 +90,22 @@ export async function loadAgentConfig(
   return config;
 }
 
-export function toAgentWebSocketUrl(config: AgentConfig): URL {
-  const url = new URL(config.gatewayUrl);
+export function toAgentWebSocketUrl(config: AgentConfig, endpoint = config.gatewayUrl): URL {
+  const url = new URL(endpoint);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = "/agent/v2/connect";
   url.search = "";
   url.searchParams.set("serviceId", config.serviceId);
   url.searchParams.set("name", config.name);
   return url;
+}
+
+export function normalizeGatewayUrls(value: unknown): string[] {
+  const values = typeof value === "string" ? value.split(/[,\n]/) : value;
+  if (!Array.isArray(values) || !values.length || values.some(item => typeof item !== "string" || !item.trim())) {
+    throw new Error("Gateway 地址列表不能为空，且每项必须为地址");
+  }
+  return [...new Set(values.map(normalizeGatewayUrl))];
 }
 
 export function normalizeGatewayUrl(value: string): string {
@@ -181,6 +195,7 @@ async function saveConfig(config: AgentConfig): Promise<void> {
   const stored: StoredConfig = {
     version: 1,
     gatewayUrl: config.gatewayUrl,
+    gatewayUrls: config.gatewayUrls ?? [config.gatewayUrl],
     token: config.token,
     name: config.name,
     serviceId: config.serviceId,
@@ -197,7 +212,7 @@ function printUsage(): void {
     [
       "codex-remote-agent [options]",
       "",
-      "  --gateway <url>   Gateway 地址，省略 scheme 时使用 https",
+      "  --gateway <url>   Gateway 地址，多个用逗号分隔、按顺序尝试；默认 https",
       "  --token <token>   用户访问令牌",
       "  --name <name>     在 App 中显示的服务名",
       "  --codex <path>    Codex 可执行文件，默认 codex",

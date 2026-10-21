@@ -32,6 +32,7 @@ interface ProtocolHandlers {
 }
 
 interface ProtocolClientOptions {
+  handshakeTimeout?: number;
   connected?: () => void;
   log?: (message: string) => void;
 }
@@ -53,7 +54,7 @@ export class ProtocolClient {
       const socket = new WebSocket(this.url.toString(), {
         headers: { Authorization: `Bearer ${this.token}` },
         maxPayload: WIRE_LIMIT,
-        handshakeTimeout: 20_000,
+        handshakeTimeout: this.options.handshakeTimeout ?? 20_000,
       });
       this.socket = socket;
       let opened = false;
