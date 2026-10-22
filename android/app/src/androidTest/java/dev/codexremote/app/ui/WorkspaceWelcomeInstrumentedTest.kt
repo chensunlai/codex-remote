@@ -88,7 +88,7 @@ class WorkspaceWelcomeInstrumentedTest {
             compose.onNodeWithText("今天想做点什么？").assertIsDisplayed()
             compose.onNodeWithText("打开一个新窗口，选好服务器和目录就能开始").assertIsDisplayed()
             compose.onNodeWithText("Codex").assertIsDisplayed().assertIsEnabled()
-            compose.onNodeWithText("Claude Code").assertIsDisplayed().assertIsEnabled()
+            compose.onNodeWithText("Claude").assertIsDisplayed().assertIsEnabled()
             compose.onNodeWithText("打开工作窗口").assertDoesNotExist()
             val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
             File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "welcome-${theme.id}.png")
@@ -105,7 +105,7 @@ class WorkspaceWelcomeInstrumentedTest {
         compose.onNodeWithContentDescription("选择服务器").assertIsDisplayed().assertTextContains("Windows fixture")
         compose.onNodeWithText("取消").performClick()
 
-        compose.onNodeWithText("Claude Code").performClick()
+        compose.onNodeWithText("Claude").performClick()
         toolChoice("Claude").assertIsSelected().assertIsEnabled()
         toolChoice("Codex").assertIsNotSelected()
         compose.onNodeWithContentDescription("选择服务器").assertIsDisplayed().assertTextContains("Linux fixture")
@@ -127,7 +127,7 @@ class WorkspaceWelcomeInstrumentedTest {
         }))
         compose.onNodeWithText("今天想做点什么？").assertIsDisplayed()
         compose.onNodeWithText("Codex").assertIsEnabled()
-        compose.onNodeWithContentDescription("Claude Code，需要在线的 Linux 服务器").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Claude，需要在线的 Linux 服务器").assertIsNotEnabled()
     }
 
     @Test fun noServersExplainsSetupAndNavigatesToServices() {
@@ -167,14 +167,14 @@ class WorkspaceWelcomeInstrumentedTest {
             )))
         compose.onNodeWithText("今天想做点什么？").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Codex").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("Claude Code").performScrollTo().assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("Claude").performScrollTo().assertIsDisplayed().assertIsEnabled()
         compose.onNodeWithText("2 个窗口在离线服务器上，连上后会回来").performScrollTo().assertIsDisplayed()
     }
 
     @Test fun claudePreselectionSkipsAnOfflineLinuxDefault() {
         val listed = services + services.last().copy(id = "offline-linux", name = "Offline Linux", runtimeState = RuntimeState.DISCONNECTED)
         showApp(normal.copy(services = listed, selectedServiceId = "offline-linux"))
-        compose.onNodeWithText("Claude Code").performClick()
+        compose.onNodeWithText("Claude").performClick()
         toolChoice("Claude").assertIsSelected()
         compose.onNodeWithContentDescription("选择服务器").assertIsDisplayed().assertTextContains("Linux fixture")
     }
