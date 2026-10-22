@@ -16,14 +16,18 @@ const LEGACY_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_RESOURCE_BYTES = 12 * 1024 * 1024 - 4096;
 const gunzipAsync = promisify(gunzip);
 const serviceParams = z.object({ serviceId: z.string().uuid() });
+const toolIdSchema = z.enum(["codex", "claude"]).default("codex");
+type ToolId = z.infer<typeof toolIdSchema>;
+const toolQuery = z.object({ toolId: toolIdSchema });
 const viewQuery = z.object({
+  toolId: toolIdSchema,
   clientId: z.string().uuid(),
   rendererId: z.string().uuid(),
   workspace: z.string().min(1).max(4096).refine(isRemoteAbsolutePath),
   after: z.coerce.number().int().nonnegative().safe().default(0),
   epoch: z.string().min(1).max(255).optional(),
 });
-const viewControl = viewQuery.pick({ clientId: true, workspace: true, epoch: true });
+const viewControl = viewQuery.pick({ clientId: true, workspace: true, epoch: true, toolId: true });
 const incomingMessage = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("message"),
@@ -41,6 +45,8 @@ const incomingMessage = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("visibility"), visible: z.boolean() }),
   z.object({ type: z.literal("close-surface"), surfaceId: z.string().min(1).max(128) }),
+  z.object({ type: z.literal("surface-action"), epoch: z.string().min(1).max(255),
+    surfaceId: z.string().min(1).max(128), action: z.enum(["accept", "reject"]) }),
 ]);
 const resourceResponse = z.object({
   content: z.string(),
@@ -51,6 +57,7 @@ const resourceResponse = z.object({
 });
 
 interface ViewSnapshot {
+  toolId?: ToolId;
   viewId: string;
   epoch: string;
   sequence: number;
@@ -60,7 +67,9 @@ interface ViewSnapshot {
   html: string;
   frames: ExtensionViewEvent["frame"][];
   pendingHostRequests?: unknown[];
-  surfaces?: Array<{ id: string; title: string; kind: "panel"; html: string }>;
+  surfaces?: Array<{ id: string; title: string; kind: "panel" | "diff"; html?: string;
+    diff?: { originalUri: string; modifiedUri: string; originalText: string; modifiedText: string };
+    actions?: Array<"accept" | "reject">; pending?: boolean }>;
 }
 
 interface Attachment {
@@ -77,32 +86,40 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
   const negotiating = new Map<string, Set<WebSocket>>();
   const base = "/api/v3/services/:serviceId/extension";
 
+  function requestTool<T = unknown>(ownerId: string, serviceId: string, toolId: ToolId,
+    method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<T> {
+    return services.agents.request<T>(ownerId, serviceId, method, { ...params, toolId }, timeoutMs,
+      toolId === "claude" ? ["extension-tools-v1", "claude-extension-host-v1"] : []);
+  }
+
   app.get(`${base}/status`, async (request) => {
     const { serviceId } = parse(serviceParams, request.params);
-    return { data: await services.agents.request(request.ownerId, serviceId, "extension.status", {}) };
+    const params = parse(toolQuery, request.query);
+    return { data: await requestTool(request.ownerId, serviceId, params.toolId, "extension.status", params) };
   });
   app.post(`${base}/update`, async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
-    const data = await services.agents.request(request.ownerId, serviceId, "extension.update", {});
+    const params = parse(toolQuery, request.body ?? {});
+    const data = await requestTool(request.ownerId, serviceId, params.toolId, "extension.update", params);
     return reply.code(202).send({ data });
   });
   app.post(`${base}/apply`, async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
-    const params = parse(z.object({ confirmed: z.boolean() }), request.body);
-    const data = await services.agents.request(request.ownerId, serviceId, "extension.apply", params);
+    const params = parse(toolQuery.extend({ confirmed: z.boolean() }), request.body);
+    const data = await requestTool(request.ownerId, serviceId, params.toolId, "extension.apply", params);
     return reply.code(202).send({ data });
   });
   for (const action of ["close", "restart"] as const) app.post(`${base}/view/${action}`, async (request) => {
     const { serviceId } = parse(serviceParams, request.params);
-    const { clientId, workspace, epoch } = parse(viewControl, request.body);
+    const { clientId, workspace, epoch, toolId } = parse(viewControl, request.body);
     const ownerId = request.ownerId;
-    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace);
+    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace, toolId);
     const previous = controlling.get(viewId);
     const operation = (async () => {
       await previous?.catch(() => {});
       // Query the live peer so persisted capabilities cannot accidentally grant
       // this operation to an older Agent reconnecting under the same service ID.
-      const description = await services.agents.request<{ capabilities?: string[] }>(ownerId, serviceId, "service.describe", {});
+      const description = await requestTool<{ capabilities?: string[] }>(ownerId, serviceId, toolId, "service.describe", {});
       if (!description.capabilities?.includes("extension-window-management-v1")) {
         throw new AppError(409, "UPGRADE_AGENT_REQUIRED", "请升级 Agent 以管理独立聊天窗口");
       }
@@ -116,8 +133,8 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         attachment.socket.close(4002, "Window backend explicitly stopped");
         await Promise.all([attachment.operations, attachment.acknowledgements]);
       }
-      const result = await services.agents.request<{ stopped: boolean; epoch?: string }>(
-        ownerId, serviceId, `extension.view.${action}`, { viewId, ...(epoch ? { epoch } : {}) }, 120_000,
+      const result = await requestTool<{ stopped: boolean; epoch?: string }>(
+        ownerId, serviceId, toolId, `extension.view.${action}`, { viewId, toolId, ...(epoch ? { epoch } : {}) }, 120_000,
       );
       if (!result.stopped) throw new AppError(409, "EXTENSION_VIEW_CHANGED", "窗口后端已更新，请刷新后重试");
       return result;
@@ -128,13 +145,13 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
   });
   app.get(`${base}/resource`, async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
-    const params = parse(z.object({
+    const params = parse(toolQuery.extend({
       version: z.string().min(1).max(255),
       path: z.string().min(1).max(8192),
       packageSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     }), request.query);
-    const result = resourceResponse.safeParse(await services.agents.request(
-      request.ownerId, serviceId, "extension.resource", { ...params, acceptEncoding: "gzip" },
+    const result = resourceResponse.safeParse(await requestTool(
+      request.ownerId, serviceId, params.toolId, "extension.resource", { ...params, acceptEncoding: "gzip" },
     ));
     if (!result.success) throw new AppError(502, "INVALID_EXTENSION_RESOURCE", "Invalid extension resource response");
     if (result.data.content.length > Math.ceil(MAX_RESOURCE_BYTES / 3) * 4) {
@@ -181,9 +198,9 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       return;
     }
     const { serviceId } = parsedParams.data;
-    const { clientId, rendererId, workspace, after, epoch } = parsedQuery.data;
+    const { clientId, rendererId, workspace, after, epoch, toolId } = parsedQuery.data;
     const ownerId = request.ownerId;
-    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace);
+    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace, toolId);
     if (controlling.has(viewId)) {
       socket.close(4002, "Window backend operation in progress");
       return;
@@ -252,10 +269,11 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         socket.send(data, (error) => { if (error) socket.terminate(); });
       }
     };
-    const fail = (error: unknown, messageId?: string): void => {
+    const fail = (error: unknown, messageId?: string, surfaceId?: string): void => {
       send({
         type: "error",
         ...(messageId === undefined ? {} : { messageId }),
+        ...(surfaceId === undefined ? {} : { surfaceId }),
         code: error instanceof AppError ? error.code : "EXTENSION_VIEW_ERROR",
         message: errorMessage(error),
         retryable: !(error instanceof AppError) || error.statusCode >= 500,
@@ -268,8 +286,8 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       pendingAcknowledgement = undefined;
       acknowledging = true;
       // ACKs are cumulative bookkeeping. One slow ACK must not hold up page actions.
-      attachment.acknowledgements = services.agents.request(ownerId, serviceId, "extension.view.ack", {
-        viewId, rendererId, sequence,
+      attachment.acknowledgements = requestTool(ownerId, serviceId, toolId, "extension.view.ack", {
+        viewId, rendererId, toolId, sequence,
       }).then(() => {}, (error: unknown) => { fail(error); }).finally(() => {
         acknowledging = false;
         acknowledge();
@@ -314,11 +332,14 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     attachment.operations = (async () => {
       await Promise.all([previous?.operations, previous?.acknowledgements]);
       if (!current()) return;
-      snapshot = await services.agents.request<ViewSnapshot>(ownerId, serviceId, "extension.view.attach", {
-        viewId, rendererId, workspace, after, ...(epoch ? { epoch } : {}),
+      snapshot = await requestTool<ViewSnapshot>(ownerId, serviceId, toolId, "extension.view.attach", {
+        viewId, rendererId, toolId, workspace, after, ...(epoch ? { epoch } : {}),
       }, 120_000);
       if (!current()) return;
       if (snapshot.viewId !== viewId) throw new Error("Extension host returned a different view");
+      if (toolId === "claude" && snapshot.toolId !== toolId) {
+        throw new AppError(409, "UPGRADE_AGENT_REQUIRED", "Agent 返回了不同工具的窗口，请升级 Agent");
+      }
       attachment.epoch = snapshot.epoch;
       send({ type: "ready", ...snapshot });
       for (const frame of buffered.sort((a, b) => a.sequence - b.sequence)) onFrame({ ownerId, serviceId, frame });
@@ -327,7 +348,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       acknowledge();
     })().catch((error: unknown) => {
       fail(error);
-      socket.close(1011, "Unable to attach extension view");
+      socket.close(error instanceof AppError && error.code === "UPGRADE_AGENT_REQUIRED" ? 4400 : 1011, "Unable to attach extension view");
     });
 
     const receive = (raw: string | Buffer, binary = false): void => {
@@ -360,31 +381,36 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
         queuedBytes -= bytes;
         if (!current() || !snapshot) return;
         try {
-          const identity = { viewId, rendererId };
+          const identity = { viewId, rendererId, toolId };
           if (parsed.type === "message") {
-            const delivery = await services.agents.request<Record<string, unknown>>(
-              ownerId, serviceId, "extension.view.send", {
+            const delivery = await requestTool<Record<string, unknown>>(
+              ownerId, serviceId, toolId, "extension.view.send", {
                 ...identity, epoch: parsed.epoch, messageId: parsed.messageId, surfaceId: parsed.surfaceId, payload: parsed.payload,
               },
             );
             send({ ...delivery, type: "delivery", messageId: parsed.messageId });
           } else if (parsed.type === "visibility") {
-            await services.agents.request(ownerId, serviceId, "extension.view.visibility", {
+            await requestTool(ownerId, serviceId, toolId, "extension.view.visibility", {
               ...identity, visible: parsed.visible,
             });
           } else if (parsed.type === "close-surface") {
-            await services.agents.request(ownerId, serviceId, "extension.view.surface.close", {
+            await requestTool(ownerId, serviceId, toolId, "extension.view.surface.close", {
               ...identity, surfaceId: parsed.surfaceId,
             });
+          } else if (parsed.type === "surface-action") {
+            await requestTool(ownerId, serviceId, toolId, "extension.view.surface.action", {
+              ...identity, epoch: parsed.epoch, surfaceId: parsed.surfaceId, action: parsed.action,
+            });
           } else {
-            await services.agents.request(ownerId, serviceId, "extension.view.respond", {
+            await requestTool(ownerId, serviceId, toolId, "extension.view.respond", {
               ...identity, id: parsed.id,
               ...("result" in parsed ? { result: parsed.result } : {}),
               ...("error" in parsed ? { error: parsed.error } : {}),
             });
           }
         } catch (error) {
-          fail(error, parsed.type === "message" ? parsed.messageId : undefined);
+          fail(error, parsed.type === "message" ? parsed.messageId : undefined,
+            parsed.type === "surface-action" ? parsed.surfaceId : undefined);
         }
       });
     };
@@ -398,7 +424,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       services.agents.off("disconnected", onDisconnected);
       attachment.operations = attachment.operations.then(async () => {
         if (!attachment.superseded) {
-          await services.agents.request(ownerId, serviceId, "extension.view.detach", { viewId, rendererId });
+          await requestTool(ownerId, serviceId, toolId, "extension.view.detach", { viewId, rendererId, toolId });
         }
       }).catch(() => {}).then(() => {
         if (attachments.get(viewId) === attachment) attachments.delete(viewId);
@@ -407,8 +433,10 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
   });
 }
 
-function extensionViewId(ownerId: string, serviceId: string, clientId: string, workspace: string): string {
-  return createHash("sha256").update(JSON.stringify([ownerId, serviceId, clientId, workspace])).digest("hex");
+function extensionViewId(ownerId: string, serviceId: string, clientId: string, workspace: string, toolId: ToolId): string {
+  const identity = [ownerId, serviceId, clientId, workspace];
+  if (toolId !== "codex") identity.push(toolId);
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
 }
 
 function acceptsGzip(header: string | undefined): boolean {

@@ -115,7 +115,10 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                         ProductUpdatePanel(state.gatewayConfig, state.services.firstOrNull { it.id == state.selectedServiceId }, viewModel.gatewayApi)
                     }
                 }
-                state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
+                val selectedWindow = state.windows.firstOrNull { it.id == state.selectedWindowId }
+                state.services.firstOrNull { it.id == state.selectedServiceId }?.takeIf { service ->
+                    selectedWindow?.let { it.serviceId != service.id || it.toolId == "codex" } != false
+                }?.let { service ->
                     key(state.gatewayConfig, service.id) {
                         CodexSettingsGroup("Codex CLI") { CodexManagementPanel(service, viewModel.gatewayApi) }
                     }

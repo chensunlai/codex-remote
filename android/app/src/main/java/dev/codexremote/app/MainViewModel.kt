@@ -22,6 +22,7 @@ import dev.codexremote.app.data.isRemoteAbsolutePath
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.data.joinRemotePath
+import dev.codexremote.app.model.CodingTool
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
@@ -262,7 +263,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun testService(serviceId: String) {
-        launchOperation("正在测试 Agent 与 Codex") { api.codexRuntime(serviceId); loadServicesAndSelect() }
+        launchOperation("正在测试 Agent 连接") { api.testService(serviceId); loadServicesAndSelect() }
     }
 
     fun selectService(serviceId: String) {
@@ -284,12 +285,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val service = _state.value.services.firstOrNull { it.id == serviceId } ?: return
-        if (!isRemoteAbsolutePath(workspace) || toolId != "codex") {
-            _state.update { it.copy(error = if (toolId != "codex") "尚不支持该工具" else "工作目录必须为远端绝对路径") }
+        val tool = CodingTool.fromId(toolId)
+        if (tool == null || !isRemoteAbsolutePath(workspace)) {
+            _state.update { it.copy(error = if (tool == null) "尚不支持该工具" else "工作目录必须为远端绝对路径") }
+            return
+        }
+        if (!tool.supports(service)) {
+            _state.update { it.copy(error = "Claude Code 首版仅支持 Linux Agent") }
             return
         }
         val window = WorkspaceWindow(UUID.randomUUID().toString(), serviceId, workspace,
-            title.trim().ifBlank { service.name }, toolId)
+            title.trim().ifBlank { if (tool == CodingTool.CODEX) service.name else "${service.name} · ${tool.title}" }, toolId)
         _state.update { it.copy(windows = it.windows + window, selectedWindowId = window.id, section = MainSection.SESSIONS) }
         persistWindows()
         selectService(serviceId)
@@ -324,7 +330,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeWindow(id: String) = manageWindow(id, "正在关闭窗口") { window ->
-        api.closeExtensionWindow(window.serviceId, window.id, window.workspace)
+        api.closeExtensionWindow(window.serviceId, window.id, window.workspace, window.toolId)
         windowConnections.invalidate(id)
         val current = _state.value
         val index = current.windows.indexOfFirst { it.id == id }
@@ -340,7 +346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun restartWindow(id: String) = manageWindow(id, "正在重启此窗口后端") { window ->
-        api.restartExtensionWindow(window.serviceId, window.id, window.workspace)
+        api.restartExtensionWindow(window.serviceId, window.id, window.workspace, window.toolId)
         windowConnections.invalidate(id)
         _state.update { it.copy(windowRevisions = it.windowRevisions + (id to ((it.windowRevisions[id] ?: 0) + 1))) }
     }
@@ -354,7 +360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         manageWindow(id, "正在更改工作目录") { window ->
             // Validate the destination while the original backend and renderer are still recoverable.
             api.files(window.serviceId, path)
-            api.closeExtensionWindow(window.serviceId, window.id, window.workspace)
+            api.closeExtensionWindow(window.serviceId, window.id, window.workspace, window.toolId)
             windowConnections.invalidate(id)
             _state.update { current -> current.copy(
                 windows = current.windows.map { if (it.id == id) it.copy(workspace = path) else it },

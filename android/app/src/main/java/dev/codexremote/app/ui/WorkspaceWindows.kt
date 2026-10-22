@@ -35,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.isRemoteAbsolutePath
+import dev.codexremote.app.model.CodingTool
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.model.WorkspaceWindow
@@ -56,7 +57,7 @@ internal fun WorkspaceWindows(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-            if (state.windows.isEmpty()) Text("新建窗口，选择服务器和工作目录。")
+            if (state.windows.isEmpty()) Text("新建窗口，选择服务器、工具和工作目录。")
             else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 items(state.windows, key = { it.id }) { window ->
                     val service = state.services.firstOrNull { it.id == window.serviceId }
@@ -82,7 +83,7 @@ internal fun WorkspaceWindows(
                                     AppIcon(CodexIcons.Close, "关闭 ${window.title}", Modifier.size(18.dp))
                                 }
                             }
-                            Text("${service?.name ?: "服务器暂不可用"} · Codex · ${if (busy) "正在处理" else if (service?.runtimeState == RuntimeState.CONNECTED) "在线" else "离线"}",
+                            Text("${service?.name ?: "服务器暂不可用"} · ${CodingTool.title(window.toolId)} · ${if (busy) "正在处理" else if (service?.runtimeState == RuntimeState.CONNECTED) "在线" else "离线"}",
                                 style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
                             Text(window.workspace, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
                                 maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -108,7 +109,7 @@ internal fun WorkspaceWindows(
     }
     closing?.let { window ->
         CodexDialog(onDismissRequest = { closing = null }, title = { Text("关闭 ${window.title}？") },
-            text = { Text("将停止此窗口的 Codex 和扩展后端，正在运行的任务可能中断。关闭成功后才会移除窗口。") },
+            text = { Text("将停止此窗口的 ${CodingTool.title(window.toolId)} 和扩展后端，正在运行的任务可能中断。关闭成功后才会移除窗口。") },
             confirmButton = { TextButton(onClick = { viewModel.closeWindow(window.id); closing = null }) { Text("关闭窗口") } },
             dismissButton = { TextButton(onClick = { closing = null }) { Text("取消") } })
     }
@@ -120,6 +121,8 @@ private fun NewWorkspaceWindowDialog(state: AppState, viewModel: MainViewModel, 
     val service = state.services.firstOrNull { it.id == serviceId }
     var selectingService by remember { mutableStateOf(false) }
     var selectingDirectory by remember { mutableStateOf(false) }
+    var selectingTool by remember { mutableStateOf(false) }
+    var tool by remember { mutableStateOf(CodingTool.CODEX) }
     var workspace by remember(serviceId) { mutableStateOf(service?.home.orEmpty()) }
     var title by remember { mutableStateOf("") }
     var error by remember(serviceId) { mutableStateOf<String?>(null) }
@@ -145,25 +148,35 @@ private fun NewWorkspaceWindowDialog(state: AppState, viewModel: MainViewModel, 
                             onClick = { serviceId = candidate.id; selectingService = false }) }
                     }
                 }
-                Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Box {
+                    OutlinedButton(onClick = { selectingTool = true }, modifier = Modifier.fillMaxWidth()) {
                         Text("工具", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("Codex")
+                        Text(tool.title, Modifier.weight(1f).padding(horizontal = 8.dp))
+                        AppIcon(CodexIcons.ChevronDown, null, Modifier.size(16.dp))
+                    }
+                    CodexDropdownMenu(selectingTool, { selectingTool = false }) {
+                        CodingTool.entries.forEach { candidate ->
+                            DropdownMenuItem(text = { Text(candidate.title + if (service?.let { candidate.supports(it) } == false) " · 仅 Linux" else "") },
+                                enabled = service?.let { candidate.supports(it) } != false,
+                                onClick = { tool = candidate; selectingTool = false })
+                        }
                     }
                 }
+                if (service != null && !tool.supports(service)) Text("Claude Code 首版仅支持 Linux Agent。",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 CodexTextField(title, { title = it.take(80) }, label = "窗口名称（可选）", modifier = Modifier.fillMaxWidth())
                 CodexTextField(workspace, { workspace = it }, label = "工作目录", modifier = Modifier.fillMaxWidth())
                 OutlinedButton(onClick = { selectingDirectory = true }, enabled = service?.runtimeState == RuntimeState.CONNECTED && isRemoteAbsolutePath(workspace)) {
                     AppIcon(CodexIcons.FolderOpen, null, Modifier.size(18.dp)); Text("浏览目录", Modifier.padding(start = 6.dp))
                 }
-                Text("首次使用时按需下载官方插件。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("首次使用时按需下载所选工具的官方插件。Claude Code 使用插件自带程序；请先在服务器配置好认证。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             }
         },
         confirmButton = { Button(onClick = {
-            serviceId?.let { viewModel.createWindow(it, workspace, title.trim()) }
+            serviceId?.let { viewModel.createWindow(it, workspace, title.trim(), tool.id) }
             onCreated()
-        }, enabled = service?.runtimeState == RuntimeState.CONNECTED && isRemoteAbsolutePath(workspace)) { Text("打开窗口") } },
+        }, enabled = service?.let { it.runtimeState == RuntimeState.CONNECTED && tool.supports(it) } == true && isRemoteAbsolutePath(workspace)) { Text("打开窗口") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } })
     if (selectingDirectory && service != null) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
         onSelect = { workspace = it; selectingDirectory = false }, onDismiss = { selectingDirectory = false })

@@ -34,6 +34,68 @@ import kotlin.concurrent.thread
 class OfficialChatReconnectInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun nativeDiffApprovalIsBoundToTheSurfaceAndDoesNotReloadTheChat() {
+        Fixture().use { fixture ->
+            val connection = fixture.start()
+            val diff = diffSurface()
+            connection.send(JSONObject().put("type", "surface").put("viewId", VIEW_ID).put("epoch", EPOCH)
+                .put("sequence", 1).put("payload", diff.put("action", "open")))
+            eventually { fixture.panels.lastOrNull()?.singleOrNull()?.diff?.modifiedText == "after 图片🙂" }
+            fixture.approve("diff-fixture", "accept")
+            fixture.approve("diff-fixture", "accept")
+            connection.awaitPacket("surface-action")
+            val actions = connection.packets.filter { it.optString("type") == "surface-action" }
+            assertEquals(1, actions.size)
+            assertEquals(EPOCH, actions.single().getString("epoch"))
+            assertEquals("diff-fixture", actions.single().getString("surfaceId"))
+            assertTrue(fixture.panels.last().single().pending)
+            assertEquals(1, fixture.loads.get())
+            assertEquals(0, fixture.server.messages.size)
+        }
+    }
+
+    @Test fun waitingDiffSurvivesDisconnectionWithoutSendingAnApproval() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            first.send(JSONObject().put("type", "surface").put("viewId", VIEW_ID).put("epoch", EPOCH)
+                .put("sequence", 1).put("payload", diffSurface().put("action", "open")))
+            eventually { fixture.panels.lastOrNull()?.size == 1 }
+            first.abort()
+            eventually { fixture.panels.lastOrNull()?.singleOrNull()?.pending == true }
+            fixture.approve("diff-fixture", "accept")
+            val second = fixture.server.nextConnection()
+            second.ready(sequence = 1, surfaces = JSONArray().put(diffSurface()))
+            second.awaitPacket("visibility")
+            eventually { fixture.panels.lastOrNull()?.singleOrNull()?.pending == false }
+            assertTrue(first.packets.none { it.optString("type") == "surface-action" })
+            assertTrue(second.packets.none { it.optString("type") == "surface-action" })
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
+    @Test fun rejectedHostActionRecoversAuthoritativeStateWithoutReplayingTheDecision() {
+        Fixture().use { fixture ->
+            val first = fixture.start()
+            first.send(JSONObject().put("type", "surface").put("viewId", VIEW_ID).put("epoch", EPOCH)
+                .put("sequence", 1).put("payload", diffSurface().put("action", "open")))
+            eventually { fixture.panels.lastOrNull()?.size == 1 }
+            fixture.approve("diff-fixture", "accept")
+            first.awaitPacket("surface-action")
+            first.send(JSONObject().put("type", "error").put("surfaceId", "diff-fixture").put("message", "temporary host failure"))
+            val second = fixture.server.nextConnection()
+            second.ready(sequence = 1, surfaces = JSONArray().put(diffSurface()))
+            second.awaitPacket("visibility")
+            eventually { fixture.panels.lastOrNull()?.singleOrNull()?.pending == false }
+            assertTrue(second.packets.none { it.optString("type") == "surface-action" })
+            assertEquals(1, fixture.loads.get())
+        }
+    }
+
+    private fun diffSurface() = JSONObject().put("id", "diff-fixture").put("title", "fixture.txt").put("kind", "diff")
+        .put("pending", false).put("actions", JSONArray().put("accept").put("reject"))
+        .put("diff", JSONObject().put("originalUri", "file:///tmp/fixture.txt").put("modifiedUri", "proposal:/fixture.txt")
+            .put("originalText", "before").put("modifiedText", "after 图片🙂"))
+
     @Test fun managementPauseRetainsThePageAndOnlyResumesOnFailureOrExplicitResume() {
         Fixture().use { fixture ->
             fixture.start()
@@ -337,6 +399,7 @@ class OfficialChatReconnectInstrumentedTest {
         val document = AtomicReference<String>()
         val loads = AtomicInteger()
         val statuses = CopyOnWriteArrayList<String?>()
+        val panels = CopyOnWriteArrayList<List<ExtensionSurface>>()
         private lateinit var browser: WebView
         private lateinit var session: OfficialChatSession
         val api = GatewayApi()
@@ -347,7 +410,7 @@ class OfficialChatReconnectInstrumentedTest {
                 api.configure(GatewayConfig("http://127.0.0.1:${server.port}", "fixture-token", allowHttp = true))
                 val scope = "reconnect-instrumented-${UUID.randomUUID()}"
                 session = OfficialChatSession(context, api, OfficialFrontendStore(context), "service", scope, "client", "/tmp",
-                    { statuses += it }, {}, { JSONArray() }, { null }, { _, _ -> null }, { false })
+                    { statuses += it }, {}, { JSONArray() }, { null }, { _, _ -> null }, { false }, onSurfacesChanged = { panels += it })
                 browser = WebView(context).apply {
                     settings.javaScriptEnabled = true
                     addJavascriptInterface(session.bridge("main"), "CodexFixture")
@@ -363,6 +426,7 @@ class OfficialChatReconnectInstrumentedTest {
         }
 
         fun suspendTransport(value: Boolean) = instrumentation.runOnMainSync { session.setSuspended(value) }
+        fun approve(id: String, action: String) = instrumentation.runOnMainSync { session.surfaceAction(id, action) }
 
         fun start(): SocketFixture.Connection = server.nextConnection().also {
             it.ready()
@@ -414,7 +478,7 @@ class OfficialChatReconnectInstrumentedTest {
         inner class Connection(private val socket: Socket) {
             private val input = BufferedInputStream(socket.getInputStream())
             private val output = socket.getOutputStream()
-            private val packets = CopyOnWriteArrayList<JSONObject>()
+            val packets = CopyOnWriteArrayList<JSONObject>()
             val closeReceived = CountDownLatch(1)
             val compressedReceived = AtomicInteger()
             val compressedSent = AtomicInteger()
@@ -485,10 +549,10 @@ class OfficialChatReconnectInstrumentedTest {
                 } finally { socket.close() }
             }
 
-            fun ready(epoch: String = EPOCH, sequence: Int = 0) = send(JSONObject().put("type", "ready").put("viewId", VIEW_ID)
+            fun ready(epoch: String = EPOCH, sequence: Int = 0, surfaces: JSONArray = JSONArray()) = send(JSONObject().put("type", "ready").put("viewId", VIEW_ID)
                 .put("epoch", epoch).put("sequence", sequence).put("version", "fixture-1").put("packageSha256", "a".repeat(64))
                 .put("origin", "https://fixture.codex-remote.invalid").put("html", HTML)
-                .put("frames", JSONArray()).put("surfaces", JSONArray()).put("pendingHostRequests", JSONArray()))
+                .put("frames", JSONArray()).put("surfaces", surfaces).put("pendingHostRequests", JSONArray()))
 
             fun message(sequence: Int, value: String) = send(JSONObject().put("type", "message").put("viewId", VIEW_ID)
                 .put("epoch", EPOCH).put("sequence", sequence).put("surfaceId", "main")

@@ -7,6 +7,7 @@ import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 import * as yauzl from "yauzl";
+import { extensionTools, type ExtensionToolId } from "./extension-tools.js";
 
 export interface OfficialExtensionManifest extends Record<string, unknown> {
   name: string;
@@ -48,6 +49,7 @@ export interface OfficialExtensionResource {
   encoding?: "gzip";
 }
 export interface OfficialExtensionStoreOptions {
+  toolId?: ExtensionToolId;
   fetch?: typeof globalThis.fetch;
   latest?: () => Promise<OfficialExtensionSource>;
   targetPlatform?: string;
@@ -68,6 +70,7 @@ export class OfficialExtensionStore {
   private inFlight: Promise<void> | null = null;
   private readonly fetch: typeof globalThis.fetch;
   private readonly latest: () => Promise<OfficialExtensionSource>;
+  private readonly toolId: ExtensionToolId;
   private mutation: Promise<void> = Promise.resolve();
   private readonly resourcePending = new Map<string, Promise<OfficialExtensionResource>>();
   private readonly compressedResources = new Map<string, Buffer | null>();
@@ -78,7 +81,8 @@ export class OfficialExtensionStore {
 
   constructor(private readonly root: string, options: OfficialExtensionStoreOptions = {}) {
     this.fetch = options.fetch ?? globalThis.fetch;
-    this.latest = options.latest ?? (() => queryLatestOfficialExtension(this.fetch, options.targetPlatform));
+    this.toolId = options.toolId ?? "codex";
+    this.latest = options.latest ?? (() => queryLatestOfficialExtension(this.fetch, options.targetPlatform, this.toolId));
   }
 
   async status(): Promise<OfficialExtensionStatus> {
@@ -124,7 +128,7 @@ export class OfficialExtensionStore {
   /** Development/test import. Copies every regular file unchanged into the candidate slot. */
   async importDirectory(source: string): Promise<OfficialExtensionPackage> {
     const sourceRoot = await realpath(source);
-    const manifest = await verifyExtension(sourceRoot);
+    const manifest = await verifyExtension(sourceRoot, undefined, this.toolId);
     await inspectTree(sourceRoot);
     const digest = await treeDigest(sourceRoot);
     return this.serial(async () => {
@@ -133,7 +137,7 @@ export class OfficialExtensionStore {
       try {
         await cp(sourceRoot, join(stage, "extension"), { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
         await inspectTree(join(stage, "extension"));
-        await verifyExtension(join(stage, "extension"), manifest.version);
+        await verifyExtension(join(stage, "extension"), manifest.version, this.toolId);
         return await this.saveCandidate(stage, manifest, digest);
       } finally { await rm(stage, { recursive: true, force: true }); }
     });
@@ -243,7 +247,7 @@ export class OfficialExtensionStore {
       this.operation = { ...this.operation!, stage: "extracting", totalBytes: total ?? this.operation.downloadedBytes };
       await extractVsix(archive, stage);
       this.operation = { ...this.operation!, stage: "verifying" };
-      const manifest = await verifyExtension(join(stage, "extension"), source.version);
+      const manifest = await verifyExtension(join(stage, "extension"), source.version, this.toolId);
       await this.serial(() => this.saveCandidate(stage, manifest, hash.digest("hex")));
       this.operation = { ...this.operation!, state: "succeeded", stage: "ready" };
     } finally {
@@ -280,7 +284,7 @@ export class OfficialExtensionStore {
       const metadata = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { version: string; sha256: string };
       if (!/^[0-9a-f]{64}$/.test(metadata.sha256)) throw new Error("官方扩展摘要无效");
       const directory = join(root, "extension");
-      const manifest = await verifyExtension(directory, metadata.version);
+      const manifest = await verifyExtension(directory, metadata.version, this.toolId);
       return { version: manifest.version, directory, sha256: metadata.sha256, manifest };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -317,18 +321,20 @@ export class OfficialExtensionStore {
   }
 }
 
-export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string): Promise<OfficialExtensionSource> {
+export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string, toolId: ExtensionToolId = "codex"): Promise<OfficialExtensionSource> {
+  const tool = extensionTools[toolId];
   const target = targetPlatform ?? officialExtensionTarget();
+  if (toolId === "claude" && !/^linux-(?:x64|arm64)$/.test(target)) throw new Error("Claude Code 暂仅支持 Linux x64/arm64 Agent");
   const response = await fetch("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", {
     method: "POST",
     headers: { "Accept": "application/json;api-version=7.2-preview.1", "Content-Type": "application/json" },
-    body: JSON.stringify({ filters: [{ criteria: [{ filterType: 7, value: "OpenAI.chatgpt" }], pageNumber: 1, pageSize: 1 }], flags: 147 }),
+    body: JSON.stringify({ filters: [{ criteria: [{ filterType: 7, value: `${tool.publisher}.${tool.name}` }], pageNumber: 1, pageSize: 1 }], flags: 147 }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`官方扩展版本查询失败：HTTP ${response.status}`);
   const body = await response.json() as { results?: Array<{ extensions?: Array<{ publisher?: { publisherName?: string }; extensionName?: string; versions?: Array<{ version: string; targetPlatform?: string; properties?: Array<{ key: string; value: string }>; files?: Array<{ assetType: string; source: string }> }> }> }> };
   const extension = body.results?.[0]?.extensions?.[0];
-  if (extension?.publisher?.publisherName?.toLowerCase() !== "openai" || extension.extensionName !== "chatgpt") throw new Error("官方扩展发布者身份不匹配");
+  if (extension?.publisher?.publisherName?.toLowerCase() !== tool.publisher.toLowerCase() || extension.extensionName !== tool.name) throw new Error("官方扩展发布者身份不匹配");
   const versions = (extension.versions ?? []).filter((entry) => entry.targetPlatform === target && !entry.properties?.some((property) => property.key === "Microsoft.VisualStudio.Code.PreRelease" && property.value.toLowerCase() === "true"));
   versions.sort((left, right) => compareVersion(right.version, left.version));
   const latest = versions[0];
@@ -378,12 +384,13 @@ async function rejectSymlinkPath(root: string, path: string): Promise<void> {
   if (!canonical.startsWith(`${await realpath(root)}${sep}`)) throw new Error("扩展资源路径无效");
 }
 
-async function verifyExtension(directory: string, expectedVersion?: string): Promise<OfficialExtensionManifest> {
+async function verifyExtension(directory: string, expectedVersion?: string, toolId: ExtensionToolId = "codex"): Promise<OfficialExtensionManifest> {
+  const tool = extensionTools[toolId];
   await rejectSymlinkPath(directory, "package.json");
   const metadata = await stat(join(directory, "package.json"));
   if (metadata.size > 1024 * 1024) throw new Error("官方扩展清单超过 1 MiB");
   const manifest = JSON.parse(await readFile(join(directory, "package.json"), "utf8")) as OfficialExtensionManifest;
-  if (manifest.publisher?.toLowerCase() !== "openai" || manifest.name !== "chatgpt" || typeof manifest.main !== "string") throw new Error("官方扩展清单身份或入口无效");
+  if (manifest.publisher?.toLowerCase() !== tool.publisher.toLowerCase() || manifest.name !== tool.name || typeof manifest.main !== "string") throw new Error("官方扩展清单身份或入口无效");
   validVersion(manifest.version);
   if (expectedVersion && manifest.version !== expectedVersion) throw new Error("官方扩展版本不匹配");
   const main = manifest.main.startsWith("./") ? manifest.main.slice(2) : manifest.main;

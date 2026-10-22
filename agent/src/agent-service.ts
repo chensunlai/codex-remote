@@ -6,6 +6,7 @@ import { TerminalService } from "./terminal-service.js";
 import { APP_VERSION } from "./version.js";
 import { CodexChannels } from "./codex-channels.js";
 import { CodexRuntimeControl } from "./codex-runtime-control.js";
+import { extensionToolId } from "./extension-tools.js";
 import { OfficialExtensionService } from "./official-extension-service.js";
 import { join, resolve } from "node:path";
 
@@ -21,6 +22,7 @@ export class AgentService {
   private readonly channels: CodexChannels;
   private readonly runtimeControl: CodexRuntimeControl;
   private readonly extensions: OfficialExtensionService;
+  private readonly claudeExtension: OfficialExtensionService | undefined;
 
   constructor(codexExecutable: string, dataDirectory = resolve(".codex-remote-agent")) {
     this.channels = new CodexChannels(codexExecutable, (frame) => {
@@ -29,6 +31,11 @@ export class AgentService {
     this.extensions = new OfficialExtensionService(join(dataDirectory, "official-extension"), codexExecutable, frame => {
       void this.emit("extension.view", frame).catch(() => {});
     });
+    if (process.platform === "linux" && ["x64", "arm64"].includes(process.arch)) this.claudeExtension = new OfficialExtensionService(
+      join(dataDirectory, "claude-extension"), "", frame => {
+        void this.emit("extension.view", frame).catch(() => {});
+      }, undefined, "claude",
+    );
     const runtimes = {
       status: () => [...this.channels.status(), ...this.extensions.runtimeStatus()],
       restart: async () => { await Promise.all([this.channels.restart(), this.extensions.restart()]); },
@@ -48,13 +55,18 @@ export class AgentService {
 
   setTransport(transport?: Transport): void {
     this.transport = transport;
-    if (!transport) { this.channels.disconnected(); this.extensions.disconnected(); }
+    if (!transport) { this.channels.disconnected(); this.extensions.disconnected(); this.claudeExtension?.disconnected(); }
   }
 
   async request(method: string, rawParams: unknown): Promise<unknown> {
     this.assertSupported(method);
     const params = record(rawParams);
-    if (method.startsWith("extension.")) return this.extensions.request(method, params);
+    if (method.startsWith("extension.")) {
+      const toolId = extensionToolId(params.toolId);
+      const extension = toolId === "codex" ? this.extensions : this.claudeExtension;
+      if (!extension) throw new Error("Claude Code 暂仅支持 Linux Agent");
+      return extension.request(method, params);
+    }
     switch (method) {
       case "service.describe":
         return {
@@ -68,6 +80,8 @@ export class AgentService {
             "codex-runtime-control",
             "official-extension-host-v1",
             "extension-window-management-v1",
+            "extension-tools-v1",
+            ...(this.claudeExtension ? ["claude-extension-host-v1"] : []),
             ...(process.platform === "win32" ? [] : ["terminal"]),
             "files",
             "stream-transfer",
@@ -194,6 +208,7 @@ export class AgentService {
     this.terminals.closeAll();
     this.channels.close();
     this.extensions.close();
+    this.claudeExtension?.close();
   }
 
   private emit(event: string, payload: unknown): Promise<void> {

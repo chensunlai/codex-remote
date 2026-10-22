@@ -26,7 +26,11 @@ import org.json.JSONObject
 import org.json.JSONTokener
 import java.util.UUID
 
-internal data class ExtensionSurface(val id: String, val title: String)
+internal data class ExtensionDiff(val originalUri: String, val modifiedUri: String, val originalText: String, val modifiedText: String)
+internal data class ExtensionSurface(
+    val id: String, val title: String, val kind: String = "panel", val diff: ExtensionDiff? = null,
+    val actions: List<String> = emptyList(), val pending: Boolean = false,
+)
 
 /** An opaque public WebView message transport. Closing a renderer never stops the Agent host. */
 internal class OfficialChatSession(
@@ -45,11 +49,19 @@ internal class OfficialChatSession(
     private val onExternalUrl: suspend (String) -> Boolean,
     private val onSurfacesChanged: (List<ExtensionSurface>) -> Unit = {},
     val resourceScope: String = scope,
+    val toolId: String = "codex",
+    private val onInput: suspend (JSONObject) -> String? = { error("当前移动端未提供输入对话框") },
+    private val onQuickPick: suspend (JSONObject) -> Any? = { error("当前移动端未提供选择对话框") },
+    private val onOpenText: (JSONObject) -> Unit = { error("当前移动端未提供虚拟文档预览") },
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var rendererId = UUID.randomUUID().toString()
     private class Surface(val id: String, var title: String = "Codex") {
+        var kind = "panel"
+        var diff: ExtensionDiff? = null
+        var actions: List<String> = emptyList()
+        var pending = false
         var view: WebView? = null
         var loader: ((String, String, String) -> Unit)? = null
         @Volatile var documentId = ""
@@ -127,7 +139,38 @@ internal class OfficialChatSession(
         if (id != "main" && connected) wire?.send(JSONObject().put("type", "close-surface").put("surfaceId", id).toString())
     }
 
-    private fun publishSurfaces() = onSurfacesChanged(surfaceOrder.mapNotNull { id -> surfaces[id]?.let { ExtensionSurface(id, it.title) } })
+    fun surfaceAction(id: String, action: String) {
+        val surface = surfaces[id] ?: return
+        if (closed || suspended || !connected || surface.kind != "diff" || surface.pending || action !in surface.actions) return
+        val sent = wire?.send(JSONObject().put("type", "surface-action").put("epoch", epoch)
+            .put("surfaceId", id).put("action", action).toString()) == true
+        surface.pending = true
+        publishSurfaces()
+        if (!sent) {
+            val previous = socket
+            disconnected(connectionGeneration, "审批操作未发送，请重连后确认状态")
+            previous?.cancel()
+        }
+    }
+
+    private fun publishSurfaces() = onSurfacesChanged(surfaceOrder.mapNotNull { id -> surfaces[id]?.let {
+        ExtensionSurface(id, it.title, it.kind, it.diff, it.actions, it.pending || !connected || suspended)
+    } })
+
+    private fun updateSurface(surface: Surface, value: JSONObject, force: Boolean = false) {
+        surface.title = value.optString("title", surface.title)
+        surface.kind = value.optString("kind", surface.kind)
+        if (surface.kind == "diff") {
+            value.optJSONObject("diff")?.let { diff ->
+                surface.diff = ExtensionDiff(diff.optString("originalUri"), diff.optString("modifiedUri"),
+                    diff.optString("originalText"), diff.optString("modifiedText"))
+            }
+            if (value.has("actions")) surface.actions = value.optJSONArray("actions")?.let { list ->
+                (0 until list.length()).map { list.getString(it) }
+            }.orEmpty()
+            if (value.has("pending")) surface.pending = value.optBoolean("pending")
+        } else if (value.has("html") || force) setHtml(surface, value.optString("html"), force)
+    }
 
     private fun removeSurface(id: String) {
         if (id == "main") return
@@ -161,9 +204,8 @@ internal class OfficialChatSession(
         panels.forEach { panel ->
             val id = panel.getString("id")
             val surface = surfaces.getOrPut(id) { Surface(id) }
-            surface.title = panel.optString("title", "Codex")
             if (id !in surfaceOrder) surfaceOrder.add(id)
-            setHtml(surface, panel.optString("html"), force)
+            updateSurface(surface, panel, force)
         }
         publishSurfaces()
     }
@@ -210,6 +252,7 @@ internal class OfficialChatSession(
         previous?.cancel()
         if (unconfirmed.isNotEmpty()) invalidateRenderer()
         cancelNativeRequests()
+        publishSurfaces()
     }
 
     private fun connect() {
@@ -245,11 +288,19 @@ internal class OfficialChatSession(
         connectionJob = jobs.launch {
             try {
                 if (!api.prepareSocketConnection()) return@launch
+                if (toolId != "codex") {
+                    api.ensureExtensionTool(toolId, force = true)
+                    api.extensionStatus(serviceId, toolId)
+                }
                 if (closed || suspended || attempt != connectionGeneration) return@launch
                 wire = ChunkedSocket(listener)
-                socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire))
+                socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire), toolId)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { disconnected(attempt, error.message) }
+            catch (error: Exception) {
+                val gatewayError = error as? GatewayException ?: error.cause as? GatewayException
+                val deterministic = error is IllegalArgumentException || gatewayError?.statusCode in listOf(400, 401, 403, 404, 409, 426)
+                disconnected(attempt, error.message, retry = toolId == "codex" || !deterministic)
+            }
         }
     }
 
@@ -261,6 +312,7 @@ internal class OfficialChatSession(
         socket = null
         wire?.dispose()
         wire = null
+        publishSurfaces()
         android.util.Log.i("OfficialCodex", "Extension disconnected: ${reason?.take(180).orEmpty()}")
         if (!retry) {
             api.chatStopped(reason)
@@ -276,6 +328,7 @@ internal class OfficialChatSession(
         when (packet.optString("type")) {
             "ready" -> {
                 val snapshot = packet.optJSONObject("snapshot") ?: packet
+                require(toolId == "codex" || snapshot.optString("toolId") == toolId) { "扩展连接未确认工具类型，请升级 Gateway 和 Agent 后使用 Claude Code" }
                 val nextEpoch = snapshot.getString("epoch")
                 val nextView = snapshot.getString("viewId")
                 val nextHtml = snapshot.getString("html")
@@ -313,8 +366,13 @@ internal class OfficialChatSession(
             "frame" -> packet.optJSONObject("frame")?.let(::frame)
             "resync-required" -> reconnectRenderer()
             "error" -> {
-                onStatus(packet.optString("message").ifBlank { packet.optJSONObject("error")?.optString("message") ?: "官方扩展连接失败" })
-                if (unconfirmed.remove(packet.optString("messageId")) != null) reconnectRenderer()
+                val reason = packet.optString("message").ifBlank { packet.optJSONObject("error")?.optString("message") ?: "官方扩展连接失败" }
+                onStatus(reason)
+                if (surfaces[packet.optString("surfaceId")]?.kind == "diff") {
+                    val previous = socket
+                    disconnected(connectionGeneration, reason)
+                    previous?.cancel()
+                } else if (unconfirmed.remove(packet.optString("messageId")) != null) reconnectRenderer()
             }
             else -> if (packet.has("sequence")) frame(packet)
         }
@@ -344,10 +402,9 @@ internal class OfficialChatSession(
                 if (info.optString("action") == "close") removeSurface(id)
                 else if (id != "main") {
                     val surface = surfaces.getOrPut(id) { Surface(id) }
-                    surface.title = info.optString("title", surface.title)
                     if (info.optString("action") == "open") surfaceOrder.remove(id)
                     if (id !in surfaceOrder) surfaceOrder.add(id)
-                    if (info.has("html")) setHtml(surface, info.getString("html"))
+                    updateSurface(surface, info)
                     publishSurfaces()
                 }
             }
@@ -499,11 +556,14 @@ internal class OfficialChatSession(
         }
         "showSaveDialog" -> onSaveFile(params)
         "showInformationMessage", "showWarningMessage", "showErrorMessage" -> onNotification(method, params)
+        "showInputBox" -> onInput(params)
+        "showQuickPick" -> onQuickPick(params)
+        "openText" -> { onOpenText(params); true }
         "clipboard.read" -> (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             .primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
         "clipboard.write" -> {
             (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                .setPrimaryClip(ClipData.newPlainText("Codex", params.optString("text")))
+                .setPrimaryClip(ClipData.newPlainText(if (toolId == "claude") "Claude Code" else "Codex", params.optString("text")))
             null
         }
         "openExternal" -> onExternalUrl(params.getString("url"))

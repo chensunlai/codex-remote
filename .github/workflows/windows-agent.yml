@@ -2,7 +2,7 @@ name: Windows Agent validation
 
 on:
   push:
-    branches: [main, feature/windows-agent, feature/workspace-windows]
+    branches: [main, feature/windows-agent, feature/workspace-windows, feature/claude-code]
   pull_request:
     branches: [main]
   workflow_dispatch:

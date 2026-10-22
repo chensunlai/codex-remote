@@ -43,6 +43,38 @@ async function settled(store: OfficialExtensionStore) {
 }
 
 describe("complete official extension packages", () => {
+  it("keeps Claude packages separate and verifies publisher/name without changing bundled executable bytes", async () => {
+    const root = await fixture();
+    const directory = await source(root, "2.1.117");
+    await writeFile(join(directory, "package.json"), JSON.stringify({
+      publisher: "Anthropic", name: "claude-code", version: "2.1.117", main: "./out/extension.js",
+    }));
+    const executable = Buffer.from("#!/bin/sh\nprintf 'official claude fixture'\n");
+    await writeFile(join(directory, "bin", "claude"), executable, { mode: 0o755 });
+    const codex = new OfficialExtensionStore(join(root, "codex"));
+    const claude = new OfficialExtensionStore(join(root, "claude"), { toolId: "claude" });
+    await expect(codex.importDirectory(directory)).rejects.toThrow("身份或入口无效");
+    const imported = await claude.importDirectory(directory);
+    await claude.activate();
+    expect(await readFile(join(imported.directory, "bin", "claude"))).toEqual(executable);
+    expect((await lstat(join(imported.directory, "bin", "claude"))).mode & 0o111).toBe(0o111);
+    expect((await new OfficialExtensionStore(join(root, "claude"), { toolId: "claude" }).active())?.sha256).toBe(imported.sha256);
+    expect(await codex.active()).toBeNull();
+    await expect(claude.importDirectory(await source(root, "1.0.0"))).rejects.toThrow("身份或入口无效");
+  });
+
+  it("queries only the official Claude publisher and rejects unsupported platforms", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ results: [{ extensions: [{
+      publisher: { publisherName: "Anthropic" }, extensionName: "claude-code", versions: [
+        { version: "2.1.117", targetPlatform: "linux-x64", files: [{ assetType: "Microsoft.VisualStudio.Services.VSIXPackage", source: "https://anthropic.gallery.vsassets.io/2.1.117" }] },
+      ],
+    }] }] }));
+    expect(await queryLatestOfficialExtension(fetch, "linux-x64", "claude")).toEqual({ version: "2.1.117", downloadUrl: "https://anthropic.gallery.vsassets.io/2.1.117" });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).filters[0].criteria[0].value).toBe("Anthropic.claude-code");
+    await expect(queryLatestOfficialExtension(fetch, "win32-x64", "claude")).rejects.toThrow("Linux");
+    await expect(queryLatestOfficialExtension(fetch, "linux-x64", "codex")).rejects.toThrow("发布者身份");
+  });
+
   it("does not promote a candidate that changed after the host verified it", async () => {
     const root = await fixture();
     const store = new OfficialExtensionStore(join(root, "store"));

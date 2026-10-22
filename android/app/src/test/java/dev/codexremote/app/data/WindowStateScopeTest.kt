@@ -19,6 +19,18 @@ class WindowStateScopeTest {
         assertEquals(scope, windowStateScope(config, window.copy(title = "Renamed")))
     }
 
+    @Test fun toolsShareResourcesOnlyWithinTheirToolAndKeepCodexLegacyIdentity() {
+        val expected = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${config.baseUrl}\u0000${config.token}\u0000${window.serviceId}".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        assertEquals(expected, frontendScope(config, window.serviceId))
+        assertEquals(expected, frontendScope(config, window.serviceId, "codex"))
+        assertNotEquals(expected, frontendScope(config, window.serviceId, "claude"))
+        assertNotEquals(windowStateScope(config, window), windowStateScope(config, window.copy(toolId = "claude")))
+        assertEquals(frontendScope(config, window.serviceId, "claude"),
+            frontendScope(config, window.copy(id = "another-window").serviceId, "claude"))
+    }
+
     @Test fun gatewayRoutingPolicyDoesNotChangeTheWindowOrResourceIdentity() {
         val routed = config.copy(allowHttp = true, multipleEndpoints = true, endpoints = listOf("http://192.168.1.2"))
         assertEquals(windowStateScope(config, window), windowStateScope(routed, window))

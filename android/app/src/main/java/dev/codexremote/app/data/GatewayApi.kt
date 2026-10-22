@@ -81,6 +81,7 @@ class GatewayApi {
     internal val reconnections = _reconnections.asSharedFlow()
     @Volatile private var activeEndpoint: String? = null
     @Volatile private var configurationGeneration = 0L
+    @Volatile private var toolCapabilityGeneration = -1L
     private val chatGeneration = AtomicLong()
     @Volatile private var chatSocket: WebSocket? = null
     @Volatile private var chatConnecting = false
@@ -307,55 +308,86 @@ class GatewayApi {
     suspend fun restartCodex(serviceId: String, confirmed: Boolean): JSONObject =
         data(request("POST", "api/v2/services/$serviceId/codex/restart", JSONObject().put("confirmed", confirmed))) as JSONObject
 
-    suspend fun extensionStatus(serviceId: String): JSONObject =
-        data(request("GET", "api/v3/services/$serviceId/extension/status")) as JSONObject
-
-    suspend fun updateExtension(serviceId: String): JSONObject =
-        data(request("POST", "api/v3/services/$serviceId/extension/update", JSONObject())) as JSONObject
-
-    suspend fun applyExtension(serviceId: String, confirmed: Boolean): JSONObject =
-        data(request("POST", "api/v3/services/$serviceId/extension/apply", JSONObject().put("confirmed", confirmed))) as JSONObject
-
-    suspend fun closeExtensionWindow(serviceId: String, clientId: String, workspace: String) =
-        manageExtensionWindow(serviceId, clientId, workspace, "close")
-
-    suspend fun restartExtensionWindow(serviceId: String, clientId: String, workspace: String) =
-        manageExtensionWindow(serviceId, clientId, workspace, "restart")
-
-    private suspend fun manageExtensionWindow(serviceId: String, clientId: String, workspace: String, action: String): JSONObject {
+    /** Only successful Gateway capability checks are cached for this configuration. Agent checks stay live. */
+    suspend fun ensureExtensionTool(toolId: String = "codex", force: Boolean = false) {
+        require(toolId == "codex" || toolId == "claude") { "尚不支持该工具" }
+        if (toolId == "codex" || !force && toolCapabilityGeneration == configurationGeneration) return
+        if (force) toolCapabilityGeneration = -1L
+        val generation = configurationGeneration
         val capabilities = meta().optJSONArray("capabilities")
-        require(capabilities != null && (0 until capabilities.length()).any { capabilities.optString(it) == "extension-window-management-v1" }) {
-            "请升级 Gateway 后使用窗口关闭和重启功能"
+        require(capabilities != null && (0 until capabilities.length()).any { capabilities.optString(it) == "extension-tools-v1" }) {
+            "请升级 Gateway 后使用 Claude Code"
         }
+        if (generation == configurationGeneration) toolCapabilityGeneration = generation
+    }
+
+    private suspend fun extensionRequest(method: String, serviceId: String, action: String, toolId: String,
+        body: JSONObject? = null): JSONObject {
+        ensureExtensionTool(toolId)
         return try {
-            data(request("POST", "api/v3/services/$serviceId/extension/view/$action",
-                JSONObject().put("clientId", clientId).put("workspace", workspace))) as JSONObject
+            val query = if (method == "GET" && toolId != "codex") mapOf("toolId" to toolId) else emptyMap()
+            val payload = if (method == "GET") null else (body ?: JSONObject()).also { if (toolId != "codex") it.put("toolId", toolId) }
+            val result = data(request(method, "api/v3/services/$serviceId/extension/$action", payload, query)) as JSONObject
+            if (toolId == "claude" && action == "status") require(result.optString("toolId") == toolId) {
+                "请升级 Gateway 和该服务器的 Agent 后使用 Claude Code；当前服务未确认工具身份"
+            }
+            result
         } catch (error: GatewayException) {
-            if (error.code == "UPGRADE_AGENT_REQUIRED") throw IOException("请升级该服务器的 Agent 后管理窗口", error)
+            if (error.code == "UPGRADE_AGENT_REQUIRED") throw GatewayException(error.statusCode, error.code, "请升级该服务器的 Agent 后使用${if (toolId == "claude") " Claude Code" else "此功能"}", error.details)
             throw error
         }
     }
 
+    suspend fun extensionStatus(serviceId: String, toolId: String = "codex"): JSONObject =
+        extensionRequest("GET", serviceId, "status", toolId)
+
+    suspend fun updateExtension(serviceId: String, toolId: String = "codex"): JSONObject =
+        extensionRequest("POST", serviceId, "update", toolId)
+
+    suspend fun applyExtension(serviceId: String, confirmed: Boolean, toolId: String = "codex"): JSONObject =
+        extensionRequest("POST", serviceId, "apply", toolId, JSONObject().put("confirmed", confirmed))
+
+    suspend fun closeExtensionWindow(serviceId: String, clientId: String, workspace: String, toolId: String = "codex") =
+        manageExtensionWindow(serviceId, clientId, workspace, "close", toolId)
+
+    suspend fun restartExtensionWindow(serviceId: String, clientId: String, workspace: String, toolId: String = "codex") =
+        manageExtensionWindow(serviceId, clientId, workspace, "restart", toolId)
+
+    private suspend fun manageExtensionWindow(serviceId: String, clientId: String, workspace: String, action: String, toolId: String): JSONObject {
+        val capabilities = meta().optJSONArray("capabilities")
+        require(capabilities != null && (0 until capabilities.length()).any { capabilities.optString(it) == "extension-window-management-v1" }) {
+            "请升级 Gateway 后使用窗口关闭和重启功能"
+        }
+        return extensionRequest("POST", serviceId, "view/$action", toolId,
+            JSONObject().put("clientId", clientId).put("workspace", workspace))
+    }
+
     fun extensionChannel(
         serviceId: String, clientId: String, rendererId: String, workspace: String,
-        after: Long, epoch: String?, listener: WebSocketListener,
-    ): WebSocket = openSocket(
-        Request.Builder().url(url("api/v4/services/$serviceId/extension", buildMap {
-            put("clientId", clientId)
-            put("rendererId", rendererId)
-            put("workspace", workspace)
-            put("after", after.toString())
-            epoch?.let { put("epoch", it) }
-        })).authorized().build(), listener, chat = true,
-    )
+        after: Long, epoch: String?, listener: WebSocketListener, toolId: String = "codex",
+    ): WebSocket {
+        require(toolId == "codex" || toolId == "claude") { "尚不支持该工具" }
+        return openSocket(
+            Request.Builder().url(url("api/v4/services/$serviceId/extension", buildMap {
+                put("clientId", clientId)
+                put("rendererId", rendererId)
+                put("workspace", workspace)
+                put("after", after.toString())
+                if (toolId != "codex") put("toolId", toolId)
+                epoch?.let { put("epoch", it) }
+            })).authorized().build(), listener, chat = true,
+        )
+    }
 
     /** Runs on WebView's resource thread. Never exposes the Gateway token to page JavaScript. */
-    internal fun extensionResource(serviceId: String, version: String, path: String, packageSha256: String? = null): ByteArray {
+    internal fun extensionResource(serviceId: String, version: String, path: String, packageSha256: String? = null, toolId: String = "codex"): ByteArray {
+        require(toolId == "codex" || toolId == "claude") { "尚不支持该工具" }
         val current = requireNotNull(config) { "Gateway is not configured" }
         val target = requireEndpoint().ensureTrailingSlash().toHttpUrl().newBuilder()
             .addPathSegments("api/v3/services/$serviceId/extension/resource")
             .addQueryParameter("version", version).addQueryParameter("path", path)
         packageSha256?.let { target.addQueryParameter("packageSha256", it) }
+        if (toolId != "codex") target.addQueryParameter("toolId", toolId)
         return execute(Request.Builder().url(target.build())
             .header("Authorization", "Bearer " + current.token).tag(ResourceTransfer::class.java, ResourceTransfer()).get().build()).use { response ->
             ensureSuccess(response)

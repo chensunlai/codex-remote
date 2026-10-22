@@ -52,6 +52,18 @@ class GatewayExtensionResourceTest {
         }
     }
 
+    @Test fun claudeResourcesKeepTheirToolRouteWhileCodexUsesTheLegacyRoute() {
+        val bytes = "official Claude resource".toByteArray()
+        serveResource(bytes, digest(bytes), packageId) { api, request ->
+            assertArrayEquals(bytes, api.extensionResource("service", "1.0", "webview/index.js", packageId, "claude"))
+            assertTrue(request.get().contains("toolId=claude"))
+        }
+        serveResource(bytes, digest(bytes), packageId) { api, request ->
+            assertArrayEquals(bytes, api.extensionResource("service", "1.0", "webview/index.js", packageId))
+            assertTrue(!request.get().contains("toolId="))
+        }
+    }
+
     @Test fun rejectsCorruptResourceBytes() {
         serveResource("changed".toByteArray(), digest("original".toByteArray()), packageId) { api, _ ->
             assertTrue(runCatching { api.extensionResource("service", "1.0", "index.js", packageId) }.isFailure)

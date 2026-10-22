@@ -77,6 +77,7 @@ class AgentPeer {
   private closed = false;
   private readonly pingTimer: NodeJS.Timeout;
   private transfers = 0;
+  private description: Promise<AgentDescription> | undefined;
 
   constructor(
     readonly ownerId: string,
@@ -108,6 +109,14 @@ class AgentPeer {
       this.alive = false;
       socket.ping();
     }, 30_000);
+  }
+
+  describe(): Promise<AgentDescription> {
+    if (this.description) return this.description;
+    const pending = this.request<AgentDescription>("service.describe", {}, 15_000);
+    this.description = pending;
+    void pending.catch(() => { if (this.description === pending) this.description = undefined; });
+    return pending;
   }
 
   request<T = unknown>(method: string, params: unknown = {}, timeoutMs = 45_000): Promise<T> {
@@ -334,7 +343,7 @@ export class AgentRegistry extends EventEmitter {
     this.journal.publish(ownerId, "service.status", { state: "connected" }, serviceId);
 
     try {
-      const description = await peer.request<AgentDescription>("service.describe", {}, 15_000);
+      const description = await peer.describe();
       await this.services.register(ownerId, serviceId, name, description);
       if (!this.closing) {
         this.journal.publish(ownerId, "service.updated", description, serviceId);
@@ -402,8 +411,17 @@ export class AgentRegistry extends EventEmitter {
     method: string,
     params: unknown = {},
     timeoutMs?: number,
+    requiredCapabilities: string[] = [],
   ): Promise<T> {
-    return this.peer(ownerId, serviceId).request<T>(method, params, timeoutMs);
+    const peer = this.peer(ownerId, serviceId);
+    if (requiredCapabilities.length) {
+      const description = await peer.describe();
+      if (!requiredCapabilities.every(capability => description.capabilities?.includes(capability))) {
+        throw new AppError(409, "UPGRADE_AGENT_REQUIRED", "请升级该服务器的 Linux Agent 以使用 Claude Code");
+      }
+    }
+    // Keep the checked connection: a replacement Agent must never inherit its capabilities.
+    return peer.request<T>(method, params, timeoutMs);
   }
 
   async notify(

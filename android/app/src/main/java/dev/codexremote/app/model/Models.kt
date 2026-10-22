@@ -16,6 +16,18 @@ data class GatewayConfig(
 
 enum class RuntimeState { CONNECTED, DISCONNECTED }
 
+/** Tool selection belongs to a window; official business messages remain opaque. */
+enum class CodingTool(val id: String, val title: String) {
+    CODEX("codex", "Codex"), CLAUDE("claude", "Claude Code");
+
+    fun supports(service: RemoteService): Boolean = this == CODEX || service.platform == "linux"
+
+    companion object {
+        fun fromId(id: String): CodingTool? = entries.firstOrNull { it.id == id }
+        fun title(id: String): String = fromId(id)?.title ?: id
+    }
+}
+
 data class RemoteService(
     val id: String,
     val name: String,

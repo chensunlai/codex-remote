@@ -67,6 +67,61 @@ async function until(check: () => boolean | Promise<boolean>) {
 }
 
 describe("official extension process lifecycle", () => {
+  it("preserves native diff state across reattach and binds decisions to the current epoch and actionable surface", async () => {
+    const root = await mkdtemp(join(tmpdir(), "claude-diff-service-")); roots.push(root);
+    const extension = join(root, "source"); await mkdir(extension);
+    await writeFile(join(extension, "before.txt"), "before 中文🙂\n");
+    await writeFile(join(extension, "after.txt"), "after 中文🙂\n");
+    await writeFile(join(extension, "package.json"), JSON.stringify({ publisher: "Anthropic", name: "claude-code", version: "1.0.0", main: "extension.cjs",
+      contributes: { menus: { "editor/title": [
+        { command: "claude-vscode.acceptProposedDiff", when: "fixture.reviewing" },
+        { command: "claude-vscode.rejectProposedDiff", when: "fixture.reviewing" },
+      ] } } }));
+    await writeFile(join(extension, "extension.cjs"), `const v=require('vscode');exports.activate=ctx=>{
+      let main;
+      v.window.onDidChangeVisibleTextEditors(editors=>v.commands.executeCommand('setContext','fixture.reviewing',editors.length>0));
+      v.commands.registerCommand('claude-vscode.acceptProposedDiff',()=>main.webview.postMessage('accepted'));
+      v.commands.registerCommand('claude-vscode.rejectProposedDiff',()=>v.window.tabGroups.close(v.window.tabGroups.activeTabGroup.activeTab));
+      ctx.subscriptions.push(v.window.registerWebviewViewProvider('claudeVSCodeSidebar',{resolveWebviewView(view){
+        main=view;view.webview.html='<main>Claude fixture</main>';
+        view.webview.onDidReceiveMessage(async message=>{
+          if(message==='diff')await v.commands.executeCommand('vscode.diff',v.Uri.joinPath(ctx.extensionUri,'before.txt'),v.Uri.joinPath(ctx.extensionUri,'after.txt'),'Proposed edit');
+          if(message==='finish')await v.window.tabGroups.close(v.window.tabGroups.activeTabGroup.activeTab);
+        });
+      }}));};`);
+    const store = new OfficialExtensionStore(join(root, "packages"), { toolId: "claude" });
+    await store.importDirectory(extension); await store.activate();
+    const frames: ExtensionViewFrame[] = [];
+    const service = new OfficialExtensionService(join(root, "state"), "/missing/codex", frame => frames.push(frame), store, "claude"); services.push(service);
+    const identity = { viewId: "claude-diff", rendererId: "renderer", workspace: root };
+    const snapshot = await service.request("extension.view.attach", identity) as { epoch: string };
+    const send = (value: string, id = value) => service.request("extension.view.send", { ...identity, epoch: snapshot.epoch, messageId: id, payload: encode(value) });
+    await send("diff");
+    await until(() => frames.some(frame => frame.type === "surface" && (frame.payload as { action: string }).action === "open"));
+    const restored = await service.request("extension.view.attach", { ...identity, epoch: snapshot.epoch }) as { surfaces: ExtensionSurface[] };
+    const diff = restored.surfaces[0]!;
+    expect(diff).toMatchObject({ kind: "diff", actions: ["accept", "reject"], pending: false,
+      diff: { originalText: "before 中文🙂\n", modifiedText: "after 中文🙂\n" } });
+    const action = { ...identity, epoch: snapshot.epoch, surfaceId: diff.id, action: "accept" };
+    await expect(service.request("extension.view.surface.action", { ...action, epoch: "previous-host" })).rejects.toThrow("已更新");
+    await expect(service.request("extension.view.surface.action", { ...action, surfaceId: "main" })).rejects.toThrow("不支持");
+    await expect(service.request("extension.view.surface.action", { ...action, action: "unknown" })).rejects.toThrow("不支持");
+    await service.request("extension.view.surface.action", action);
+    await until(() => frames.some(frame => frame.type === "surface" && (frame.payload as { pending?: boolean }).pending === true));
+    await expect(service.request("extension.view.surface.action", action)).rejects.toThrow("不支持");
+    expect((await service.request("extension.view.attach", identity) as { surfaces: ExtensionSurface[] }).surfaces[0]?.pending).toBe(true);
+    await send("finish");
+    await until(() => frames.some(frame => frame.type === "surface" && (frame.payload as { action: string }).action === "close"));
+    await expect(service.request("extension.view.surface.action", action)).rejects.toThrow("已关闭");
+    frames.length = 0;
+    await send("diff", "second-diff");
+    await until(() => frames.some(frame => frame.type === "surface" && (frame.payload as { action: string }).action === "open"));
+    const next = (await service.request("extension.view.attach", identity) as { surfaces: ExtensionSurface[] }).surfaces[0]!;
+    await service.request("extension.view.surface.close", { ...identity, surfaceId: next.id });
+    await until(() => frames.some(frame => frame.type === "surface" && (frame.payload as { action: string }).action === "close"));
+    expect(await readFile(join(extension, "before.txt"), "utf8")).toBe("before 中文🙂\n");
+  });
+
   it("can restart the extension and launch Codex again after its app-server was killed", async () => {
     const f = await fixture();
     await f.send("task", encode("task"));

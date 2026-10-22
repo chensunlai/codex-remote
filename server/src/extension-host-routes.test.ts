@@ -55,6 +55,116 @@ describe("Official extension host relay", () => {
     delete process.env.LOG_LEVEL;
   });
 
+  it("isolates Claude identity and forwards every action to its tool without changing Codex identity", async () => {
+    agentCapabilities.push("extension-tools-v1", "claude-extension-host-v1");
+    agent = await connectAgent();
+    const codex = await connectView();
+    const codexReady = await codex.messages.next("ready");
+    const claude = await connectView({ toolId: "claude" });
+    const claudeReady = await claude.messages.next("ready");
+    const ownerId = await gateway.services.tokens.verify(TOKEN);
+    expect(codexReady.viewId).toBe(createHash("sha256").update(JSON.stringify([ownerId, SERVICE_ID, CLIENT_ID, WORKSPACE])).digest("hex"));
+    expect(claudeReady.viewId).toBe(createHash("sha256").update(JSON.stringify([ownerId, SERVICE_ID, CLIENT_ID, WORKSPACE, "claude"])).digest("hex"));
+    expect(codex.socket.readyState).toBe(WebSocket.OPEN);
+    claude.socket.send(JSON.stringify({ type: "message", messageId: "claude-send", epoch: EPOCH, payload: ["string", "opaque"] }));
+    await claude.messages.next("delivery");
+    claude.socket.send(JSON.stringify({ type: "visibility", visible: false }));
+    claude.socket.send(JSON.stringify({ type: "host-response", id: "native-request", result: "unchanged" }));
+    claude.socket.send(JSON.stringify({ type: "close-surface", surfaceId: "panel-1" }));
+    claude.socket.send(JSON.stringify({ type: "surface-action", epoch: EPOCH, surfaceId: "diff-1", action: "accept" }));
+    claude.socket.send(JSON.stringify({ type: "ack", sequence: 0 }));
+    await eventually(() => calls.some(call => call.method === "extension.view.surface.action"));
+    expect(calls.find(call => call.method === "extension.view.surface.action")?.params).toMatchObject({
+      toolId: "claude", viewId: claudeReady.viewId, rendererId: RENDERER_ID, epoch: EPOCH, surfaceId: "diff-1", action: "accept",
+    });
+    const closed = onClose(claude.socket);
+    claude.socket.close(); await closed;
+    await eventually(() => calls.some(call => call.method === "extension.view.detach"));
+    const claudeCalls = calls.filter(call => call.params.viewId === claudeReady.viewId);
+    expect(claudeCalls.map(call => call.method)).toEqual(expect.arrayContaining([
+      "extension.view.attach", "extension.view.send", "extension.view.visibility", "extension.view.respond",
+      "extension.view.surface.close", "extension.view.surface.action", "extension.view.ack", "extension.view.detach",
+    ]));
+    expect(claudeCalls.every(call => call.params.toolId === "claude")).toBe(true);
+    expect((await api("/view/restart", "POST", { toolId: "claude", clientId: CLIENT_ID, workspace: WORKSPACE })).status).toBe(200);
+    expect(calls.find(call => call.method === "extension.view.restart")?.params).toEqual({ viewId: claudeReady.viewId, toolId: "claude" });
+    expect(codex.socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("preserves diff snapshots and rejects malformed surface actions", async () => {
+    agentCapabilities.push("extension-tools-v1", "claude-extension-host-v1");
+    agent = await connectAgent();
+    const surface = { id: "diff-1", title: "Review", kind: "diff", pending: false, actions: ["accept", "reject"],
+      diff: { originalUri: "before:test", modifiedUri: "after:test", originalText: "old", modifiedText: "new" } };
+    respond = (method, params) => method === "extension.view.attach" ? { ...snapshot(params), surfaces: [surface] } : {};
+    const view = await connectView({ toolId: "claude" });
+    expect((await view.messages.next("ready")).surfaces).toEqual([surface]);
+    const closed = onClose(view.socket);
+    view.socket.send(JSON.stringify({ type: "surface-action", surfaceId: "diff-1", action: "accept" }));
+    expect(await view.messages.next("error")).toMatchObject({ code: "INVALID_EXTENSION_MESSAGE" });
+    expect(await closed).toBe(1008);
+    expect(calls.some(call => call.method === "extension.view.surface.action")).toBe(false);
+  });
+
+  it("identifies a rejected diff action so the renderer can recover its pending controls", async () => {
+    respond = (method, params) => method === "extension.view.attach" ? snapshot(params) : {};
+    const original = gateway.services.agents.request.bind(gateway.services.agents);
+    vi.spyOn(gateway.services.agents, "request").mockImplementation((ownerId, serviceId, method, params, timeout, capabilities) => {
+      if (method === "extension.view.surface.action") throw new Error("stale diff");
+      return original(ownerId, serviceId, method, params, timeout, capabilities);
+    });
+    const view = await connectView(); await view.messages.next("ready");
+    view.socket.send(JSON.stringify({ type: "surface-action", epoch: EPOCH, surfaceId: "diff-stale", action: "accept" }));
+    expect(await view.messages.next("error")).toMatchObject({ surfaceId: "diff-stale", message: "stale diff" });
+  });
+
+  it("blocks Claude on old Agents and revalidates capabilities after an Agent replacement", async () => {
+    const unsupported = await api("/status?toolId=claude", "GET");
+    expect(unsupported.status).toBe(409);
+    expect(await unsupported.json()).toMatchObject({ error: { code: "UPGRADE_AGENT_REQUIRED" } });
+    expect(calls.some(call => call.method === "extension.status")).toBe(false);
+    const view = await connectView({ toolId: "claude" });
+    const closed = onClose(view.socket);
+    expect(await view.messages.next("error")).toMatchObject({ code: "UPGRADE_AGENT_REQUIRED", retryable: false });
+    expect(await closed).toBe(4400);
+    expect(calls.some(call => call.method === "extension.view.attach")).toBe(false);
+    agentCapabilities.push("extension-tools-v1", "claude-extension-host-v1");
+    agent = await connectAgent();
+    expect((await api("/status?toolId=claude", "GET")).status).toBe(200);
+    agentCapabilities = ["extension-window-management-v1"];
+    agent = await connectAgent();
+    const count = calls.filter(call => call.method === "extension.status").length;
+    expect((await api("/status?toolId=claude", "GET")).status).toBe(409);
+    expect(calls.filter(call => call.method === "extension.status")).toHaveLength(count);
+    expect((await api("/status", "GET")).status).toBe(200);
+  });
+
+  it("routes Claude package management and resources explicitly and rejects unknown tools", async () => {
+    agentCapabilities.push("extension-tools-v1", "claude-extension-host-v1");
+    agent = await connectAgent();
+    const bytes = Buffer.from("official claude asset");
+    respond = method => method === "extension.resource" ? { content: bytes.toString("base64"), mime: "text/plain" } : {};
+    expect((await api("/status?toolId=claude", "GET")).status).toBe(200);
+    expect((await api("/update", "POST", { toolId: "claude" })).status).toBe(202);
+    expect((await api("/apply", "POST", { toolId: "claude", confirmed: true })).status).toBe(202);
+    const resource = await api("/resource?toolId=claude&version=1.2.3&path=webview%2Fapp.js", "GET");
+    expect(resource.status).toBe(200);
+    expect(await resource.text()).toBe(bytes.toString());
+    expect(calls.every(call => call.params.toolId === "claude")).toBe(true);
+    expect((await api("/status?toolId=unknown", "GET")).status).toBe(400);
+    expect((await api("/update", "POST", { toolId: null })).status).toBe(400);
+  });
+
+  it("refuses a mismatched tool snapshot even when the Agent advertised Claude support", async () => {
+    agentCapabilities.push("extension-tools-v1", "claude-extension-host-v1");
+    agent = await connectAgent();
+    respond = (_method, params) => ({ ...snapshot(params), toolId: "codex" });
+    const view = await connectView({ toolId: "claude" });
+    const closed = onClose(view.socket);
+    expect(await view.messages.next("error")).toMatchObject({ code: "UPGRADE_AGENT_REQUIRED", retryable: false });
+    expect(await closed).toBe(4400);
+  });
+
   it.each(["C:\\Projects\\项目 a", "D:/Projects", "\\\\server\\share\\项目"])("passes Windows workspace %s unchanged to its Agent", async (workspace) => {
     const { messages } = await connectView({ workspace });
     await messages.next("ready");
@@ -82,9 +192,9 @@ describe("Official extension host relay", () => {
       expect(await result.json()).toEqual({ data: { stopped: true } });
     }
     expect(calls.filter(call => ["extension.view.close", "extension.view.restart"].includes(call.method))).toEqual([
-      { method: "extension.view.close", params: { viewId } },
-      { method: "extension.view.close", params: { viewId } },
-      { method: "extension.view.restart", params: { viewId } },
+      { method: "extension.view.close", params: { viewId, toolId: "codex" } },
+      { method: "extension.view.close", params: { viewId, toolId: "codex" } },
+      { method: "extension.view.restart", params: { viewId, toolId: "codex" } },
     ]);
     const before = calls.length;
     expect((await api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE }, OTHER_TOKEN)).status).toBe(409);
@@ -104,7 +214,7 @@ describe("Official extension host relay", () => {
     const result = await api("/view/restart", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE, epoch: EPOCH });
     expect(result.status).toBe(200);
     expect(await closed).toBe(4002);
-    expect(calls.find(call => call.method === "extension.view.restart")?.params).toEqual({ viewId: firstReady.viewId, epoch: EPOCH });
+    expect(calls.find(call => call.method === "extension.view.restart")?.params).toEqual({ toolId: "codex", viewId: firstReady.viewId, epoch: EPOCH });
     expect(second.socket.readyState).toBe(WebSocket.OPEN);
     second.socket.send(JSON.stringify({ type: "message", messageId: "survives", epoch: EPOCH, payload: "other window" }));
     await second.messages.next("delivery");
@@ -166,7 +276,7 @@ describe("Official extension host relay", () => {
     const payload = [null, 3, { unknownFutureField: { data: [0, 255], encoding: "bytes" } }];
     socket.send(JSON.stringify({ type: "message", messageId: "send-1", epoch: EPOCH, payload }));
     expect(await messages.next("delivery")).toEqual({ type: "delivery", messageId: "send-1" });
-    expect(calls.find((call) => call.method === "extension.view.send")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.send")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, epoch: EPOCH, messageId: "send-1", surfaceId: "main", payload,
     });
     emitFrame(frame(String(ready.viewId), 1, "message", payload));
@@ -177,13 +287,13 @@ describe("Official extension host relay", () => {
     socket.send(JSON.stringify({ type: "visibility", visible: false }));
     socket.send(JSON.stringify({ type: "ack", sequence: 2 }));
     await eventually(() => calls.some((call) => call.method === "extension.view.ack"));
-    expect(calls.find((call) => call.method === "extension.view.respond")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.respond")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, id: "pick-1", result: ["file:///tmp/image.png"],
     });
-    expect(calls.find((call) => call.method === "extension.view.visibility")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.visibility")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, visible: false,
     });
-    expect(calls.find((call) => call.method === "extension.view.ack")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.ack")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, sequence: 2,
     });
     const ownerId = await gateway.services.tokens.verify(TOKEN);
@@ -201,12 +311,12 @@ describe("Official extension host relay", () => {
     });
     socket.send(JSON.stringify({ type: "message", surfaceId, messageId: "panel-1", epoch: EPOCH, payload: ["object", []] }));
     await messages.next("delivery");
-    expect(calls.find((call) => call.method === "extension.view.send")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.send")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, surfaceId, messageId: "panel-1", epoch: EPOCH, payload: ["object", []],
     });
     socket.send(JSON.stringify({ type: "close-surface", surfaceId }));
     await eventually(() => calls.some((call) => call.method === "extension.view.surface.close"));
-    expect(calls.find((call) => call.method === "extension.view.surface.close")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.surface.close")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID, surfaceId,
     });
   });
@@ -235,12 +345,12 @@ describe("Official extension host relay", () => {
     const ready = await first.messages.next("ready");
     first.socket.close();
     await eventually(() => calls.some((call) => call.method === "extension.view.detach"));
-    expect(calls.find((call) => call.method === "extension.view.detach")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.view.detach")?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: RENDERER_ID,
     });
     const second = await connectView({ rendererId: OTHER_RENDERER, after: "27", epoch: EPOCH });
     expect((await second.messages.next("ready")).viewId).toBe(ready.viewId);
-    expect(calls.filter((call) => call.method === "extension.view.attach").at(-1)?.params).toEqual({
+    expect(calls.filter((call) => call.method === "extension.view.attach").at(-1)?.params).toEqual({ toolId: "codex",
       viewId: ready.viewId, rendererId: OTHER_RENDERER, workspace: WORKSPACE, after: 27, epoch: EPOCH,
     });
     expect(calls.every((call) => call.method.startsWith("extension.view."))).toBe(true);
@@ -380,19 +490,20 @@ describe("Official extension host relay", () => {
     respond = (method, params) => ({ method, ...params });
     const status = await api("/status", "GET");
     expect(status.status).toBe(200);
-    expect(await status.json()).toEqual({ data: { method: "extension.status" } });
+    expect(await status.json()).toEqual({ data: { method: "extension.status", toolId: "codex" } });
     const update = await api("/update", "POST");
     expect(update.status).toBe(202);
-    expect(await update.json()).toEqual({ data: { method: "extension.update" } });
+    expect(await update.json()).toEqual({ data: { method: "extension.update", toolId: "codex" } });
     const apply = await api("/apply", "POST", { confirmed: false });
     expect(apply.status).toBe(202);
-    expect(await apply.json()).toEqual({ data: { method: "extension.apply", confirmed: false } });
+    expect(await apply.json()).toEqual({ data: { method: "extension.apply", confirmed: false, toolId: "codex" } });
     expect((await api("/apply", "POST", {})).status).toBe(400);
     expect((await api("/status", "GET", undefined, OTHER_TOKEN)).status).toBe(409);
     const meta = await fetch(`${baseUrl}/api/v1/meta`, { headers: { Authorization: `Bearer ${TOKEN}` } });
     expect((await meta.json() as { data: { capabilities: string[] } }).data.capabilities).toContain("official-extension-host-v1");
     const capabilities = await (await fetch(`${baseUrl}/api/v1/meta`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json() as { data: { capabilities: string[] } };
     expect(capabilities.data.capabilities).toContain("extension-window-management-v1");
+    expect(capabilities.data.capabilities).toContain("extension-tools-v1");
   });
 
   it("returns resource bytes and MIME unchanged with checksum validation and ownership", async () => {
@@ -404,7 +515,7 @@ describe("Official extension host relay", () => {
     expect(response.headers.get("content-type")).toBe("image/png");
     expect(response.headers.get("x-resource-sha256")).toBe(sha256);
     expect(Buffer.from(await response.arrayBuffer()).equals(bytes)).toBe(true);
-    expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({ toolId: "codex",
       version: "1.2.3", path: "webview/image.png", acceptEncoding: "gzip",
     });
     expect((await api("/resource?version=1.2.3&path=webview%2Fimage.png", "GET", undefined, OTHER_TOKEN)).status).toBe(409);
@@ -431,7 +542,7 @@ describe("Official extension host relay", () => {
       expect(response.headers["x-extension-package-sha256"]).toBe(packageSha256);
       expect(response.headers["cache-control"]).toBe("no-store");
     }
-    expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({
+    expect(calls.find((call) => call.method === "extension.resource")?.params).toEqual({ toolId: "codex",
       version: "1.2.3", path: "webview/app.js", packageSha256, acceptEncoding: "gzip",
     });
     expect((await gateway.app.inject({ method: "GET", url: url.replace(packageSha256, "b".repeat(64)), headers: { authorization: `Bearer ${TOKEN}` } })).statusCode).toBe(502);
@@ -511,6 +622,7 @@ describe("Official extension host relay", () => {
 
 function snapshot(params: Json): Json {
   return {
+    toolId: params.toolId ?? "codex",
     viewId: params.viewId, epoch: EPOCH, sequence: 0, version: "1.2.3",
     origin: "https://extension.codex-remote.invalid", html: "<main>official</main>", frames: [], pendingHostRequests: [],
   };

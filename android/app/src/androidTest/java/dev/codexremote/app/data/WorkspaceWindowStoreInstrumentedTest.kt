@@ -33,6 +33,18 @@ class WorkspaceWindowStoreInstrumentedTest {
         assertTrue(WorkspaceWindowStore(context).load(config)!!.windows.isEmpty())
     }
 
+    @Test fun mixedToolWindowsKeepTheirFixedToolAcrossReload() {
+        val codex = WorkspaceWindow("8b630625-6e07-4636-9642-cf8679d3d915", "linux", "/project", "Codex")
+        val claude = WorkspaceWindow("03dde33c-a3fd-411b-900d-302456a75697", "linux", "/project", "Claude", "claude")
+        WorkspaceWindowStore(context).save(config, listOf(codex, claude), claude.id)
+        assertEquals(listOf(codex, claude), WorkspaceWindowStore(context).load(config)!!.windows)
+        val store = OfficialFrontendStore(context)
+        store.setState(windowStateScope(config, codex), "main", "{\"draft\":\"codex\"}")
+        store.setState(windowStateScope(config, claude), "main", "{\"draft\":\"claude\"}")
+        assertEquals("{\"draft\":\"codex\"}", store.state(windowStateScope(config, codex), "main"))
+        assertEquals("{\"draft\":\"claude\"}", store.state(windowStateScope(config, claude), "main"))
+    }
+
     @Test fun migrationReusesClientDirectoryAndOpaqueStateWithoutSharingNewWindows() {
         val service = RemoteService("server", "Server", null, "linux", null, null, "/home/user",
             RuntimeState.CONNECTED, null)

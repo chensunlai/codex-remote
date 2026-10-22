@@ -30,9 +30,11 @@ process.on('message', async message => {
         children.add(child);
         child.once('exit', () => { children.delete(child); emit({ type: 'process-exit', pid: child.pid }); });
         child.once('spawn', () => {
-          if (child.spawnargs?.includes('app-server')) {
+          const isClaude = message.options.toolId === 'claude';
+          const isBackend = isClaude ? child.spawnargs?.includes('--input-format') && child.spawnargs?.includes('stream-json') : child.spawnargs?.includes('app-server');
+          if (isBackend) {
             emit({ type: 'process-start', pid: child.pid, version: null });
-            execFile(message.options.cliExecutable, ['--version'], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
+            execFile(isClaude ? child.spawnfile : message.options.cliExecutable, ['--version'], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
               if (children.has(child) && child.exitCode === null && child.signalCode === null)
                 emit({ type: 'process-start', pid: child.pid, version: error ? null : String(stdout).trim().replace(/^codex(?:-cli)?\s+/, '') });
             });
@@ -44,7 +46,8 @@ process.on('message', async message => {
       await host.resolveView();
       emit({ type: 'started' });
     } else if (message.type === 'message') host?.receive(decode(message.payload), message.surfaceId || 'main');
-    else if (message.type === 'close-surface') host?.closeSurface(message.surfaceId);
+    else if (message.type === 'close-surface') await host?.closeSurface(message.surfaceId);
+    else if (message.type === 'surface-action') await host?.surfaceAction(message.surfaceId, message.action);
     else if (message.type === 'visibility') host?.visibility(message.visible);
     else if (message.type === 'host-response') host?.respond(message);
     else if (message.type === 'stop') await stop();

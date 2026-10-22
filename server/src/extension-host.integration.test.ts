@@ -212,6 +212,113 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect((await gateway.services.agents.list(ownerId))[0]?.runtime.state).toBe("connected");
   }, 30_000);
 
+  it("routes Claude and Codex independently through the real Agent and restores native diff decisions", async () => {
+    const extension = join(directory, "claude-source");
+    await mkdir(join(extension, "webview"), { recursive: true });
+    await writeFile(join(extension, "package.json"), JSON.stringify({
+      publisher: "Anthropic", name: "claude-code", version: "1.0.0", main: "extension.cjs",
+      contributes: { menus: { "editor/title": [
+        { command: "claude-vscode.acceptProposedDiff", when: "fixture.reviewing" },
+        { command: "claude-vscode.rejectProposedDiff", when: "fixture.reviewing" },
+      ] } },
+    }));
+    await writeFile(join(extension, "extension.cjs"), fixtureClaudeExtension);
+    await writeFile(join(extension, "before.txt"), "before 中文🙂\n");
+    await writeFile(join(extension, "after.txt"), "after 中文🙂\n");
+    const claudeScript = Buffer.from("export const tool = 'claude';\n".repeat(4096));
+    await writeFile(join(extension, "webview", "app.js"), claudeScript);
+    const store = new OfficialExtensionStore(join(directory, "agent-data", "claude-extension", "packages"), { toolId: "claude" });
+    await store.importDirectory(extension);
+    await store.activate();
+
+    const status = async (toolId?: string): Promise<Json> => {
+      const url = new URL(`/api/v3/services/${serviceId}/extension/status`, baseUrl);
+      if (toolId) url.searchParams.set("toolId", toolId);
+      const response = await fetch(url, { headers: authorization });
+      expect(response.status).toBe(200);
+      return (await response.json() as Json).data;
+    };
+    expect(await status()).toMatchObject({ toolId: "codex", version: "1.0.0", hosts: 0 });
+    expect(await status("claude")).toMatchObject({ toolId: "claude", version: "1.0.0", hosts: 0 });
+    const codex = await connect();
+    const codexReady = await codex.messages.next(message => message.type === "ready");
+    // Reuse every client identity component: only the tool selects another host.
+    const claude = await connect({ toolId: "claude" });
+    const claudeReady = await claude.messages.next(message => message.type === "ready");
+    expect(codexReady.toolId).toBe("codex");
+    expect(claudeReady.toolId).toBe("claude");
+    expect(claudeReady.html).toContain("claude-public-host-fixture");
+    expect(claudeReady.viewId).not.toBe(codexReady.viewId);
+    expect(claudeReady.epoch).not.toBe(codexReady.epoch);
+    expect(claudeReady.packageSha256).not.toBe(codexReady.packageSha256);
+    expect(await status()).toMatchObject({ hosts: 1 });
+    expect(await status("claude")).toMatchObject({ hosts: 1 });
+
+    // Equal versions and resource paths must still use the selected package.
+    const resourceUrl = new URL(`/api/v3/services/${serviceId}/extension/resource`, baseUrl);
+    resourceUrl.searchParams.set("version", "1.0.0");
+    resourceUrl.searchParams.set("path", "webview/app.js");
+    resourceUrl.searchParams.set("toolId", "claude");
+    resourceUrl.searchParams.set("packageSha256", claudeReady.packageSha256);
+    const claudeResource = await fetch(resourceUrl, { headers: authorization });
+    expect(claudeResource.status).toBe(200);
+    expect(claudeResource.headers.get("x-extension-package-sha256")).toBe(claudeReady.packageSha256);
+    expect(Buffer.from(await claudeResource.arrayBuffer())).toEqual(claudeScript);
+    resourceUrl.searchParams.delete("toolId");
+    resourceUrl.searchParams.set("packageSha256", codexReady.packageSha256);
+    const codexResource = await fetch(resourceUrl, { headers: authorization });
+    expect(codexResource.status).toBe(200);
+    expect(Buffer.from(await codexResource.arrayBuffer())).toEqual(SCRIPT);
+
+    send(claude.socket, claudeReady.epoch, "claude-echo", { untouched: "中文🙂" });
+    expect(unwire((await claude.messages.next(message => message.type === "message")).payload))
+      .toEqual({ tool: "claude", echo: { untouched: "中文🙂" } });
+    send(claude.socket, claudeReady.epoch, "claude-diff", "diff");
+    const opened = await claude.messages.next(message => message.type === "surface" && message.payload.action === "open");
+    expect(opened.payload).toMatchObject({ kind: "diff", pending: false, actions: ["accept", "reject"],
+      diff: { originalText: "before 中文🙂\n", modifiedText: "after 中文🙂\n" } });
+    packet(claude.socket, { type: "ack", sequence: opened.sequence });
+    const disconnected = closed(claude.socket);
+    claude.socket.close();
+    await disconnected;
+    const resumed = await connect({ toolId: "claude", epoch: claudeReady.epoch, after: String(opened.sequence) });
+    const restored = await resumed.messages.next(message => message.type === "ready");
+    expect(restored).toMatchObject({ toolId: "claude", viewId: claudeReady.viewId, epoch: claudeReady.epoch, resyncRequired: false });
+    expect(restored.surfaces).toEqual([expect.objectContaining({ id: opened.payload.id, kind: "diff", pending: false,
+      actions: ["accept", "reject"], diff: opened.payload.diff })]);
+    expect(restored.frames.some((frame: Json) => frame.type === "message" && unwire(frame.payload).event === "decision")).toBe(false);
+    packet(resumed.socket, { type: "surface-action", epoch: restored.epoch, surfaceId: opened.payload.id, action: "accept" });
+    const accepted = await resumed.messages.next(message => message.type === "message" && unwire(message.payload).event === "decision");
+    expect(unwire(accepted.payload)).toEqual({ event: "decision", action: "accept", tabId: opened.payload.id });
+    await resumed.messages.next(message => message.type === "surface" && message.payload.action === "close" && message.payload.id === opened.payload.id);
+
+    send(resumed.socket, restored.epoch, "claude-another-diff", "diff");
+    const nextDiff = await resumed.messages.next(message => message.type === "surface" && message.payload.action === "open");
+    packet(resumed.socket, { type: "close-surface", surfaceId: nextDiff.payload.id });
+    const rejected = await resumed.messages.next(message => message.type === "message" && unwire(message.payload).event === "decision");
+    expect(unwire(rejected.payload)).toEqual({ event: "decision", action: "reject", tabId: nextDiff.payload.id });
+    await resumed.messages.next(message => message.type === "surface" && message.payload.action === "close" && message.payload.id === nextDiff.payload.id);
+    expect(await readFile(join(extension, "before.txt"), "utf8")).toBe("before 中文🙂\n");
+
+    const stopped = closed(resumed.socket);
+    const response = await fetch(`${baseUrl}/api/v3/services/${serviceId}/extension/view/restart`, {
+      method: "POST", headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({ clientId: CLIENT, workspace: directory, epoch: restored.epoch, toolId: "claude" }),
+    });
+    expect(response.status).toBe(200);
+    expect(await stopped).toBe(4002);
+    expect(await status("claude")).toMatchObject({ toolId: "claude", hosts: 0 });
+    expect(await status()).toMatchObject({ toolId: "codex", hosts: 1 });
+    send(codex.socket, codexReady.epoch, "codex-unaffected", "original host survives");
+    const echo = await codex.messages.next(message => message.type === "message");
+    expect(echo.epoch).toBe(codexReady.epoch);
+    expect(unwire(echo.payload).echo).toBe("original host survives");
+    const restarted = await connect({ toolId: "claude", rendererId: NEW_RENDERER });
+    const restartedReady = await restarted.messages.next(message => message.type === "ready");
+    expect(restartedReady.toolId).toBe("claude");
+    expect(restartedReady.epoch).not.toBe(restored.epoch);
+  }, 30_000);
+
   it("closes and restarts independent windows through HTTP without disturbing the other host", async () => {
     const otherClient = "55efc088-e146-4711-9d11-96412ea50cc9";
     const first = await connect();
@@ -382,6 +489,27 @@ exports.activate=context=>context.subscriptions.push(vscode.window.registerWebvi
     view.webview.postMessage({echo:message,bytes:new Uint8Array([0,137,255])});
   });
 }}));`;
+
+const fixtureClaudeExtension = `const vscode=require('vscode');
+exports.activate=context=>{
+  let main;
+  context.subscriptions.push(vscode.window.onDidChangeVisibleTextEditors(editors=>
+    vscode.commands.executeCommand('setContext','fixture.reviewing',editors.length>0)));
+  for(const action of ['accept','reject'])context.subscriptions.push(vscode.commands.registerCommand('claude-vscode.'+action+'ProposedDiff',async()=>{
+    const tab=vscode.window.tabGroups.activeTabGroup.activeTab;
+    await main.webview.postMessage({event:'decision',action,tabId:tab.id});
+    await vscode.window.tabGroups.close(tab);
+  }));
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeVSCodeSidebar',{resolveWebviewView(view){
+    main=view;view.webview.html='<!doctype html><title>claude-public-host-fixture</title>';
+    view.webview.onDidReceiveMessage(async message=>{
+      if(message==='diff'){
+        await vscode.commands.executeCommand('vscode.diff',vscode.Uri.joinPath(context.extensionUri,'before.txt'),
+          vscode.Uri.joinPath(context.extensionUri,'after.txt'),'Claude proposed edit');
+      }else view.webview.postMessage({tool:'claude',echo:message});
+    });
+  }}));
+};`;
 
 // This fixture has a tiny application-specific stdin/stdout protocol, not Codex internals.
 const fixtureCli = `#!/usr/bin/env node

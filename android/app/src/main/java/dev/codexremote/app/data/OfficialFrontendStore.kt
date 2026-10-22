@@ -53,12 +53,13 @@ class OfficialFrontendStore(context: Context) {
     }
 }
 
-fun frontendScope(config: GatewayConfig, serviceId: String): String =
-    MessageDigest.getInstance("SHA-256").digest("${config.baseUrl}\u0000${config.token}\u0000$serviceId".toByteArray())
+fun frontendScope(config: GatewayConfig, serviceId: String, toolId: String = "codex"): String =
+    MessageDigest.getInstance("SHA-256").digest(("${config.baseUrl}\u0000${config.token}\u0000$serviceId" +
+        if (toolId == "codex") "" else "\u0000$toolId").toByteArray())
         .joinToString("") { "%02x".format(it) }
 
 /** Static resources keep using frontendScope; only renderer state includes the window and directory. */
 fun windowStateScope(config: GatewayConfig, window: WorkspaceWindow): String =
     MessageDigest.getInstance("SHA-256")
-        .digest("${frontendScope(config, window.serviceId)}\u0000${window.id}\u0000${window.workspace}".toByteArray())
+        .digest("${frontendScope(config, window.serviceId, window.toolId)}\u0000${window.id}\u0000${window.workspace}".toByteArray())
         .joinToString("") { "%02x".format(it) }

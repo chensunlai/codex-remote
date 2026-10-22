@@ -21,6 +21,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.ValueCallback
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
@@ -78,6 +81,7 @@ import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.OfficialChatSession
 import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.data.windowStateScope
+import dev.codexremote.app.model.CodingTool
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
@@ -131,6 +135,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         }
         return
     }
+    val toolName = CodingTool.title(window.toolId)
+    val supported = CodingTool.fromId(window.toolId)?.supports(service) == true
     val scopeKey = windowStateScope(config, window)
     val jobs = rememberCoroutineScope()
     var extension by remember(scopeKey) { mutableStateOf<JSONObject?>(null) }
@@ -162,7 +168,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         val alreadyBusy = requestInProgress
         requestInProgress = true
         try {
-            extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = false)
+            extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = false, toolId = window.toolId)
             if (extension?.optBoolean("confirmationRequired") == true) applyConfirmation = true
             else status = "官方前端已更新"
         } finally { requestInProgress = alreadyBusy }
@@ -174,7 +180,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         error = null
         jobs.launch {
             try {
-                extension = viewModel.gatewayApi.updateExtension(service.id)
+                extension = viewModel.gatewayApi.updateExtension(service.id, window.toolId)
                 error = extension?.version("error")
                 if (error == null && extension?.version("stagedVersion") != null && extension?.optBoolean("updating") != true) presentStagedUpdate()
                 else if (extension?.optBoolean("updating") != true && error == null) status = "已是最新正式版"
@@ -185,7 +191,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     }
 
     LaunchedEffect(scopeKey, service.runtimeState) {
-        try { extension = viewModel.gatewayApi.extensionStatus(service.id); error = extension?.version("error") }
+        if (!supported) { error = "Claude Code 首版仅支持 Linux Agent"; return@LaunchedEffect }
+        try { extension = viewModel.gatewayApi.extensionStatus(service.id, window.toolId); error = extension?.version("error") }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.message }
     }
@@ -196,7 +203,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
             try {
                 while (extension?.optBoolean("updating") == true) {
                     delay(1000)
-                    try { extension = viewModel.gatewayApi.extensionStatus(service.id) }
+                    try { extension = viewModel.gatewayApi.extensionStatus(service.id, window.toolId) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) { error = failure.message; delay(2000) }
                 }
@@ -240,9 +247,9 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                 Box {
                     IconButton(onClick = { menu = true }) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
                     CodexDropdownMenu(expanded = visible && menu, onDismissRequest = { menu = false }) {
-                        Text("官方前端 · ${installedVersion ?: "未安装"}", style = MaterialTheme.typography.labelMedium,
+                        Text("$toolName · ${installedVersion ?: "未安装"}", style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-                        DropdownMenuItem(text = { Text("检查并更新前端") }, enabled = !busy,
+                        DropdownMenuItem(text = { Text("检查并更新 $toolName") }, enabled = !busy && supported,
                             onClick = { menu = false; update() })
                         DropdownMenuItem(text = { Text("重新加载前端") }, enabled = installedVersion != null && !busy,
                             onClick = { menu = false; rendererGeneration += 1; status = "正在重新加载官方前端" })
@@ -268,11 +275,11 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
                         { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation || pendingWorkspace != null || restarting,
-                        Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id))
+                        Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id, window.toolId), toolId = window.toolId)
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
-                Button(onClick = ::update) { Text("检查并下载官方前端") }
+                Button(onClick = ::update, enabled = supported) { Text("检查并下载 $toolName") }
             }
         }
     }
@@ -281,7 +288,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         onDismiss = { chooseWorkspace = false })
     if (visible && pendingWorkspace != null) CodexDialog(
         onDismissRequest = { pendingWorkspace = null }, title = { Text("更改此窗口的工作目录？") },
-        text = { Text("将停止此窗口的 Codex 和扩展后端，在 ${pendingWorkspace.orEmpty()} 重新打开。正在运行的任务可能中断。") },
+        text = { Text("将停止此窗口的 $toolName 和扩展后端，在 ${pendingWorkspace.orEmpty()} 重新打开。正在运行的任务可能中断。") },
         confirmButton = { TextButton(onClick = {
             pendingWorkspace?.let { viewModel.changeWindowWorkspace(window.id, it) }
             pendingWorkspace = null
@@ -290,7 +297,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     )
     if (visible && restartConfirmation) CodexDialog(
         onDismissRequest = { restartConfirmation = false }, title = { Text("重启此窗口的后端？") },
-        text = { Text("将重启此窗口的 Codex 和扩展后端。正在运行的任务可能中断；Codex 已退出时也可通过此操作恢复。") },
+        text = { Text("将重启此窗口的 $toolName 和扩展后端。正在运行的任务可能中断；后端已退出时也可通过此操作恢复。") },
         confirmButton = { TextButton(onClick = {
             restartConfirmation = false
             viewModel.restartWindow(window.id)
@@ -299,13 +306,13 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     )
     if (visible && applyConfirmation && stagedVersion != null) CodexDialog(
         onDismissRequest = { applyConfirmation = false }, title = { Text("应用官方前端更新？") },
-        text = { Text("版本 $stagedVersion 已准备好。应用更新将重启该服务器全部 ${extension?.optInt("hosts", 0) ?: 0} 个扩展宿主，现有连接和正在进行的任务可能中断。") },
+        text = { Text("版本 $stagedVersion 已准备好。应用更新将重启该服务器全部 ${extension?.optInt("hosts", 0) ?: 0} 个 $toolName 扩展宿主，现有连接和正在进行的任务可能中断。") },
         confirmButton = { TextButton(onClick = {
             applyConfirmation = false
             requestInProgress = true
             jobs.launch {
                 try {
-                    extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = true)
+                    extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = true, toolId = window.toolId)
                     status = "官方前端已更新"
                     error = null
                 } catch (cancelled: CancellationException) { throw cancelled }
@@ -355,7 +362,7 @@ private fun OfficialWebView(
     theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, viewModel: MainViewModel,
     onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
     nativeModalOpen: Boolean, modifier: Modifier, onWebViewRetainedChanged: (Boolean) -> Unit,
-    windowId: String, resourceScope: String,
+    windowId: String, resourceScope: String, toolId: String,
 ) {
     val context = LocalContext.current
     val pointerContainers = remember { mutableStateMapOf<String, MouseModeWebViewContainer>() }
@@ -365,6 +372,9 @@ private fun OfficialWebView(
     var notification by remember { mutableStateOf<HostNotification?>(null) }
     var saveRequest by remember { mutableStateOf<Pair<JSONObject, CompletableDeferred<String?>>?>(null) }
     var externalUrl by remember { mutableStateOf<Pair<String, CompletableDeferred<Boolean>>?>(null) }
+    var inputRequest by remember { mutableStateOf<Pair<JSONObject, CompletableDeferred<String?>>?>(null) }
+    var quickPickRequest by remember { mutableStateOf<Pair<JSONObject, CompletableDeferred<Any?>>?>(null) }
+    var textPreview by remember { mutableStateOf<JSONObject?>(null) }
     val confirmation = remember { OfficialSettingsConfirmation() }
     val pickFiles = rememberOfficialFilePicker(viewModel.gatewayApi, serviceId, home, workspace, visible, onStatus)
     val currentPickFiles by rememberUpdatedState(pickFiles)
@@ -387,7 +397,18 @@ private fun OfficialWebView(
                 val result = CompletableDeferred<Boolean>()
                 externalUrl = url to result
                 try { result.await() } finally { if (externalUrl?.second === result) externalUrl = null }
-            }, { panels = it }, resourceScope = resourceScope)
+            }, { panels = it }, resourceScope = resourceScope, toolId = toolId,
+            onInput = { params ->
+                check(inputRequest == null) { "输入对话框已打开" }
+                val result = CompletableDeferred<String?>()
+                inputRequest = params to result
+                try { result.await() } finally { if (inputRequest?.second === result) inputRequest = null }
+            }, onQuickPick = { params ->
+                check(quickPickRequest == null) { "选择对话框已打开" }
+                val result = CompletableDeferred<Any?>()
+                quickPickRequest = params to result
+                try { result.await() } finally { if (quickPickRequest?.second === result) quickPickRequest = null }
+            }, onOpenText = { textPreview = it })
     }
     DisposableEffect(session, windowId) {
         val unregister = viewModel.windowConnections.register(windowId, session::setSuspended)
@@ -399,6 +420,8 @@ private fun OfficialWebView(
             saveRequest?.second?.cancel()
             notification?.result?.cancel()
             externalUrl?.second?.cancel()
+            inputRequest?.second?.cancel()
+            quickPickRequest?.second?.cancel()
             session.close()
             android.util.Log.d("OfficialCodex", "resource-cache ${viewModel.officialFrontends.resources.diagnostics()} wireBytes=${viewModel.gatewayApi.resourceTrafficBytes()}")
             onPanelBackChanged(null)
@@ -415,7 +438,8 @@ private fun OfficialWebView(
     val keyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val keyboard = LocalSoftwareKeyboardController.current
     val topPanel = panels.lastOrNull()
-    val modalOpen = nativeModalOpen || preview != null || notification != null || saveRequest != null || externalUrl != null || confirmation.pending != null
+    val modalOpen = nativeModalOpen || preview != null || notification != null || saveRequest != null || externalUrl != null ||
+        inputRequest != null || quickPickRequest != null || textPreview != null || confirmation.pending != null
     LaunchedEffect(topPanel?.id, visible, keyboardVisible, modalOpen) {
         onPanelBackChanged(if (visible && topPanel != null) ({
             if (keyboardVisible) keyboard?.hide() else if (!modalOpen) session.closeSurface(topPanel.id)
@@ -425,7 +449,7 @@ private fun OfficialWebView(
         topPanel?.let { session.closeSurface(it.id) }
     }
     Column(modifier.fillMaxSize()) {
-        if (mouseMode) {
+        if (mouseMode && topPanel?.kind != "diff") {
             val target = pointerContainers[topPanel?.id ?: "main"]
             Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -446,15 +470,22 @@ private fun OfficialWebView(
                     if (it == null) pointerContainers.remove("main") else pointerContainers["main"] = it
                 })
             panels.forEachIndexed { index, panel -> key(panel.id) {
-                OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, mouseMode && !modalOpen,
-                    confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove(panel.id) else pointerContainers[panel.id] = it })
+                if (panel.kind == "diff") {
+                    if (visible && index == panels.lastIndex) androidx.compose.material3.Surface(Modifier.fillMaxSize()) {
+                        OfficialDiffPane(panel) { session.surfaceAction(panel.id, it) }
+                    }
+                } else OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, mouseMode && !modalOpen,
+                        confirmation, viewModel, onStatus, onRendererGone, { if (it == null) pointerContainers.remove(panel.id) else pointerContainers[panel.id] = it })
             } }
         }
     }
     OfficialSettingsConfirmationDialog(confirmation, visible)
+    inputRequest?.takeIf { visible }?.let { (params, result) -> OfficialInputDialog(params) { result.complete(it) } }
+    quickPickRequest?.takeIf { visible }?.let { (params, result) -> OfficialQuickPickDialog(params) { result.complete(it) } }
+    textPreview?.takeIf { visible }?.let { params -> OfficialTextDialog(params) { textPreview = null } }
     notification?.takeIf { visible }?.let { item ->
         val actions = item.params.optJSONArray("items") ?: item.params.optJSONArray("actions")
-        CodexDialog(onDismissRequest = { item.result.complete(null) }, title = { Text("Codex") },
+        CodexDialog(onDismissRequest = { item.result.complete(null) }, title = { Text(CodingTool.title(toolId)) },
             text = { Text(item.params.optString("message")) },
             confirmButton = {
                 if (actions == null || actions.length() == 0) TextButton(onClick = { item.result.complete(null) }) { Text("关闭") }
@@ -502,8 +533,13 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
     var pointerContainer by remember { mutableStateOf<MouseModeWebViewContainer?>(null) }
     var script by remember { mutableStateOf<ScriptHandler?>(null) }
     var pageStartedAt by remember { mutableStateOf(0L) }
+    val fileInput = remember { OfficialFileInput() }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        fileInput.complete(OfficialFileInput.selectedUris(result.resultCode, result.data))
+    }
     DisposableEffect(session, surfaceId) { onDispose {
         confirmation.cancelSurface(surfaceId)
+        fileInput.cancel()
         pointerContainer?.cancelPointer()
         onPointerContainerChanged(null)
         script?.remove()
@@ -523,6 +559,17 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             addJavascriptInterface(session.bridge(surfaceId), "CodexExtensionBridge")
             var originHost: String? = null
             webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(view: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
+                    if (!currentVisible || params.mode !in listOf(FileChooserParams.MODE_OPEN, FileChooserParams.MODE_OPEN_MULTIPLE)) {
+                        callback.onReceiveValue(null)
+                        return true
+                    }
+                    if (fileInput.begin(callback, params.mode == FileChooserParams.MODE_OPEN_MULTIPLE)) {
+                        try { filePicker.launch(params.createIntent()) }
+                        catch (failure: Exception) { fileInput.complete(null); onStatus("无法打开文件选择器：${failure.message}") }
+                    }
+                    return true
+                }
                 override fun onJsConfirm(view: WebView, url: String, message: String, result: JsResult): Boolean {
                     confirmation.show(message, result, currentVisible, surfaceId)
                     return true
@@ -538,6 +585,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                     pointerContainer?.onDocumentReady()
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                    fileInput.cancel()
                     session.close()
                     pointerContainer?.cancelPointer()
                     script?.remove()
@@ -558,7 +606,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
                     return officialWebViewResource(request.url, originHost, load = { version, path ->
                         val packageSha256 = session.packageSha256
                         viewModel.officialFrontends.resources.load(session.resourceScope, packageSha256, version, path) {
-                            viewModel.gatewayApi.extensionResource(serviceId, version, path, packageSha256)
+                            viewModel.gatewayApi.extensionResource(serviceId, version, path, packageSha256, session.toolId)
                         }
                     }, onFailure = session::resourceFailed)
                 }
@@ -567,6 +615,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             val themeCss = context.assets.open("theme.css").bufferedReader().use { it.readText() }
             session.attachSurface(surfaceId, this) { origin, html, documentId ->
                 pageStartedAt = android.os.SystemClock.elapsedRealtime()
+                fileInput.cancel()
                 confirmation.cancelSurface(surfaceId)
                 pointerContainer?.cancelPointer()
                 originHost = Uri.parse(origin).host

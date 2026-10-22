@@ -7,6 +7,7 @@ import { OfficialExtensionStore, type OfficialExtensionPackage } from "./officia
 import { resolveExtensionHostDirectory, resolveNodeExecutable } from "./node-runtime.js";
 import { superviseWindowsHost, type HostSupervisor } from "./windows-host-supervisor.js";
 import { codexCommand } from "./codex-command.js";
+import { extensionTools, type ExtensionToolId } from "./extension-tools.js";
 
 export interface ExtensionViewFrame {
   viewId: string;
@@ -19,8 +20,11 @@ export interface ExtensionViewFrame {
 export interface ExtensionSurface {
   id: string;
   title: string;
-  kind: "panel";
-  html: string;
+  kind: "panel" | "diff";
+  html?: string;
+  diff?: { originalUri: string; modifiedUri: string; originalText: string; modifiedText: string };
+  actions?: Array<"accept" | "reject">;
+  pending?: boolean;
 }
 interface SavedFrame { frame: ExtensionViewFrame; bytes: number }
 interface NativeRequest { id: string; method: string; params: unknown; surfaceId: string }
@@ -65,7 +69,8 @@ export class OfficialExtensionService {
     private readonly executable: string,
     private readonly emit: (frame: ExtensionViewFrame) => void,
     store?: OfficialExtensionStore,
-  ) { this.store = store ?? new OfficialExtensionStore(join(directory, "packages")); }
+    private readonly toolId: ExtensionToolId = "codex",
+  ) { this.store = store ?? new OfficialExtensionStore(join(directory, "packages"), { toolId }); }
 
   async request(method: string, params: Record<string, unknown>): Promise<unknown> {
     if (["extension.view.attach", "extension.view.close", "extension.view.restart", "extension.apply"].includes(method)) {
@@ -147,6 +152,17 @@ export class OfficialExtensionService {
         await this.send(view, { type: "close-surface", surfaceId });
         return {};
       }
+      case "extension.view.surface.action": {
+        const view = this.owned(params);
+        if (params.epoch !== view.epoch) throw new Error("页面宿主已更新，请重新连接");
+        const surfaceId = this.surface(view, params.surfaceId);
+        const surface = view.surfaces.get(surfaceId);
+        const action = params.action;
+        if ((action !== "accept" && action !== "reject") || surface?.kind !== "diff"
+          || surface.pending || !surface.actions?.includes(action)) throw new Error("此比较窗口当前不支持该操作");
+        await this.send(view, { type: "surface-action", surfaceId, action });
+        return {};
+      }
       case "extension.view.ack": {
         const view = this.owned(params);
         const sequence = counter(params.sequence);
@@ -178,6 +194,7 @@ export class OfficialExtensionService {
   async status() {
     const state = await this.store.status();
     return {
+      toolId: this.toolId,
       version: state.active?.version ?? null,
       stagedVersion: state.candidate?.version ?? null,
       updating: state.operation?.state === "running",
@@ -252,6 +269,7 @@ export class OfficialExtensionService {
     catch (error) { await this.stop(view); throw error; }
     await this.send(view, { type: "visibility", visible: true });
     return {
+      toolId: this.toolId,
       viewId, epoch: view.epoch, sequence: view.sequence, version: view.version, packageSha256: view.packageSha256, origin: view.origin, html: view.html,
       frames: resume ? view.frames.filter(({ frame }) => {
         if (frame.sequence <= after || frame.type === "html") return false;
@@ -279,7 +297,7 @@ export class OfficialExtensionService {
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     if (this.closed) throw new Error("官方扩展宿主已关闭");
     const origin = "https://v" + viewId.slice(0, 40) + ".codex-remote.invalid";
-    const command = codexCommand(this.executable);
+    const command = this.toolId === "codex" ? codexCommand(this.executable) : { env: process.env };
     const child = spawn(node, [join(hostDirectory, "runtime.cjs")], {
       cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: command.env,
       detached: process.platform === "linux", windowsHide: true,
@@ -305,15 +323,25 @@ export class OfficialExtensionService {
         if (event.fatal) rejectStart(new Error(event.message));
         this.frame(view, "status", { state: "error", message: event.message, retryable: false, reloadRequired: false });
       } else if (event.type === "surface") {
-        const change = event.payload as { action?: string; id?: string; title?: string; html?: string };
+        const change = event.payload as Partial<ExtensionSurface> & { action?: string };
         const id = change?.id;
         if (!id || id === "main") return;
         const previous = view.surfaces.get(id);
         if (change.action === "open") {
-          view.surfaces.set(id, { id, title: change.title ?? previous?.title ?? "Codex", kind: "panel", html: change.html ?? previous?.html ?? "" });
+          const surface: ExtensionSurface = { id, title: change.title ?? previous?.title ?? extensionTools[this.toolId].label,
+            kind: change.kind === "diff" ? "diff" : "panel" };
+          if (surface.kind === "diff") {
+            if (change.diff !== undefined) surface.diff = change.diff;
+            if (change.actions !== undefined) surface.actions = change.actions;
+            if (change.pending !== undefined) surface.pending = change.pending;
+          } else surface.html = change.html ?? previous?.html ?? "";
+          view.surfaces.set(id, surface);
         } else if (change.action === "update" && previous) {
           if (change.title !== undefined) previous.title = change.title;
           if (change.html !== undefined) previous.html = change.html;
+          if (change.diff !== undefined) previous.diff = change.diff;
+          if (change.actions !== undefined) previous.actions = change.actions;
+          if (change.pending !== undefined) previous.pending = change.pending;
         } else if (change.action === "close" && previous) {
           view.surfaces.delete(id);
           for (const [requestId, request] of view.pending) {
@@ -359,7 +387,9 @@ export class OfficialExtensionService {
       if (view.stopping || this.closed) throw new Error("官方扩展启动已取消");
       await this.send(view, { type: "start", options: {
         extensionDirectory: extension.directory, main: extension.manifest.main, stateDirectory, workspace,
-        clientId: viewId, hostId: view.epoch, origin, cliExecutable: command.executable,
+        clientId: viewId, hostId: view.epoch, origin, toolId: this.toolId,
+        sidebarViewId: extensionTools[this.toolId].sidebarViewId,
+        ...(this.toolId === "codex" ? { cliExecutable: (command as ReturnType<typeof codexCommand>).executable } : {}),
       } });
     } catch (error) {
       clearTimeout(timer);

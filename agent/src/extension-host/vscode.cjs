@@ -8,6 +8,7 @@ const path = require('node:path');
 const { fileURLToPath, pathToFileURL } = require('node:url');
 const { randomUUID } = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { createEditorHost } = require('./editor.cjs');
 
 class Disposable {
   constructor(callback = () => {}) { this.callback = callback; }
@@ -88,6 +89,8 @@ function createHost(options, send) {
   const views = new Map();
   const providers = new Map();
   const commands = new Map();
+  const contexts = new Map();
+  const panelSerializers = new Map();
   const hostRequests = new Map();
   const fileWatchers = new Set();
   const surfaceContext = new AsyncLocalStorage();
@@ -167,22 +170,8 @@ function createHost(options, send) {
     async rename(source, target, opts = {}) { if (!opts.overwrite && fs.existsSync(target.fsPath)) throw new Error('Destination exists'); await fsp.rename(source.fsPath, target.fsPath); },
     async copy(source, target, opts = {}) { await fsp.cp(source.fsPath, target.fsPath, { recursive: true, force: !!opts.overwrite, errorOnExist: !opts.overwrite }); },
   };
-  async function openTextDocument(input) {
-    const uri = typeof input === 'string' ? Uri.file(input) : input;
-    if (!uri || uri.scheme !== 'file') throw new Error('Only existing file documents are supported');
-    const text = await fsp.readFile(uri.fsPath, 'utf8');
-    const lines = text.split(/\r?\n/);
-    const offsets = [0];
-    for (let index = 0; index < text.length; index++) if (text[index] === '\n') offsets.push(index + 1);
-    const offsetAt = position => Math.min(text.length, (offsets[Math.max(0, Math.min(position.line, offsets.length - 1))] || 0) + Math.max(0, position.character));
-    const positionAt = offset => { const bounded = Math.max(0, Math.min(offset, text.length)); let line = 0; while (line + 1 < offsets.length && offsets[line + 1] <= bounded) line++; return new Position(line, bounded - offsets[line]); };
-    return {
-      uri, fileName: uri.fsPath, isUntitled: false, isDirty: false, isClosed: false, version: 1, languageId: 'plaintext', eol: text.includes('\r\n') ? 2 : 1, lineCount: lines.length,
-      getText: range => range ? text.slice(offsetAt(range.start), offsetAt(range.end)) : text,
-      positionAt, offsetAt, save: async () => false,
-      lineAt(value) { const line = typeof value === 'number' ? value : value.line; const content = lines[line]; if (content === undefined) throw new RangeError('Invalid document line'); return { lineNumber: line, text: content, range: new Range(line, 0, line, content.length), rangeIncludingLineBreak: new Range(line, 0, line + 1, 0), firstNonWhitespaceCharacterIndex: content.search(/\S|$/), isEmptyOrWhitespace: !content.trim() }; },
-    };
-  }
+  const editor = createEditorHost({ Uri, Position, Range, Selection, Disposable, EventEmitter, fileSystem, send, commands, contexts, manifest });
+  const openTextDocument = editor.openTextDocument;
   function noEvent() { return new Disposable(); }
   async function message(method, text, ...items) {
     const actions = items.filter(item => typeof item === 'string' || item?.title);
@@ -195,8 +184,39 @@ function createHost(options, send) {
     return { name, append: value => log('info', value), appendLine: value => log('info', value), replace: value => log('info', value),
       clear() {}, show() {}, hide() {}, trace() {}, debug() {}, info: value => log('info', value), warn: value => log('warn', value), error: value => log('error', value), dispose() {} };
   }
+  async function showInputBox(opts = {}, token) {
+    if (token?.isCancellationRequested) return undefined;
+    let validationMessage;
+    for (;;) {
+      const value = await ask('showInputBox', { title: opts.title, prompt: opts.prompt, placeHolder: opts.placeHolder,
+        value: opts.value, password: !!opts.password, valueSelection: opts.valueSelection, validationMessage });
+      if (typeof value !== 'string' || token?.isCancellationRequested) return undefined;
+      const validation = await opts.validateInput?.(value);
+      if (!validation || typeof validation === 'object' && validation.severity !== 3) return value;
+      validationMessage = typeof validation === 'string' ? validation : validation.message;
+      opts = { ...opts, value };
+    }
+  }
+  async function showQuickPick(input, opts = {}, token) {
+    const items = await input;
+    if (token?.isCancellationRequested) return undefined;
+    const result = await ask('showQuickPick', { title: opts.title, placeHolder: opts.placeHolder, canPickMany: !!opts.canPickMany,
+      items: items.map(item => typeof item === 'string' ? { label: item } :
+        { label: item.label, description: item.description, detail: item.detail, picked: item.picked, kind: item.kind }) });
+    const at = index => Number.isSafeInteger(index) && index >= 0 && index < items.length ? items[index] : undefined;
+    if (token?.isCancellationRequested) return undefined;
+    return opts.canPickMany ? Array.isArray(result) ? result.map(at).filter(value => value !== undefined) : undefined : at(result);
+  }
   const api = {
     version: '1.96.2', Disposable, EventEmitter, Uri, Position, Range, Selection, RelativePattern, CodeLens, TabInputText, TabInputCustom, MarkdownString, ThemeColor, ThemeIcon,
+    TabInputTextDiff: editor.TabInputTextDiff, TabInputWebview: editor.TabInputWebview,
+    ExtensionMode: { Production: 1, Development: 2, Test: 3 }, UIKind: { Desktop: 1, Web: 2 },
+    StatusBarAlignment: { Left: 1, Right: 2 }, ProgressLocation: { SourceControl: 1, Window: 10, Notification: 15 },
+    EndOfLine: { LF: 1, CRLF: 2 }, TextDocumentChangeReason: { Undo: 1, Redo: 2 },
+    FileChangeType: { Changed: 1, Created: 2, Deleted: 3 },
+    NotebookCellOutputItem: { error(error) { return { mime: 'application/vnd.code.notebook.error', data: new TextEncoder().encode(JSON.stringify({ name: error.name, message: error.message, stack: error.stack })) }; } },
+    FileSystemError: Object.fromEntries(['FileNotFound', 'FileExists', 'FileNotADirectory', 'FileIsADirectory', 'NoPermissions', 'Unavailable'].map(code => [code, value => Object.assign(new Error(code + ': ' + String(value ?? '')), { code })])),
+    CommentThreadState: { Unresolved: 0, Resolved: 1 }, CommentThreadCollapsibleState: { Collapsed: 0, Expanded: 1 },
     ConfigurationTarget: { Global: 1, Workspace: 2, WorkspaceFolder: 3 }, FileType: { Unknown: 0, File: 1, Directory: 2, SymbolicLink: 64 },
     DiagnosticSeverity: { Error: 0, Warning: 1, Information: 2, Hint: 3 },
     ViewColumn: { Active: -1, Beside: -2, One: 1, Two: 2 }, TextEditorRevealType: { Default: 0 },
@@ -205,6 +225,7 @@ function createHost(options, send) {
     env: {
       appName: 'Codex Remote', appRoot: path.dirname(options.extensionDirectory), language: options.language || 'zh-cn', remoteName: undefined,
       uriScheme: 'codex-remote', machineId: options.clientId, sessionId: options.hostId, isTelemetryEnabled: false,
+      uiKind: 1, shell: process.env.SHELL || (process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'),
       clipboard: { readText: () => ask('clipboard.read', {}), writeText: text => ask('clipboard.write', { text }).then(() => undefined) },
       openExternal: uri => ask('openExternal', { url: uri.toString() }), onDidChangeTelemetryEnabled: noEvent,
     },
@@ -212,7 +233,8 @@ function createHost(options, send) {
       registerCommand(id, callback, thisArg) { commands.set(id, thisArg ? callback.bind(thisArg) : callback); return new Disposable(() => commands.delete(id)); },
       async executeCommand(id, ...args) {
         if (commands.has(id)) return commands.get(id)(...args);
-        if (id === 'setContext') return undefined;
+        if (id === 'setContext') { contexts.set(args[0], args[1]); return undefined; }
+        if (id === 'vscode.diff') return editor.openDiff(...args);
         if (id === 'vscode.open') return args[0]?.scheme === 'file' ? ask('openFile', { path: args[0].fsPath }) : ask('openExternal', { url: args[0].toString() });
         if (id === 'vscode.openFolder' || id === 'workbench.action.showCommands') throw new Error('This editor command is unavailable in Codex Remote');
         if (id.endsWith('.focus')) { for (const view of views.values()) view.show(); return undefined; }
@@ -221,7 +243,11 @@ function createHost(options, send) {
       async getCommands() { return [...commands.keys()]; },
     },
     workspace: {
-      name: workspaceFolder.name, workspaceFolders: [workspaceFolder], isTrusted: true, fs: fileSystem,
+      name: workspaceFolder.name, rootPath: options.workspace, workspaceFolders: [workspaceFolder], isTrusted: true, fs: editor.fs,
+      get textDocuments() { return editor.textDocuments; },
+      registerFileSystemProvider: editor.registerFileSystemProvider,
+      registerTextDocumentContentProvider: editor.registerTextDocumentContentProvider,
+      applyEdit: async () => false,
       getWorkspaceFolder(uri) { const relative = path.relative(options.workspace, uri.fsPath); return !relative.startsWith('..') && !path.isAbsolute(relative) ? workspaceFolder : undefined; },
       asRelativePath(uri) { return path.relative(options.workspace, typeof uri === 'string' ? uri : uri.fsPath); },
       getConfiguration(section) {
@@ -232,7 +258,10 @@ function createHost(options, send) {
           async update(name, value) { await configuration.update(key(name), value); configChanged.fire({ affectsConfiguration: check => check === key(name) || key(name).startsWith(check + '.') }); },
         };
       },
-      onDidChangeConfiguration: configChanged.event, onDidChangeWorkspaceFolders: noEvent, onDidChangeTextDocument: noEvent,
+      onDidChangeConfiguration: configChanged.event, onDidChangeWorkspaceFolders: noEvent,
+      onDidChangeTextDocument: editor.events.changed.event, onDidOpenTextDocument: editor.events.opened.event,
+      onDidCloseTextDocument: editor.events.closed.event, onWillSaveTextDocument: editor.events.willSave.event,
+      onDidSaveTextDocument: editor.events.saved.event,
       createFileSystemWatcher(pattern, ignoreCreateEvents = false, ignoreChangeEvents = false, ignoreDeleteEvents = false) {
         const created = new EventEmitter(), changed = new EventEmitter(), deleted = new EventEmitter();
         const base = pattern?.baseUri?.fsPath || options.workspace;
@@ -276,12 +305,18 @@ function createHost(options, send) {
       openTextDocument,
     },
     window: {
-      activeTextEditor: undefined, visibleTextEditors: [], state: { focused: true }, tabGroups: { all: [], activeTabGroup: { tabs: [] }, onDidChangeTabs: noEvent, onDidChangeTabGroups: noEvent },
+      get activeTextEditor() { return editor.activeTextEditor; }, get visibleTextEditors() { return editor.visibleTextEditors; },
+      state: { focused: true }, tabGroups: editor.tabGroups, terminals: [], activeTerminal: undefined,
       activeColorTheme: { kind: 2 }, onDidChangeActiveColorTheme: noEvent,
-      onDidChangeWindowState: windowChanged.event, onDidChangeActiveTextEditor: noEvent, onDidChangeTextEditorSelection: noEvent,
+      onDidChangeWindowState: windowChanged.event, onDidChangeActiveTextEditor: editor.events.activeChanged.event,
+      onDidChangeVisibleTextEditors: editor.events.visibleChanged.event, onDidChangeTextEditorSelection: noEvent,
       onDidChangeTerminalShellIntegration: noEvent, onDidCloseTerminal: noEvent,
+      onDidStartTerminalShellExecution: noEvent, onDidEndTerminalShellExecution: noEvent,
       createOutputChannel: outputChannel,
+      createStatusBarItem() { return { text: '', tooltip: '', command: undefined, show() {}, hide() {}, dispose() {} }; },
+      setStatusBarMessage() { return new Disposable(); },
       registerWebviewViewProvider(id, provider) { providers.set(id, provider); return new Disposable(() => providers.delete(id)); },
+      registerWebviewPanelSerializer(id, serializer) { panelSerializers.set(id, serializer); return new Disposable(() => panelSerializers.delete(id)); },
       registerCustomEditorProvider() { return new Disposable(); }, registerUriHandler() { return new Disposable(); },
       createWebviewPanel(id, title, showOptions, webviewOptions) {
         const panel = makeWebview(id + ':' + randomUUID(), 'panel');
@@ -292,12 +327,14 @@ function createHost(options, send) {
       },
       showOpenDialog: async opts => { const result = await ask('showOpenDialog', dialogOptions(opts || {})); return result?.length ? result.map(value => Uri.parse(value)) : undefined; },
       showSaveDialog: async opts => { const value = await ask('showSaveDialog', dialogOptions(opts || {})); return value ? Uri.parse(value) : undefined; },
+      showInputBox, showQuickPick,
       showInformationMessage: (text, ...items) => message('showInformationMessage', text, ...items),
       showWarningMessage: (text, ...items) => message('showWarningMessage', text, ...items),
       showErrorMessage: (text, ...items) => message('showErrorMessage', text, ...items),
       async showTextDocument(input) {
         const document = input?.uri ? input : await openTextDocument(input);
-        await ask('openFile', { path: document.uri.fsPath });
+        if (document.uri.scheme === 'file') await ask('openFile', { path: document.uri.fsPath });
+        else await ask('openText', { title: path.basename(document.uri.path), text: document.getText() });
         // The native surface is a read-only preview; no editor context or line
         // navigation is exposed back to the extension.
         return { document, selection: new Selection(0, 0, 0, 0), selections: [], visibleRanges: [], options: {}, viewColumn: 1,
@@ -308,7 +345,14 @@ function createHost(options, send) {
       async withProgress(_opts, callback) { return callback({ report() {} }, { isCancellationRequested: false, onCancellationRequested: noEvent }); },
     },
     extensions: { getExtension(id) { return id.toLowerCase() === extension.id.toLowerCase() ? extension : undefined; }, all: [extension], onDidChange: noEvent },
-    languages: { getDiagnostics: () => [], registerCodeLensProvider: () => new Disposable() },
+    languages: { getDiagnostics: () => [], onDidChangeDiagnostics: noEvent, registerCodeLensProvider: () => new Disposable() },
+    comments: { createCommentController(id, label) {
+      const threads = new Set();
+      return { id, label, createCommentThread(uri, range, comments) {
+        const thread = { uri, range, comments, dispose() { threads.delete(thread); } };
+        threads.add(thread); return thread;
+      }, dispose() { for (const thread of threads) thread.dispose(); } };
+    } },
     tasks: { onDidEndTaskProcess: noEvent, executeTask: async () => { throw new Error('Editor tasks are unavailable'); } },
   };
   const context = {
@@ -323,14 +367,15 @@ function createHost(options, send) {
   return {
     api, context, extension,
     async resolveView() {
-      const id = providers.has('chatgpt.sidebarView') ? 'chatgpt.sidebarView' : providers.keys().next().value;
+      const id = options.sidebarViewId || (providers.has('chatgpt.sidebarView') ? 'chatgpt.sidebarView' : providers.keys().next().value);
       if (!id) throw new Error('Official extension did not register a WebView provider');
       const view = makeWebview(id);
       await providers.get(id).resolveWebviewView(view, { state: undefined }, { isCancellationRequested: false, onCancellationRequested: noEvent });
       return view;
     },
     receive(message, surfaceId = 'main') { const view = [...views.values()].find(item => item.surfaceId === surfaceId); if (!view) throw new Error('WebView surface is not available'); view.receive(message); },
-    closeSurface(surfaceId) { if (surfaceId === 'main') throw new Error('The primary chat view cannot be closed'); const view = [...views.values()].find(item => item.surfaceId === surfaceId); view?.dispose(); },
+    closeSurface(surfaceId) { if (surfaceId === 'main') throw new Error('The primary chat view cannot be closed'); if (editor.hasPreview(surfaceId)) return editor.action(surfaceId, 'reject'); const view = [...views.values()].find(item => item.surfaceId === surfaceId); view?.dispose(); },
+    surfaceAction(surfaceId, action) { return editor.action(surfaceId, action); },
     visibility(value) { windowVisible = value; for (const view of views.values()) view.windowVisibilityChanged(); api.window.state.focused = value; windowChanged.fire({ focused: value }); },
     respond(value) {
       const pending = hostRequests.get(value.id);
@@ -338,7 +383,7 @@ function createHost(options, send) {
       hostRequests.delete(value.id);
       if (value.error) pending.reject(new Error(typeof value.error === 'string' ? value.error : value.error.message)); else pending.resolve(value.result);
     },
-    dispose() { for (const view of views.values()) view.dispose(); for (const item of subscriptions.splice(0).reverse()) { try { item.dispose(); } catch {} } for (const watcher of fileWatchers) watcher.dispose(); for (const pending of hostRequests.values()) pending.resolve(undefined); },
+    dispose() { for (const view of views.values()) view.dispose(); editor.dispose(); for (const item of subscriptions.splice(0).reverse()) { try { item.dispose(); } catch {} } for (const watcher of fileWatchers) watcher.dispose(); for (const pending of hostRequests.values()) pending.resolve(undefined); },
   };
 }
 
