@@ -59,12 +59,20 @@ internal fun CloseWorkspaceWindowDialog(window: WorkspaceWindow, viewModel: Main
 }
 
 @Composable
-internal fun NewWorkspaceWindowDialog(state: AppState, viewModel: MainViewModel, onDismiss: () -> Unit, onCreated: () -> Unit) {
-    var serviceId by remember { mutableStateOf(state.selectedServiceId ?: state.services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }?.id ?: state.services.firstOrNull()?.id) }
+internal fun NewWorkspaceWindowDialog(state: AppState, viewModel: MainViewModel, onDismiss: () -> Unit, onCreated: () -> Unit,
+    initialTool: CodingTool = CodingTool.CODEX) {
+    var serviceId by remember {
+        val defaultId = state.selectedServiceId ?: state.services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }?.id ?: state.services.firstOrNull()?.id
+        val defaultService = state.services.firstOrNull { it.id == defaultId }
+        mutableStateOf(if (initialTool == CodingTool.CLAUDE &&
+            (defaultService == null || defaultService.runtimeState != RuntimeState.CONNECTED || !initialTool.supports(defaultService))) {
+            state.services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED && initialTool.supports(it) }?.id
+        } else defaultId)
+    }
     val service = state.services.firstOrNull { it.id == serviceId }
     var selectingService by remember { mutableStateOf(false) }
     var selectingDirectory by remember { mutableStateOf(false) }
-    var tool by remember { mutableStateOf(CodingTool.CODEX) }
+    var tool by remember { mutableStateOf(initialTool) }
     var workspace by remember(serviceId) { mutableStateOf(service?.home.orEmpty()) }
     var title by remember { mutableStateOf("") }
     var error by remember(serviceId) { mutableStateOf<String?>(null) }

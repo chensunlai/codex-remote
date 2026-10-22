@@ -2,6 +2,33 @@
 
 package dev.codexremote.app.ui
 
+import android.provider.Settings
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -56,6 +83,9 @@ import dev.codexremote.app.R
 import dev.codexremote.app.data.frontendScope
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.MainSection
+import dev.codexremote.app.model.CodingTool
+import dev.codexremote.app.model.RuntimeState
+import java.time.LocalTime
 
 private data class NavigationDestination(
     val section: MainSection,
@@ -193,6 +223,9 @@ private fun MainContent(
         mutableStateMapOf<String, Boolean>()
     }
     var creatingWindow by remember(state.gatewayConfig?.let { frontendScope(it, "") }) { mutableStateOf(false) }
+    var initialTool by remember { mutableStateOf(CodingTool.CODEX) }
+    var welcomePlayed by rememberSaveable { mutableStateOf(false) }
+    val createDefaultWindow = { initialTool = CodingTool.CODEX; creatingWindow = true }
     LaunchedEffect(state.windowMode) { if (!state.windowMode) creatingWindow = false }
     Box(modifier.fillMaxSize()) {
         RetainedServerPanes(
@@ -204,7 +237,7 @@ private fun MainContent(
         ) { windowId, active ->
             val window = state.windows.first { it.id == windowId }
             OfficialChatScreen(state, viewModel, window, visible = active && foreground && !creatingWindow,
-                onCreateWindow = { creatingWindow = true },
+                onCreateWindow = createDefaultWindow,
                 residentWindowIds = residentWebViews.keys.toSet(),
                 onWebViewRetainedChanged = { retained ->
                     if (retained) residentWebViews[windowId] = true else residentWebViews.remove(windowId)
@@ -214,13 +247,16 @@ private fun MainContent(
             Column(Modifier.fillMaxSize()) {
                 CodexTopBar(title = {
                     WorkPageSelector(state, null, foreground, residentWebViews.keys.toSet(),
-                        { creatingWindow = true }, viewModel::openServiceWindow, viewModel::selectWindow,
+                        createDefaultWindow, viewModel::openServiceWindow, viewModel::selectWindow,
                     onCloseWindow = viewModel::closeWindow, onSwitchTool = viewModel::switchWindowTool)
                 }, actions = {
-                    if (state.windowMode) IconButton(onClick = { creatingWindow = true }) { AppIcon(CodexIcons.Add, "新建窗口") }
+                    if (state.windowMode) IconButton(onClick = createDefaultWindow) { AppIcon(CodexIcons.Add, "新建窗口") }
                 })
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    if (state.windowMode) Button(onClick = { creatingWindow = true }) { Text("打开工作窗口") }
+                    if (state.windowMode) WorkspaceWelcome(state, welcomePlayed,
+                        onShown = { welcomePlayed = true },
+                        onCreateWindow = { initialTool = it; creatingWindow = true },
+                        onShowServers = { viewModel.setSection(MainSection.SERVICES) })
                     else Button(onClick = {
                         state.selectedServiceId?.let(viewModel::openServiceWindow)
                             ?: viewModel.setSection(MainSection.SERVICES)
@@ -241,5 +277,117 @@ private fun MainContent(
         SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
     }
     if (state.windowMode && creatingWindow) NewWorkspaceWindowDialog(state, viewModel,
-        onDismiss = { creatingWindow = false }, onCreated = { creatingWindow = false })
+        onDismiss = { creatingWindow = false }, onCreated = { creatingWindow = false }, initialTool = initialTool)
+}
+
+@Composable
+private fun WorkspaceWelcome(
+    state: AppState,
+    entrancePlayed: Boolean,
+    onShown: () -> Unit,
+    onCreateWindow: (CodingTool) -> Unit,
+    onShowServers: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    val typography = MaterialTheme.typography
+    val context = LocalContext.current
+    val animate = remember {
+        !entrancePlayed && Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+    }
+    var entered by remember { mutableStateOf(!animate) }
+    LaunchedEffect(Unit) { onShown(); entered = true }
+    val iconProgress by animateFloatAsState(if (entered) 1f else 0f,
+        tween(if (animate) 320 else 0, easing = FastOutSlowInEasing), label = "welcomeIcon")
+    val textProgress by animateFloatAsState(if (entered) 1f else 0f,
+        tween(if (animate) 320 else 0, if (animate) 80 else 0, FastOutSlowInEasing), label = "welcomeText")
+    val actionProgress by animateFloatAsState(if (entered) 1f else 0f,
+        tween(if (animate) 320 else 0, if (animate) 160 else 0, FastOutSlowInEasing), label = "welcomeActions")
+    val offset = with(LocalDensity.current) { 12.dp.toPx() }
+    val greeting = remember {
+        when (LocalTime.now().hour) {
+            in 5..10 -> "早上好"
+            in 11..12 -> "中午好"
+            in 13..17 -> "下午好"
+            in 18..22 -> "晚上好"
+            else -> "夜深了"
+        }
+    }
+    val connecting = state.loading && state.services.isEmpty()
+    val noServers = state.services.isEmpty()
+    val onlineServers = state.services.filter { it.runtimeState == RuntimeState.CONNECTED }
+    val allOffline = !noServers && onlineServers.isEmpty()
+    val title = when {
+        connecting -> "正在连接服务器…"
+        noServers -> "先接上一台服务器吧"
+        allOffline -> "服务器都在休息"
+        else -> "今天想做点什么？"
+    }
+    val subtitle = when {
+        connecting -> null
+        noServers -> "在服务器上启动 Agent，使用和 App 相同的访问令牌"
+        allOffline -> "Agent 重新连上后就能开新窗口了"
+        else -> "打开一个新窗口，选好服务器和目录就能开始"
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).heightIn(min = maxHeight),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Column(Modifier.widthIn(max = 360.dp).fillMaxWidth().padding(horizontal = 32.dp).padding(top = 28.dp, bottom = 56.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(Modifier.size(112.dp).graphicsLayer {
+                    alpha = iconProgress
+                    scaleX = 0.92f + 0.08f * iconProgress
+                    scaleY = scaleX
+                }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.requiredSize(168.dp).background(
+                        Brush.radialGradient(listOf(colors.tertiary.copy(alpha = 0.16f), Color.Transparent)), CircleShape))
+                    Image(painterResource(R.drawable.ic_launcher_monochrome), contentDescription = null,
+                        modifier = Modifier.size(112.dp), colorFilter = ColorFilter.tint(colors.onSurface))
+                }
+                Spacer(Modifier.height(20.dp))
+                Column(Modifier.graphicsLayer { alpha = textProgress; translationY = offset * (1f - textProgress) },
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(greeting, style = typography.labelLarge, color = colors.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Text(title, Modifier.semantics { heading() }, style = typography.headlineSmall,
+                        color = colors.onSurface, textAlign = TextAlign.Center)
+                    if (subtitle != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(subtitle, style = typography.bodyMedium, color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
+                    }
+                }
+                Spacer(Modifier.height(28.dp))
+                Column(Modifier.graphicsLayer { alpha = actionProgress; translationY = offset * (1f - actionProgress) },
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    when {
+                        connecting -> CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        noServers || allOffline -> OutlinedButton(onClick = onShowServers) {
+                            Text(if (noServers) "去看看服务器" else "查看服务器")
+                        }
+                        else -> {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                CodingTool.entries.forEach { tool ->
+                                    val enabled = tool != CodingTool.CLAUDE || onlineServers.any { tool.supports(it) }
+                                    FilledTonalButton(onClick = { onCreateWindow(tool) }, enabled = enabled,
+                                        modifier = Modifier.height(48.dp).semantics {
+                                            if (!enabled) contentDescription = "Claude Code，需要在线的 Linux 服务器"
+                                        }, contentPadding = PaddingValues(horizontal = 20.dp)) {
+                                        CodingToolIcon(tool.id, Modifier.size(20.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(if (tool == CodingTool.CODEX) "Codex" else "Claude Code")
+                                    }
+                                }
+                            }
+                            val offlineWindows = state.windows.count { window -> onlineServers.none { it.id == window.serviceId } }
+                            if (offlineWindows > 0) {
+                                Spacer(Modifier.height(16.dp))
+                                Text("$offlineWindows 个窗口在离线服务器上，连上后会回来", style = typography.bodySmall,
+                                    color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
