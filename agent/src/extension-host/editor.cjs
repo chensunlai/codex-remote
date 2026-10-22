@@ -42,7 +42,11 @@ function createEditorHost({ Uri, Position, Range, Selection, Disposable, EventEm
     if (metadata.size > maxDocumentBytes) throw new Error('Text preview exceeds 10 MiB');
     const bytes = await fs.readFile(uri);
     if (bytes.byteLength > maxDocumentBytes) throw new Error('Text preview exceeds 10 MiB');
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Preserve the existing file-document path: Codex opens a document before
+    // asking the native viewer to preview/download even APKs and images. The
+    // native viewer detects their type from the original bytes; rejecting here
+    // would prevent that request altogether. Virtual diff documents stay strict.
+    return new TextDecoder('utf-8', { fatal: uri.scheme !== 'file' }).decode(bytes);
   }
   function makeDocument(uri, initialText) {
     let text = initialText, lines, offsets;

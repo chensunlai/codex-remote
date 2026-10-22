@@ -110,6 +110,29 @@ it("resolves content providers as read-only text and refuses editor writes", asy
   await expect(f.api.workspace.fs.readFile(Uri.parse("unknown:/missing"))).rejects.toThrow(/provider/);
 });
 
+it.each(["download.apk", "download.exe", "图片.png"])("opens %s through the native file viewer without rejecting its binary content", async filename => {
+  const f = await fixture();
+  const uri = Uri.file(join(f.root, filename));
+  const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0xfe, 0x80]);
+  await writeFile(uri.fsPath, bytes);
+  // This is the public API sequence used by Codex's file-link handler.
+  const document = await f.api.workspace.openTextDocument(uri);
+  const opened = f.api.window.showTextDocument(document);
+  const request = f.events.at(-1).payload;
+  expect(request).toMatchObject({ method: "openFile", params: { path: uri.fsPath } });
+  expect(request.params).not.toHaveProperty("text");
+  f.host.respond({ id: request.id, result: true });
+  expect((await opened).document).toBe(document);
+  expect(await readFile(uri.fsPath)).toEqual(bytes);
+});
+
+it("continues to reject non-text virtual documents used for diff previews", async () => {
+  const f = await fixture();
+  f.bytes.set(f.modified.toString(), Buffer.from([0xff, 0xfe, 0x80]));
+  await expect(f.api.workspace.openTextDocument(f.modified)).rejects.toThrow(/encoded data/);
+  expect(f.events.some(event => event.type === "host-request")).toBe(false);
+});
+
 it("maps quick pick indices to original objects and validates input on the host", async () => {
   const f = await fixture();
   const item = { label: "Workspace", privateValue: () => 1 };
