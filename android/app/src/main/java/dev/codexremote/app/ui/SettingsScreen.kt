@@ -62,7 +62,8 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                         customWindowLimit = state.customWindowLimit, maxChatPages = state.maxChatPages,
                         customCacheLimit = state.customCacheLimit, resourceCacheBytes = state.resourceCacheBytes,
                         onCustomWindowLimitChange = viewModel::setCustomWindowLimit, onMaxChatPagesChange = viewModel::setMaxChatPages,
-                        onCustomCacheLimitChange = viewModel::setCustomCacheLimit, onResourceCacheBytesChange = viewModel::setResourceCacheBytes)
+                        onCustomCacheLimitChange = viewModel::setCustomCacheLimit, onResourceCacheBytesChange = viewModel::setResourceCacheBytes,
+                        windowMode = state.windowMode, onWindowModeChange = viewModel::setWindowMode)
                 }
                 CodexSettingsGroup("外观") {
                     Text("主题", style = MaterialTheme.typography.bodyMedium)

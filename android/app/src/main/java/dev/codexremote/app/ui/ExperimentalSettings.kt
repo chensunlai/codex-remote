@@ -49,10 +49,12 @@ internal fun ExperimentalSettings(
     onMaxChatPagesChange: (Int) -> Unit = {},
     onCustomCacheLimitChange: (Boolean) -> Unit = {},
     onResourceCacheBytesChange: (Long) -> Unit = {},
+    windowMode: Boolean = true,
+    onWindowModeChange: (Boolean) -> Unit = {},
 ) {
     var opened by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
-    val activeCount = listOf(http, multiple, customWindowLimit, customCacheLimit).count { it }
+    val activeCount = listOf(http, multiple, !windowMode, customWindowLimit, customCacheLimit).count { it }
     Surface(
         onClick = { opened = true }, enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
@@ -97,6 +99,10 @@ internal fun ExperimentalSettings(
                 ExperimentSwitch(
                     CodexIcons.Network, "多个网关入口", "为同一网关配置内网、外网地址。网络变化或重连时按顺序选择，连接稳定时不切换。", multiple, enabled,
                 ) { onChange(http, it) }
+                ExperimentSwitch(
+                    CodexIcons.Messages, "旧版服务器模式", "开启后按服务器选择，并通过工具图标切换 Codex／Claude；关闭后恢复窗口列表。切换时保留已有窗口、草稿与任务。", !windowMode, enabled,
+                    onChange = { onWindowModeChange(!it) },
+                )
                 ExperimentSwitch(
                     CodexIcons.Messages, "自定义内存驻留窗口数", "切换驻留窗口无需重新加载。数量越大，内存占用越多；释放页面后远端任务仍会继续。关闭开关后保留并继续使用已选数量。",
                     customWindowLimit, enabled,

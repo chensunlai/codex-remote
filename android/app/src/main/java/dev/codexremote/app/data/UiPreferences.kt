@@ -10,6 +10,7 @@ class UiPreferences(context: Context) {
 
     val allowHttp: Boolean get() = preferences.getBoolean("allow_http", false)
     val multipleEndpoints: Boolean get() = preferences.getBoolean("multiple_endpoints", false)
+    val windowMode: Boolean get() = !preferences.getBoolean("legacy_server_mode", false)
     val customWindowLimit: Boolean get() = preferences.getBoolean("custom_window_limit", false)
     val customCacheLimit: Boolean get() = preferences.getBoolean("custom_cache_limit", false)
     val maxChatPages: Int get() = preferences.getInt("max_chat_pages", DEFAULT_MAX_CHAT_PAGES)
@@ -19,6 +20,10 @@ class UiPreferences(context: Context) {
 
     fun setCustomWindowLimit(value: Boolean) {
         preferences.edit { putBoolean("custom_window_limit", value) }
+    }
+
+    fun setWindowMode(value: Boolean) {
+        preferences.edit { putBoolean("legacy_server_mode", !value) }
     }
 
     fun setCustomCacheLimit(value: Boolean) {
@@ -63,7 +68,7 @@ class UiPreferences(context: Context) {
             .coerceIn(MIN_FONT_SCALE, MAX_FONT_SCALE)
 
     companion object {
-        const val DEFAULT_MAX_CHAT_PAGES = 3
+        const val DEFAULT_MAX_CHAT_PAGES = 5
         const val MIN_CHAT_PAGES = 1
         const val MAX_CHAT_PAGES = 10
         const val DEFAULT_RESOURCE_CACHE_BYTES = 1024L * 1024 * 1024

@@ -18,11 +18,42 @@ class UiPreferencesInstrumentedTest {
     @Test fun persistsAndBoundsChatPageLimit() {
         val context = isolatedContext()
         val preferences = UiPreferences(context)
-        assertEquals(3, preferences.maxChatPages)
+        assertEquals(5, preferences.maxChatPages)
         assertEquals(8, preferences.setMaxChatPages(8))
         assertEquals(8, UiPreferences(context).maxChatPages)
         assertEquals(1, preferences.setMaxChatPages(0))
         assertEquals(10, preferences.setMaxChatPages(100))
+    }
+
+    @Test fun windowModeDefaultsOnAndLegacySwitchPreservesExplicitPageLimit() {
+        val context = isolatedContext()
+        context.getSharedPreferences("ui_preferences", 0).edit().putInt("max_chat_pages", 3).commit()
+        val preferences = UiPreferences(context)
+        assertTrue(preferences.windowMode)
+        assertEquals(3, preferences.maxChatPages)
+        preferences.setWindowMode(false)
+        assertFalse(UiPreferences(context).windowMode)
+        assertTrue(context.getSharedPreferences("ui_preferences", 0).getBoolean("legacy_server_mode", false))
+        preferences.setWindowMode(true)
+        assertTrue(UiPreferences(context).windowMode)
+        assertEquals(3, UiPreferences(context).maxChatPages)
+    }
+
+    @Test fun formerExperimentalWindowSwitchDoesNotOverrideNewDefault() {
+        for (oldWindowMode in listOf(false, true)) {
+            val context = isolatedContext()
+            context.getSharedPreferences("ui_preferences", 0).edit()
+                .putBoolean("window_mode", oldWindowMode)
+                .putInt("max_chat_pages", 7)
+                .putLong("resource_cache_bytes", 2L * 1024 * 1024 * 1024)
+                .commit()
+            val preferences = UiPreferences(context)
+            assertTrue(preferences.windowMode)
+            assertEquals(7, preferences.maxChatPages)
+            assertEquals(2L * 1024 * 1024 * 1024, preferences.resourceCacheBytes)
+            preferences.setWindowMode(false)
+            assertFalse(UiPreferences(context).windowMode)
+        }
     }
 
     @Test fun tuningSwitchesPersistIndependentlyWithoutResettingActiveValues() {

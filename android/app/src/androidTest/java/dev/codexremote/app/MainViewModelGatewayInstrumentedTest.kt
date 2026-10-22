@@ -30,6 +30,155 @@ import kotlin.concurrent.thread
 @RunWith(AndroidJUnit4::class)
 class MainViewModelGatewayInstrumentedTest {
     @Test
+    fun offlineServersDoNotAutomaticallyOrManuallyCreateWindows() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = ViewModelStore()
+        val model = withContext(Dispatchers.Main) {
+            MainViewModel(IsolatedApplication(context)).also { store.put("fixture", it) }
+        }
+        val services = """[{"id":"fixture","name":"Fixture","platform":"linux","home":"/home/fixture","runtime":{"state":"disconnected"}}]"""
+        try {
+            FixtureGateway("/home/fixture", false, services).use { gateway ->
+                withContext(Dispatchers.Main) {
+                    model.setExperiments(http = true, multiple = false)
+                    model.configureGateway(gateway.address, "fixture-token")
+                }
+                withTimeout(10_000) { model.state.first { it.services.size == 1 && !it.loading } }
+                assertTrue(model.state.value.windows.isEmpty())
+                withContext(Dispatchers.Main) { model.createWindow("fixture", "/home/fixture") }
+                assertTrue(model.state.value.windows.isEmpty())
+                assertEquals("服务器离线，连接恢复后再创建窗口", model.state.value.error)
+            }
+        } finally {
+            withContext(Dispatchers.Main) { model.clearGateway(); store.clear() }
+        }
+    }
+
+    @Test
+    fun lateWindowHomeResponseCannotUndoSectionOrServerNavigation() = runBlocking {
+        for (changeSection in listOf(true, false)) {
+            val context = ApplicationProvider.getApplicationContext<Context>()
+            val store = ViewModelStore()
+            val model = withContext(Dispatchers.Main) {
+                MainViewModel(IsolatedApplication(context)).also { store.put("fixture", it) }
+            }
+            val services = JSONArray().apply {
+                listOf("fixture", "delayed", "other").forEach { id ->
+                    put(JSONObject().put("id", id).put("name", id).put("platform", "linux")
+                        .apply { if (id != "delayed") put("home", "/home/$id") }
+                        .put("runtime", JSONObject().put("state", "connected")))
+                }
+            }
+            try {
+                FixtureGateway("/home/fixture", false, services.toString(), holdHome = true).use { gateway ->
+                    withContext(Dispatchers.Main) {
+                        model.setExperiments(http = true, multiple = false)
+                        model.configureGateway(gateway.address, "fixture-token")
+                    }
+                    withTimeout(10_000) { model.state.first { it.services.size == 3 && !it.loading } }
+                    val original = model.state.value.windows.single()
+                    withContext(Dispatchers.Main) { model.openServiceWindow("delayed") }
+                    withTimeout(10_000) { gateway.homeRequested.await() }
+                    withContext(Dispatchers.Main) {
+                        if (changeSection) model.setSection(MainSection.FILES) else model.selectService("other")
+                    }
+                    gateway.releaseHome.complete(Unit)
+                    val completed = withTimeout(10_000) { model.state.first { !it.loading } }
+                    assertEquals(listOf(original), completed.windows)
+                    assertEquals(original.id, completed.selectedWindowId)
+                    assertEquals(if (changeSection) MainSection.FILES else MainSection.SESSIONS, completed.section)
+                    assertEquals(if (changeSection) "fixture" else "other", completed.selectedServiceId)
+                }
+            } finally {
+                withContext(Dispatchers.Main) { model.clearGateway(); store.clear() }
+            }
+        }
+    }
+
+    @Test
+    fun serverModeReusesSeparateToolWindowsAndChangingModePreservesThem() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val application = IsolatedApplication(context)
+        val store = ViewModelStore()
+        val model = withContext(Dispatchers.Main) {
+            MainViewModel(application).also { store.put("fixture", it) }
+        }
+        val services = JSONArray().apply {
+            listOf("fixture", "second", "windows").forEach { id ->
+                put(JSONObject().put("id", id).put("name", id)
+                    .put("platform", if (id == "windows") "win32" else "linux")
+                    .put("home", if (id == "windows") "C:\\Users\\User" else "/home/$id")
+                    .put("runtime", JSONObject().put("state", "connected")))
+            }
+        }
+        try {
+            FixtureGateway("/home/fixture", false, services.toString()).use { gateway ->
+                withContext(Dispatchers.Main) {
+                    model.setExperiments(http = true, multiple = false)
+                    model.configureGateway(gateway.address, "fixture-token")
+                }
+                withTimeout(10_000) { model.state.first { it.services.size == 3 && !it.loading } }
+                withContext(Dispatchers.Main) {
+                    model.setWindowMode(false)
+                    assertFalse(model.state.value.windowMode)
+                    val original = model.state.value.windows.single()
+                    model.switchWindowTool()
+                    val claudeId = requireNotNull(model.state.value.selectedWindowId)
+                    assertEquals("claude", model.state.value.windows.last().toolId)
+                    assertEquals("fixture", model.state.value.windows.last().title)
+                    assertEquals(original.workspace, model.state.value.windows.last().workspace)
+                    model.switchWindowTool()
+                    assertEquals(original.id, model.state.value.selectedWindowId)
+                    model.createWindow("fixture", "/another", "Additional")
+                    model.selectWindow(original.id)
+                    model.switchWindowTool()
+                    assertEquals(claudeId, model.state.value.selectedWindowId)
+                    model.switchWindowTool()
+                    assertEquals(original.id, model.state.value.selectedWindowId)
+                    assertEquals(3, model.state.value.windows.size)
+
+                    model.selectWindow(claudeId)
+                    model.openServiceWindow("second")
+                    val secondClaude = model.state.value.windows.last()
+                    assertEquals("claude", secondClaude.toolId)
+                    model.openServiceWindow("fixture")
+                    assertEquals(claudeId, model.state.value.selectedWindowId)
+                    model.openServiceWindow("second")
+                    assertEquals(secondClaude.id, model.state.value.selectedWindowId)
+                    model.openServiceWindow("windows")
+                    assertEquals("codex", model.state.value.windows.last().toolId)
+
+                    model.selectWindow(claudeId)
+                    val before = model.state.value
+                    model.setWindowMode(true)
+                    model.setWindowMode(false)
+                    assertEquals(before, model.state.value)
+
+                    model.setSection(MainSection.TERMINAL)
+                    model.selectService("second")
+                    assertEquals(claudeId, model.state.value.selectedWindowId)
+                    model.setSection(MainSection.SESSIONS)
+                    assertEquals("fixture", model.state.value.selectedServiceId)
+                    assertEquals(claudeId, model.state.value.selectedWindowId)
+                    assertEquals(5, model.state.value.windows.size)
+                    model.createWindow("fixture", "/second-claude", toolId = "claude")
+                    val another = model.state.value.windows.last()
+                    assertEquals("fixture 2", another.title)
+                    model.renameWindow(another.id, "fixture")
+                    assertEquals(2, model.state.value.windows.count { it.title == "fixture" && it.toolId == "claude" })
+                    assertEquals(another.id, model.state.value.selectedWindowId)
+                }
+                val restored = dev.codexremote.app.data.WorkspaceWindowStore(application).load(model.state.value.gatewayConfig!!)!!
+                assertEquals(model.state.value.windows, restored.windows)
+                assertEquals(model.state.value.selectedWindowId, restored.selectedId)
+                assertEquals(model.state.value.recentWindowIds, restored.recentIds)
+            }
+        } finally {
+            withContext(Dispatchers.Main) { model.clearGateway(); store.clear() }
+        }
+    }
+
+    @Test
     fun switchingToWindowsLeavesTerminalAndDirectNavigationCannotReopenIt() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val store = ViewModelStore()
@@ -109,12 +258,15 @@ class MainViewModelGatewayInstrumentedTest {
             super.getSharedPreferences("$prefix-$name", mode)
     }
 
-    private class FixtureGateway(private val home: String, private val holdDirectory: Boolean, private val services: String? = null) : AutoCloseable {
+    private class FixtureGateway(private val home: String, private val holdDirectory: Boolean, private val services: String? = null,
+        private val holdHome: Boolean = false) : AutoCloseable {
         private val server = ServerSocket(0)
         private val sockets = CopyOnWriteArrayList<Socket>()
         val address = "http://127.0.0.1:${server.localPort}"
         val directoryRequested = CompletableDeferred<Unit>()
         val directoryCancelled = CompletableDeferred<Unit>()
+        val homeRequested = CompletableDeferred<Unit>()
+        val releaseHome = CompletableDeferred<Unit>()
 
         init {
             thread(isDaemon = true, name = "gateway-fixture") {
@@ -130,6 +282,11 @@ class MainViewModelGatewayInstrumentedTest {
                                 val body = when (path) {
                                     "/api/v1/meta" -> """{"data":{"limits":{}}}"""
                                     "/api/v1/services" -> services?.let { "{\"data\":$it}" } ?: """{"data":[{"id":"fixture","name":"Fixture","home":"$home","runtime":{"state":"connected"}}]}"""
+                                    "/api/v1/services/delayed/fs/home" -> {
+                                        homeRequested.complete(Unit)
+                                        if (holdHome) runBlocking { releaseHome.await() }
+                                        """{"data":{"path":"/home/delayed"}}"""
+                                    }
                                     "/api/v1/services/fixture/fs/list", "/api/v1/services/windows/fs/list" -> {
                                         directoryRequested.complete(Unit)
                                         if (holdDirectory) {
@@ -152,6 +309,7 @@ class MainViewModelGatewayInstrumentedTest {
                             if (!server.isClosed) {
                                 directoryRequested.completeExceptionally(error)
                                 directoryCancelled.completeExceptionally(error)
+                                homeRequested.completeExceptionally(error)
                             }
                         } finally {
                             sockets -= socket
@@ -163,6 +321,7 @@ class MainViewModelGatewayInstrumentedTest {
 
         override fun close() {
             server.close()
+            releaseHome.complete(Unit)
             sockets.forEach(Socket::close)
         }
     }

@@ -8,7 +8,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-internal data class SavedWorkspaceWindows(val windows: List<WorkspaceWindow>, val selectedId: String?)
+internal data class SavedWorkspaceWindows(
+    val windows: List<WorkspaceWindow>, val selectedId: String?, val recentIds: List<String> = emptyList(),
+)
 
 /** Window order and selection belong to a Gateway credential scope, not a selected server. */
 internal class WorkspaceWindowStore(context: Context) {
@@ -32,19 +34,24 @@ internal class WorkspaceWindowStore(context: Context) {
                         entry.optString("toolId", "codex"))
                 }.getOrNull()
             }
-            val selected = root.optString("selectedId").takeIf { id -> windows.any { it.id == id } }
-                ?: windows.firstOrNull()?.id
-            SavedWorkspaceWindows(windows, selected)
+            val selected = if (root.has("selectedId") && root.isNull("selectedId")) null
+                else root.optString("selectedId").takeIf { id -> windows.any { it.id == id } }
+                    ?: windows.firstOrNull()?.id
+            val recent = root.optJSONArray("recentIds")?.let { ids ->
+                (0 until ids.length()).map { ids.optString(it) }
+            }.orEmpty()
+            SavedWorkspaceWindows(windows, selected, recentWorkspaceWindowIds(windows, recent, selected))
         }.getOrNull()
     }
 
-    fun save(config: GatewayConfig, windows: List<WorkspaceWindow>, selectedId: String?) {
+    fun save(config: GatewayConfig, windows: List<WorkspaceWindow>, selectedId: String?, recentIds: List<String> = emptyList()) {
         val entries = JSONArray()
         windows.forEach { window ->
             entries.put(JSONObject().put("id", window.id).put("serviceId", window.serviceId)
                 .put("workspace", window.workspace).put("title", window.title).put("toolId", window.toolId))
         }
-        val encoded = JSONObject().put("windows", entries).put("selectedId", selectedId ?: JSONObject.NULL).toString()
+        val encoded = JSONObject().put("windows", entries).put("selectedId", selectedId ?: JSONObject.NULL)
+            .put("recentIds", JSONArray(recentWorkspaceWindowIds(windows, recentIds, selectedId))).toString()
         preferences.edit { putString(frontendScope(config, ""), encoded) }
     }
 }

@@ -86,6 +86,7 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
             customCacheLimit = state.customCacheLimit, resourceCacheBytes = state.resourceCacheBytes,
             onCustomWindowLimitChange = viewModel::setCustomWindowLimit, onMaxChatPagesChange = viewModel::setMaxChatPages,
             onCustomCacheLimitChange = viewModel::setCustomCacheLimit, onResourceCacheBytesChange = viewModel::setResourceCacheBytes,
+            windowMode = state.windowMode, onWindowModeChange = viewModel::setWindowMode,
         )
         return
     }
@@ -191,7 +192,8 @@ private fun MainContent(
     val residentWebViews = remember(state.gatewayConfig?.let { frontendScope(it, "") }) {
         mutableStateMapOf<String, Boolean>()
     }
-    var windowsOpen by remember(state.gatewayConfig?.let { frontendScope(it, "") }) { mutableStateOf(false) }
+    var creatingWindow by remember(state.gatewayConfig?.let { frontendScope(it, "") }) { mutableStateOf(false) }
+    LaunchedEffect(state.windowMode) { if (!state.windowMode) creatingWindow = false }
     Box(modifier.fillMaxSize()) {
         RetainedServerPanes(
             identity = state.gatewayConfig?.let { frontendScope(it, "") },
@@ -201,19 +203,28 @@ private fun MainContent(
             maxPages = state.maxChatPages,
         ) { windowId, active ->
             val window = state.windows.first { it.id == windowId }
-            OfficialChatScreen(state, viewModel, window, visible = active && foreground && !windowsOpen,
-                onShowWindows = { windowsOpen = true },
+            OfficialChatScreen(state, viewModel, window, visible = active && foreground && !creatingWindow,
+                onCreateWindow = { creatingWindow = true },
+                residentWindowIds = residentWebViews.keys.toSet(),
                 onWebViewRetainedChanged = { retained ->
                     if (retained) residentWebViews[windowId] = true else residentWebViews.remove(windowId)
                 })
         }
         if (chatVisible && state.windows.none { it.id == state.selectedWindowId }) {
             Column(Modifier.fillMaxSize()) {
-                CodexTopBar(title = { Text("工作窗口") }, actions = {
-                    IconButton(onClick = { windowsOpen = true }) { AppIcon(CodexIcons.Add, "新建窗口") }
+                CodexTopBar(title = {
+                    WorkPageSelector(state, null, foreground, residentWebViews.keys.toSet(),
+                        { creatingWindow = true }, viewModel::openServiceWindow, viewModel::selectWindow,
+                    onCloseWindow = viewModel::closeWindow, onSwitchTool = viewModel::switchWindowTool)
+                }, actions = {
+                    if (state.windowMode) IconButton(onClick = { creatingWindow = true }) { AppIcon(CodexIcons.Add, "新建窗口") }
                 })
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Button(onClick = { windowsOpen = true }) { Text("打开工作窗口") }
+                    if (state.windowMode) Button(onClick = { creatingWindow = true }) { Text("打开工作窗口") }
+                    else Button(onClick = {
+                        state.selectedServiceId?.let(viewModel::openServiceWindow)
+                            ?: viewModel.setSection(MainSection.SERVICES)
+                    }) { Text(if (state.selectedServiceId == null) "选择服务器" else "打开对话") }
                 }
             }
         }
@@ -229,5 +240,6 @@ private fun MainContent(
         }
         SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
     }
-    if (windowsOpen) WorkspaceWindows(state, viewModel, residentWebViews.keys.toSet(), onDismiss = { windowsOpen = false })
+    if (state.windowMode && creatingWindow) NewWorkspaceWindowDialog(state, viewModel,
+        onDismiss = { creatingWindow = false }, onCreated = { creatingWindow = false })
 }

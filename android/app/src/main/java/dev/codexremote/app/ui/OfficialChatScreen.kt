@@ -33,6 +33,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -124,13 +126,18 @@ private fun JSONObject.version(name: String): String? = optString(name).takeIf {
 
 @Composable
 fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: WorkspaceWindow,
-    visible: Boolean = true, onShowWindows: () -> Unit = {}, onWebViewRetainedChanged: (Boolean) -> Unit = {}) {
+    visible: Boolean = true, onCreateWindow: () -> Unit = {}, residentWindowIds: Set<String> = emptySet(),
+    onWebViewRetainedChanged: (Boolean) -> Unit = {}) {
     val service = state.services.firstOrNull { it.id == window.serviceId }
     val link by viewModel.gatewayApi.link.collectAsStateWithLifecycle()
     val config = state.gatewayConfig
     if (service == null || config == null) {
         Column(Modifier.fillMaxSize()) {
-            CodexTopBar(title = { TextButton(onClick = onShowWindows) { Text(window.title); AppIcon(CodexIcons.ChevronDown, "窗口总览") } })
+            CodexTopBar(title = {
+                WorkPageSelector(state, window, visible, residentWindowIds, onCreateWindow,
+                    viewModel::openServiceWindow, viewModel::selectWindow,
+                    onCloseWindow = viewModel::closeWindow, onSwitchTool = viewModel::switchWindowTool)
+            })
             EmptyPane(title = "窗口的服务器暂不可用", icon = CodexIcons.Server, modifier = Modifier.weight(1f))
         }
         return
@@ -147,6 +154,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     var mouseMode by remember(scopeKey) { mutableStateOf(false) }
     var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
     var restartConfirmation by remember(scopeKey) { mutableStateOf(false) }
+    var renaming by remember(scopeKey) { mutableStateOf(false) }
+    var closing by remember(scopeKey) { mutableStateOf(false) }
     val restarting = window.id in state.busyWindowIds
     val workspace = window.workspace
     var pendingWorkspace by remember(scopeKey) { mutableStateOf<String?>(null) }
@@ -217,20 +226,17 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
 
     Scaffold(topBar = {
         CodexTopBar(title = {
-            TextButton(onClick = onShowWindows, enabled = visible) {
-                Text(window.title, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface)
-                Text(" ${state.windows.size}", Modifier.padding(horizontal = 6.dp), style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary)
-                AppIcon(CodexIcons.ChevronDown, "窗口总览", Modifier.size(16.dp))
-            }
+            WorkPageSelector(state, window, visible, residentWindowIds, onCreateWindow,
+                viewModel::openServiceWindow, viewModel::selectWindow,
+                    onCloseWindow = viewModel::closeWindow, onSwitchTool = viewModel::switchWindowTool)
         }, navigationIcon = {
             if (panelBack != null) IconButton(onClick = { panelBack?.invoke() }) {
                 AppIcon(CodexIcons.ArrowBack, contentDescription = "返回对话")
             }
         }, actions = {
                 TextButton(onClick = viewModel::reconnectGateway, enabled = !link.checking,
-                    modifier = Modifier.widthIn(min = 48.dp).semantics {
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                    modifier = Modifier.widthIn(min = 44.dp).semantics {
                         contentDescription = "网关连接：${link.endpoint.orEmpty()}，${if (link.checking) "连接中" else link.latencyMs?.let { "${it}毫秒，点击重连" } ?: "检测失败，点击重连"}"
                     }) {
                     if (link.checking) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -240,12 +246,17 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                 }
                 IconToggleButton(checked = mouseMode, onCheckedChange = { mouseMode = it },
                     enabled = installedVersion != null,
-                    modifier = Modifier.semantics { stateDescription = if (mouseMode) "已开启" else "已关闭" }) {
+                    modifier = Modifier.width(40.dp).semantics { stateDescription = if (mouseMode) "已开启" else "已关闭" }) {
                     AppIcon(CodexIcons.MousePointer, contentDescription = "鼠标模式",
                         tint = if (mouseMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                if (!state.windowMode) IconButton(onClick = { chooseWorkspace = true },
+                    modifier = Modifier.width(40.dp),
+                    enabled = !busy && !restarting && service.runtimeState == RuntimeState.CONNECTED) {
+                    AppIcon(CodexIcons.FolderOpen, "更改工作目录")
+                }
                 Box {
-                    IconButton(onClick = { menu = true }) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
+                    IconButton(onClick = { menu = true }, modifier = Modifier.width(40.dp)) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
                     CodexDropdownMenu(expanded = visible && menu, onDismissRequest = { menu = false }) {
                         Text("$toolName · ${installedVersion ?: "未安装"}", style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
@@ -253,8 +264,12 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                             onClick = { menu = false; update() })
                         DropdownMenuItem(text = { Text("重新加载前端") }, enabled = installedVersion != null && !busy,
                             onClick = { menu = false; rendererGeneration += 1; status = "正在重新加载官方前端" })
-                        DropdownMenuItem(text = { Text("更改工作目录") }, enabled = !busy && !restarting,
+                        if (state.windowMode) DropdownMenuItem(text = { Text("更改工作目录") }, enabled = !busy && !restarting,
                             onClick = { menu = false; chooseWorkspace = true })
+                        if (state.windowMode) DropdownMenuItem(text = { Text("重命名窗口") }, enabled = !restarting,
+                            onClick = { menu = false; renaming = true })
+                        if (state.windowMode) DropdownMenuItem(text = { Text("关闭窗口") }, enabled = !restarting,
+                            onClick = { menu = false; closing = true })
                         DropdownMenuItem(text = { Text("重启此窗口后端") },
                             enabled = !busy && !restarting && service.runtimeState == RuntimeState.CONNECTED,
                             onClick = { menu = false; restartConfirmation = true })
@@ -274,7 +289,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                     OfficialWebView(scopeKey, window.id, service.id, service.home ?: "/", workspace,
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
-                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation || pendingWorkspace != null || restarting,
+                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation || renaming || closing || pendingWorkspace != null || restarting,
                         Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id, window.toolId), toolId = window.toolId)
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -286,6 +301,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     if (visible && chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
         onSelect = { path -> if (path != workspace) pendingWorkspace = path; chooseWorkspace = false },
         onDismiss = { chooseWorkspace = false })
+    if (visible && renaming) RenameWorkspaceWindowDialog(window, viewModel) { renaming = false }
+    if (visible && closing) CloseWorkspaceWindowDialog(window, viewModel) { closing = false }
     if (visible && pendingWorkspace != null) CodexDialog(
         onDismissRequest = { pendingWorkspace = null }, title = { Text("更改此窗口的工作目录？") },
         text = { Text("将停止此窗口的 $toolName 和扩展后端，在 ${pendingWorkspace.orEmpty()} 重新打开。正在运行的任务可能中断。") },

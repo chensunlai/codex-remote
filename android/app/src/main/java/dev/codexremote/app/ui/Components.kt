@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -74,6 +75,7 @@ fun ServiceSelector(
     compact: Boolean = false,
     enabled: Boolean = true,
     residentWebViewIds: Set<String> = emptySet(),
+    showStatus: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(false) }
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
@@ -84,12 +86,13 @@ fun ServiceSelector(
             enabled = enabled && services.isNotEmpty(),
             modifier = Modifier.widthIn(min = if (compact) 0.dp else 160.dp, max = 280.dp),
             colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+            contentPadding = if (compact) PaddingValues(horizontal = 4.dp) else ButtonDefaults.TextButtonContentPadding,
             shape = MaterialTheme.shapes.medium,
         ) {
-            StatusDot(selected?.runtimeState ?: RuntimeState.DISCONNECTED)
+            if (showStatus) StatusDot(selected?.runtimeState ?: RuntimeState.DISCONNECTED)
             Text(
                 selected?.name ?: "选择服务",
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                modifier = Modifier.weight(1f).padding(horizontal = if (compact) 4.dp else 8.dp),
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             )

@@ -54,6 +54,8 @@ fun GatewaySetupScreen(
     onMaxChatPagesChange: (Int) -> Unit = {},
     onCustomCacheLimitChange: (Boolean) -> Unit = {},
     onResourceCacheBytesChange: (Long) -> Unit = {},
+    windowMode: Boolean = true,
+    onWindowModeChange: (Boolean) -> Unit = {},
 ) {
     Box(
         Modifier
@@ -76,7 +78,8 @@ fun GatewaySetupScreen(
             )
             ExperimentalSettings(allowHttp, multipleEndpoints, !loading, onExperiments,
                 customWindowLimit, maxChatPages, customCacheLimit, resourceCacheBytes,
-                onCustomWindowLimitChange, onMaxChatPagesChange, onCustomCacheLimitChange, onResourceCacheBytesChange)
+                onCustomWindowLimitChange, onMaxChatPagesChange, onCustomCacheLimitChange, onResourceCacheBytesChange,
+                windowMode = windowMode, onWindowModeChange = onWindowModeChange)
         }
     }
 }

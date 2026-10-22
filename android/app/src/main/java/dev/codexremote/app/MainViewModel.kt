@@ -18,6 +18,9 @@ import dev.codexremote.app.data.TerminalSessionManager
 import dev.codexremote.app.data.UiPreferences
 import dev.codexremote.app.data.WorkspaceWindowStore
 import dev.codexremote.app.data.WindowConnectionRegistry
+import dev.codexremote.app.data.recentWorkspaceWindowIds
+import dev.codexremote.app.data.reusableWorkspaceWindow
+import dev.codexremote.app.data.defaultWorkspaceWindowTitle
 import dev.codexremote.app.data.isRemoteAbsolutePath
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseServices
@@ -59,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var activeOperations = 0
     private val deletingServiceIds = mutableSetOf<String>()
     private var configurationGeneration = 0
+    private var windowSelectionRevision = 0
     private var connectionJob: Job? = null
     private var operationScope = newOperationScope()
 
@@ -81,10 +85,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return AppState(
             configured = config != null, gatewayConfig = config,
             fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages,
+            windowMode = uiPreferences.windowMode,
             customWindowLimit = uiPreferences.customWindowLimit, customCacheLimit = uiPreferences.customCacheLimit,
             resourceCacheBytes = uiPreferences.resourceCacheBytes,
             theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints,
             windows = saved?.windows.orEmpty(), selectedWindowId = saved?.selectedId,
+            recentWindowIds = saved?.recentIds.orEmpty(),
             selectedServiceId = saved?.windows?.firstOrNull { it.id == saved.selectedId }?.serviceId,
         )
     }
@@ -202,10 +208,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setSection(section: MainSection) {
+        val previous = _state.value.section
         _state.update { current ->
             if (section == MainSection.TERMINAL && current.services.firstOrNull { it.id == current.selectedServiceId }?.supportsTerminal == false) current
             else current.copy(section = section)
         }
+        if (_state.value.section != previous) windowSelectionRevision += 1
         if (section == MainSection.SESSIONS) {
             _state.value.selectedWindowId?.let { id ->
                 _state.value.windows.firstOrNull { it.id == id }?.let { selectService(it.serviceId) }
@@ -220,6 +228,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun clearError() { _state.update { it.copy(error = null) } }
     fun updateFontScale(value: Float) { _state.update { it.copy(fontScale = uiPreferences.setFontScale(value)) } }
     fun setMaxChatPages(value: Int) { _state.update { it.copy(maxChatPages = uiPreferences.setMaxChatPages(value)) } }
+    fun setWindowMode(value: Boolean) {
+        uiPreferences.setWindowMode(value)
+        _state.update { it.copy(windowMode = value) }
+    }
     fun setCustomWindowLimit(value: Boolean) {
         uiPreferences.setCustomWindowLimit(value)
         _state.update { it.copy(customWindowLimit = value) }
@@ -268,6 +280,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectService(serviceId: String) {
         if (_state.value.selectedServiceId == serviceId) return
+        windowSelectionRevision += 1
         _state.update { current ->
             val unsupportedTerminal = current.services.firstOrNull { it.id == serviceId }?.supportsTerminal == false
             current.copy(selectedServiceId = serviceId, remotePath = "", remoteFiles = emptyList(), filePreview = null,
@@ -285,6 +298,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val service = _state.value.services.firstOrNull { it.id == serviceId } ?: return
+        if (service.runtimeState != RuntimeState.CONNECTED) {
+            _state.update { it.copy(error = "服务器离线，连接恢复后再创建窗口") }
+            return
+        }
         val tool = CodingTool.fromId(toolId)
         if (tool == null || !isRemoteAbsolutePath(workspace)) {
             _state.update { it.copy(error = if (tool == null) "尚不支持该工具" else "工作目录必须为远端绝对路径") }
@@ -295,28 +312,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val window = WorkspaceWindow(UUID.randomUUID().toString(), serviceId, workspace,
-            title.trim().ifBlank { if (tool == CodingTool.CODEX) service.name else "${service.name} · ${tool.title}" }, toolId)
+            title.trim().ifBlank { defaultWorkspaceWindowTitle(_state.value.windows, serviceId, toolId, service.name) }, toolId)
+        windowSelectionRevision += 1
         _state.update { it.copy(windows = it.windows + window, selectedWindowId = window.id, section = MainSection.SESSIONS) }
         persistWindows()
         selectService(serviceId)
     }
 
-    /** Opening a server from Services reuses its latest window; file/terminal selection stays independent. */
+    /** Server mode keeps the current tool; window mode opens the server's most recent window. */
     fun openServiceWindow(serviceId: String) {
-        val existing = _state.value.windows.lastOrNull { it.serviceId == serviceId }
+        val current = _state.value
+        val service = current.services.firstOrNull { it.id == serviceId } ?: return
+        val currentTool = current.windows.firstOrNull { it.id == current.selectedWindowId }?.toolId
+            ?.let(CodingTool::fromId) ?: CodingTool.CODEX
+        val toolId = if (current.windowMode) null
+            else currentTool.takeIf { it.supports(service) }?.id ?: CodingTool.CODEX.id
+        openServiceToolWindow(serviceId, toolId)
+    }
+
+    fun switchWindowTool() {
+        val current = _state.value
+        val window = current.windows.firstOrNull { it.id == current.selectedWindowId } ?: return
+        val service = current.services.firstOrNull { it.id == window.serviceId } ?: return
+        val target = if (window.toolId == CodingTool.CLAUDE.id) CodingTool.CODEX else CodingTool.CLAUDE
+        if (target.supports(service)) openServiceToolWindow(service.id, target.id)
+    }
+
+    private fun openServiceToolWindow(serviceId: String, toolId: String?) {
+        val current = _state.value
+        val request = ++windowSelectionRevision
+        val existing = reusableWorkspaceWindow(current.windows, current.recentWindowIds, current.selectedWindowId, serviceId, toolId)
         if (existing != null) {
             selectWindow(existing.id)
             return
         }
-        val service = _state.value.services.firstOrNull { it.id == serviceId } ?: return
-        val config = _state.value.gatewayConfig ?: return
-        val path = officialFrontends.workspace(dev.codexremote.app.data.frontendScope(config, serviceId), service.home.orEmpty())
-        if (isRemoteAbsolutePath(path)) createWindow(serviceId, path)
-        else launchOperation("正在读取工作目录") { createWindow(serviceId, api.home(serviceId)) }
+        val service = current.services.firstOrNull { it.id == serviceId } ?: return
+        val config = current.gatewayConfig ?: return
+        val targetTool = toolId ?: CodingTool.CODEX.id
+        val path = current.windows.firstOrNull { it.id == current.selectedWindowId && it.serviceId == serviceId }?.workspace
+            ?: officialFrontends.workspace(dev.codexremote.app.data.frontendScope(config, serviceId, targetTool), service.home.orEmpty())
+        if (isRemoteAbsolutePath(path)) createWindow(serviceId, path, toolId = targetTool)
+        else launchOperation("正在读取工作目录") {
+            val home = api.home(serviceId)
+            // A late directory response must not steal the selected window or create duplicates.
+            if (request == windowSelectionRevision) createWindow(serviceId, home, toolId = targetTool)
+        }
     }
 
     fun selectWindow(id: String) {
         val window = _state.value.windows.firstOrNull { it.id == id } ?: return
+        windowSelectionRevision += 1
         _state.update { it.copy(selectedWindowId = id, section = MainSection.SESSIONS) }
         persistWindows()
         selectService(window.serviceId)
@@ -333,10 +378,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         api.closeExtensionWindow(window.serviceId, window.id, window.workspace, window.toolId)
         windowConnections.invalidate(id)
         val current = _state.value
-        val index = current.windows.indexOfFirst { it.id == id }
         val remaining = current.windows.filterNot { it.id == id }
-        val selected = if (current.selectedWindowId == id) remaining.getOrNull(index.coerceAtMost(remaining.lastIndex))?.id
-            else current.selectedWindowId
+        val onlineServices = current.services.filter { it.runtimeState == RuntimeState.CONNECTED }.map { it.id }.toSet()
+        val availableIds = remaining.filter { it.serviceId in onlineServices }.map { it.id }.toSet()
+        val selected = if (current.selectedWindowId == id) {
+            recentWorkspaceWindowIds(remaining, current.recentWindowIds, null).firstOrNull { it in availableIds }
+        } else current.selectedWindowId
         _state.update { it.copy(windows = remaining, selectedWindowId = selected,
             windowRevisions = it.windowRevisions - id) }
         persistWindows()
@@ -393,8 +440,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun persistWindows() {
+        _state.update { it.copy(recentWindowIds = recentWorkspaceWindowIds(it.windows, it.recentWindowIds, it.selectedWindowId)) }
         val current = _state.value
-        current.gatewayConfig?.let { windowStore.save(it, current.windows, current.selectedWindowId) }
+        current.gatewayConfig?.let { windowStore.save(it, current.windows, current.selectedWindowId, current.recentWindowIds) }
     }
 
     fun browse(path: String? = null) {
@@ -531,7 +579,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val migrated = services.mapNotNull { officialFrontends.legacyWindow(config, it) }
             val windows = if (migrated.isNotEmpty()) migrated else {
                 val initial = services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }
-                    ?: services.firstOrNull()
                 val directory = initial?.home?.takeIf(::isRemoteAbsolutePath)
                     ?: if (initial?.runtimeState == RuntimeState.CONNECTED) api.home(initial.id) else null
                 if (initial != null && directory != null && isRemoteAbsolutePath(directory)) {
@@ -542,6 +589,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ?: windows.firstOrNull()
             windowStore.save(config, windows, selectedWindow?.id)
             _state.update { it.copy(windows = windows, selectedWindowId = selectedWindow?.id,
+                recentWindowIds = recentWorkspaceWindowIds(windows, emptyList(), selectedWindow?.id),
                 selectedServiceId = selectedWindow?.serviceId ?: it.selectedServiceId) }
         }
         val selected = _state.value.selectedServiceId?.takeIf { id -> services.any { it.id == id } }
@@ -588,6 +636,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resetOperations() {
+        windowSelectionRevision += 1
         windowConnections.clear()
         operationScope.coroutineContext[Job]?.cancel()
         operationScope = newOperationScope()

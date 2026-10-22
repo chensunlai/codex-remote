@@ -45,6 +45,46 @@ class WorkspaceWindowStoreInstrumentedTest {
         assertEquals("{\"draft\":\"claude\"}", store.state(windowStateScope(config, claude), "main"))
     }
 
+    @Test fun explicitlyUnselectedRemainingWindowsStayUnselectedAcrossReload() {
+        val offline = WorkspaceWindow("8b630625-6e07-4636-9642-cf8679d3d915", "offline", "/project", "Offline")
+        WorkspaceWindowStore(context).save(config, listOf(offline), null, listOf(offline.id))
+        val restored = WorkspaceWindowStore(context).load(config)!!
+        assertEquals(listOf(offline), restored.windows)
+        assertNull(restored.selectedId)
+        assertEquals(listOf(offline.id), restored.recentIds)
+    }
+
+    @Test fun missingOrInvalidLegacySelectionFallsBackToAValidWindow() {
+        val id = "8b630625-6e07-4636-9642-cf8679d3d915"
+        listOf("", "\"selectedId\":\"missing-window\",").forEach { selection ->
+            context.getSharedPreferences("workspace-windows-v1", 0).edit().putString(frontendScope(config, ""),
+                """{$selection"windows":[{"id":"$id","serviceId":"linux","workspace":"/existing","title":"Existing"}]}""").commit()
+            assertEquals(id, WorkspaceWindowStore(context).load(config)!!.selectedId)
+        }
+    }
+
+    @Test fun recentToolWindowSurvivesReloadWithoutChangingWindowOrder() {
+        val first = WorkspaceWindow("8b630625-6e07-4636-9642-cf8679d3d915", "linux", "/first", "First")
+        val second = WorkspaceWindow("03dde33c-a3fd-411b-900d-302456a75697", "linux", "/second", "Second")
+        val claude = WorkspaceWindow("f9afac43-570e-4ff1-82db-72fa06614ed1", "linux", "/claude", "Claude", "claude")
+        val windows = listOf(first, second, claude)
+        WorkspaceWindowStore(context).save(config, windows, claude.id, listOf(first.id, second.id))
+        val restored = WorkspaceWindowStore(context).load(config)!!
+        assertEquals(windows, restored.windows)
+        assertEquals(first, reusableWorkspaceWindow(restored.windows, restored.recentIds, restored.selectedId, "linux", "codex"))
+    }
+
+    @Test fun recordsWithoutRecencyKeepSelectedWindowAndIdentity() {
+        val id = "8b630625-6e07-4636-9642-cf8679d3d915"
+        context.getSharedPreferences("workspace-windows-v1", 0).edit().putString(frontendScope(config, ""),
+            """{"selectedId":"$id","windows":[{"id":"$id","serviceId":"linux","workspace":"/existing","title":"Existing"}]}""").commit()
+        val restored = WorkspaceWindowStore(context).load(config)!!
+        assertEquals(id, restored.selectedId)
+        assertEquals(listOf(id), restored.recentIds)
+        assertEquals("codex", restored.windows.single().toolId)
+        assertEquals("/existing", restored.windows.single().workspace)
+    }
+
     @Test fun migrationReusesClientDirectoryAndOpaqueStateWithoutSharingNewWindows() {
         val service = RemoteService("server", "Server", null, "linux", null, null, "/home/user",
             RuntimeState.CONNECTED, null)
