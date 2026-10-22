@@ -89,7 +89,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             customWindowLimit = uiPreferences.customWindowLimit, customCacheLimit = uiPreferences.customCacheLimit,
             resourceCacheBytes = uiPreferences.resourceCacheBytes,
             theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints,
-            windows = saved?.windows.orEmpty(), selectedWindowId = saved?.selectedId,
+            windows = saved?.windows.orEmpty(),
+            // Restore records and drafts, but only open a window after an explicit choice.
+            selectedWindowId = saved?.selectedId?.takeUnless { uiPreferences.windowMode },
             recentWindowIds = saved?.recentIds.orEmpty(),
             selectedServiceId = saved?.windows?.firstOrNull { it.id == saved.selectedId }?.serviceId,
         )
@@ -577,7 +579,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val config = _state.value.gatewayConfig
         if (config != null && windowStore.load(config) == null) {
             val migrated = services.mapNotNull { officialFrontends.legacyWindow(config, it) }
-            val windows = if (migrated.isNotEmpty()) migrated else {
+            val windows = if (migrated.isNotEmpty() || _state.value.windowMode) migrated else {
                 val initial = services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }
                 val directory = initial?.home?.takeIf(::isRemoteAbsolutePath)
                     ?: if (initial?.runtimeState == RuntimeState.CONNECTED) api.home(initial.id) else null
@@ -585,8 +587,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     listOf(WorkspaceWindow(UUID.randomUUID().toString(), initial.id, directory, initial.name))
                 } else emptyList()
             }
-            val selectedWindow = windows.firstOrNull { it.serviceId == _state.value.selectedServiceId }
-                ?: windows.firstOrNull()
+            val selectedWindow = if (_state.value.windowMode) null else {
+                windows.firstOrNull { it.serviceId == _state.value.selectedServiceId } ?: windows.firstOrNull()
+            }
             windowStore.save(config, windows, selectedWindow?.id)
             _state.update { it.copy(windows = windows, selectedWindowId = selectedWindow?.id,
                 recentWindowIds = recentWorkspaceWindowIds(windows, emptyList(), selectedWindow?.id),
@@ -602,7 +605,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (selected != null && services.any { it.id == selected && it.runtimeState == RuntimeState.CONNECTED }) {
             if (_state.value.section == MainSection.FILES && _state.value.remotePath.isBlank()) loadServiceWorkspace(selected)
-        } else if (_state.value.windows.isEmpty()) _state.update { it.copy(section = MainSection.SERVICES) }
+        } else if (!_state.value.windowMode && _state.value.windows.isEmpty()) {
+            _state.update { it.copy(section = MainSection.SERVICES) }
+        }
     }
 
     private suspend fun loadServiceWorkspace(serviceId: String) {

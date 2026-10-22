@@ -378,13 +378,15 @@ private fun WorkspaceWelcome(
                                     }
                                 }
                             }
-                            val offlineWindows = state.windows.count { window -> onlineServers.none { it.id == window.serviceId } }
-                            if (offlineWindows > 0) {
-                                Spacer(Modifier.height(16.dp))
-                                Text("$offlineWindows 个窗口在离线服务器上，连上后会回来", style = typography.bodySmall,
-                                    color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
-                            }
                         }
+                    }
+                    val onlineWindows = state.windows.count { window ->
+                        onlineServers.any { it.id == window.serviceId }
+                    }
+                    if (onlineWindows > 0) {
+                        Spacer(Modifier.height(16.dp))
+                        Text("有 $onlineWindows 个窗口在远端在线，想连接哪一个？", style = typography.bodySmall,
+                            color = colors.onSurfaceVariant, textAlign = TextAlign.Center)
                     }
                 }
             }

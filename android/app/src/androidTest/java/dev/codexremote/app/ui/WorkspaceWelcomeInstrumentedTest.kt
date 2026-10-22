@@ -158,17 +158,23 @@ class WorkspaceWelcomeInstrumentedTest {
         compose.onNodeWithText("Codex").assertIsEnabled()
     }
 
-    @Test fun welcomeKeepsOfflineWindowsAndLargeTextControlsReachable() {
-        showApp(normal.copy(fontScale = 1.3f,
+    @Test fun welcomeCountsOnlyWindowsOnOnlineServersWithLargeText() {
+        val state = showApp(normal.copy(fontScale = 1.3f,
             services = services.map { if (it.id == "windows") it.copy(runtimeState = RuntimeState.DISCONNECTED) else it },
             windows = listOf(
                 WorkspaceWindow("offline-one", "windows", "C:\\Users\\Fixture", "One"),
                 WorkspaceWindow("offline-two", "windows", "C:\\Users\\Fixture", "Two"),
+                WorkspaceWindow("unopened", "linux", "/home/fixture", "Three"),
             )))
         compose.onNodeWithText("今天想做点什么？").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Codex").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Claude").performScrollTo().assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("2 个窗口在离线服务器上，连上后会回来").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("有 1 个窗口在远端在线，想连接哪一个？").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(services = services) }
+        compose.onNodeWithText("有 3 个窗口在远端在线，想连接哪一个？").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(services = services.map { it.copy(runtimeState = RuntimeState.DISCONNECTED) }) }
+        compose.onNodeWithText("服务器都在休息").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("有 3 个窗口在远端在线，想连接哪一个？").assertDoesNotExist()
     }
 
     @Test fun claudePreselectionSkipsAnOfflineLinuxDefault() {
