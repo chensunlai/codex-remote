@@ -61,23 +61,24 @@ jobs:
       - run: npm run typecheck
       - name: Build portable Windows ZIP
         run: node scripts/package-windows.mjs
+      - name: Check installer, upgrade and uninstall
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1
       - name: Install official native Codex for activation check
         shell: pwsh
         run: |
-          $env:CODEX_NON_INTERACTIVE = '1'
-          Invoke-WebRequest 'https://chatgpt.com/codex/install.ps1' -OutFile "$env:RUNNER_TEMP/codex-install.ps1"
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:RUNNER_TEMP/codex-install.ps1"
+          npm install --global @openai/codex
           if ($LASTEXITCODE -ne 0) { throw 'Official Codex installation failed' }
+          $npmRoot = npm root --global
+          $codex = @(Get-ChildItem (Join-Path $npmRoot '@openai') -Filter codex.exe -Recurse)
+          if ($codex.Count -ne 1) { throw 'Expected one native Codex executable in the official npm package' }
+          "CODEX_REMOTE_TEST_CODEX_EXE=$($codex[0].FullName)" >> $env:GITHUB_ENV
       - name: Check Windows process supervision, paths and official activation
         shell: pwsh
         run: |
           $env:CODEX_REMOTE_WINDOWS_SUPERVISOR = Join-Path $PWD 'release/windows/CodexRemote/CodexRemote.exe'
           $env:CODEX_REMOTE_NODE_PATH = Join-Path $PWD 'release/windows/CodexRemote/runtime/node.exe'
-          $env:CODEX_REMOTE_TEST_CODEX_EXE = Join-Path $env:LOCALAPPDATA 'Programs/OpenAI/Codex/bin/codex.exe'
           node scripts/test-windows.mjs
-      - name: Check installer, upgrade and uninstall
-        shell: pwsh
-        run: ./scripts/test-windows-installer.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: windows-agent-x64-test
