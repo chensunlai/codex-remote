@@ -21,12 +21,6 @@ VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两�
   <a href="docs/assets/screenshots/welcome-dark.jpg"><img src="docs/assets/screenshots/welcome-dark.jpg" alt="深色欢迎页" width="24%"></a>
   <a href="docs/assets/screenshots/welcome-light.jpg"><img src="docs/assets/screenshots/welcome-light.jpg" alt="浅色欢迎页" width="24%"></a>
 </p>
-<p align="center">
-  <a href="docs/assets/screenshots/codex-home.jpg"><img src="docs/assets/screenshots/codex-home.jpg" alt="Codex 聊天首页" width="24%"></a>
-  <a href="docs/assets/screenshots/codex-models.jpg"><img src="docs/assets/screenshots/codex-models.jpg" alt="Codex 对话与模型选择" width="24%"></a>
-  <a href="docs/assets/screenshots/claude-home.jpg"><img src="docs/assets/screenshots/claude-home.jpg" alt="Claude 聊天首页" width="24%"></a>
-  <a href="docs/assets/screenshots/claude-chat.jpg"><img src="docs/assets/screenshots/claude-chat.jpg" alt="Claude 对话与工具执行" width="24%"></a>
-</p>
 
 ## 主要功能
 
@@ -36,6 +30,13 @@ VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两�
 - 支持手机图片与文件作为聊天附件，远端文件浏览、预览与下载，以及 Linux 服务器终端。
 - 鼠标模式使依赖悬停的官方控件可在触屏上操作；提供黑色、白色与 Anthropic 暖色主题。
 - Agent 主动连接 Gateway，服务器无需开放入站端口；令牌、服务状态以及 Gateway 与 Codex CLI 的更新均可在 App 中管理。
+
+<p align="center">
+  <a href="docs/assets/screenshots/codex-home.jpg"><img src="docs/assets/screenshots/codex-home.jpg" alt="Codex 聊天首页" width="24%"></a>
+  <a href="docs/assets/screenshots/codex-models.jpg"><img src="docs/assets/screenshots/codex-models.jpg" alt="Codex 对话与模型选择" width="24%"></a>
+  <a href="docs/assets/screenshots/claude-home.jpg"><img src="docs/assets/screenshots/claude-home.jpg" alt="Claude 聊天首页" width="24%"></a>
+  <a href="docs/assets/screenshots/claude-chat.jpg"><img src="docs/assets/screenshots/claude-chat.jpg" alt="Claude 对话与工具执行" width="24%"></a>
+</p>
 
 ## 架构
 
