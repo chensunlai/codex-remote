@@ -17,12 +17,15 @@ VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两�
   <a href="docs/development.md">开发与构建</a>
 </p>
 
-<!-- 截图占位：手机竖屏截图，建议宽度 1080 px、JPG 格式，按下列文件名放入 docs/assets/screenshots/ -->
 <p align="center">
-  <img src="docs/assets/screenshots/welcome.jpg" alt="截图占位：工作页欢迎界面" width="24%">
-  <img src="docs/assets/screenshots/chat-codex.jpg" alt="截图占位：Codex 对话界面" width="24%">
-  <img src="docs/assets/screenshots/chat-claude.jpg" alt="截图占位：Claude Code 对话界面" width="24%">
-  <img src="docs/assets/screenshots/files.jpg" alt="截图占位：文件浏览与预览" width="24%">
+  <a href="docs/assets/screenshots/welcome-dark.jpg"><img src="docs/assets/screenshots/welcome-dark.jpg" alt="深色欢迎页" width="24%"></a>
+  <a href="docs/assets/screenshots/welcome-light.jpg"><img src="docs/assets/screenshots/welcome-light.jpg" alt="浅色欢迎页" width="24%"></a>
+</p>
+<p align="center">
+  <a href="docs/assets/screenshots/codex-home.jpg"><img src="docs/assets/screenshots/codex-home.jpg" alt="Codex 聊天首页" width="24%"></a>
+  <a href="docs/assets/screenshots/codex-models.jpg"><img src="docs/assets/screenshots/codex-models.jpg" alt="Codex 对话与模型选择" width="24%"></a>
+  <a href="docs/assets/screenshots/claude-home.jpg"><img src="docs/assets/screenshots/claude-home.jpg" alt="Claude 聊天首页" width="24%"></a>
+  <a href="docs/assets/screenshots/claude-chat.jpg"><img src="docs/assets/screenshots/claude-chat.jpg" alt="Claude 对话与工具执行" width="24%"></a>
 </p>
 
 ## 主要功能
