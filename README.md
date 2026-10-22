@@ -6,6 +6,8 @@
 
 在 Android 上使用官方 Codex 与 Claude Code VS Code 插件。**直接运行官方 `extension.js` 并加载官方聊天界面，不重写会话、模型选择、审批或多端协调逻辑。**
 
+**拥有与官方几乎完全一致的丝滑使用体验，包括使用中转、可选模型配置、审批等等功能**
+
 VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两部分组成，二者仅通过消息通信。Codex Remote 在服务器上提供实现 VS Code API 的扩展宿主并加载官方 `extension.js`，手机端 WebView 加载同一插件包中的官方前端，项目本身只负责宿主、连接与传输。插件文件保持原样，官方更新后更换插件版本即可同步界面与功能。
 
 <p align="center">
