@@ -41,6 +41,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 Name: "{app}\data"; Flags: uninsneveruninstall
 
 [Files]
+Source: "installer-user.ps1"; Flags: dontcopy
 Source: "{#StageDir}\*"; DestDir: "{app}"; Excludes: "data\*,*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -76,7 +77,7 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
-  DataDir, SIDFile, Script, SID: String;
+  DataDir, SIDFile, Script, SID, PipeName, PowerShell: String;
   SIDText: AnsiString;
   Code, I: Integer;
 begin
@@ -85,15 +86,37 @@ begin
   { Grant write access only to the user who launched Setup, even if UAC used
     another administrator's credentials. Program files retain their normal ACL. }
   SIDFile := ExpandConstant('{tmp}\data-owner.txt');
-  Script := SIDFile;
-  StringChangeEx(Script, '''', '''''', True);
-  Script := '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value | ' +
-    'Set-Content -LiteralPath ''' + Script + ''' -Encoding ASCII';
-  if not ExecAsOriginalUser(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+  DeleteFile(SIDFile);
+  DeleteFile(SIDFile + '.error');
+  PipeName := 'CodexRemote-Setup-' + ExtractFileName(ExpandConstant('{tmp}'));
+  PowerShell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  ExtractTemporaryFile('installer-user.ps1');
+  { Only the elevated helper touches {tmp}. Authenticate the original user
+    through a local pipe instead of making Setup's temporary files writable. }
+  if not Exec(PowerShell,
+      '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
+      ExpandConstant('{tmp}\installer-user.ps1') + '" -PipeName "' + PipeName +
+      '" -OutputFile "' + SIDFile + '"',
+      ExpandConstant('{sys}'), SW_HIDE, ewNoWait, Code) then begin
+    Result := 'Cannot start user identification helper: ' + SysErrorMessage(Code);
+    Exit;
+  end;
+  Script := '$ErrorActionPreference = ''Stop''; ' +
+    '$p = New-Object System.IO.Pipes.NamedPipeClientStream(''.'', ''' + PipeName +
+    ''', [System.IO.Pipes.PipeDirection]::InOut, [System.IO.Pipes.PipeOptions]::Asynchronous, ' +
+    '[System.Security.Principal.TokenImpersonationLevel]::Impersonation); ' +
+    'try { $p.Connect(30000); $p.WriteByte(1); $p.Flush(); ' +
+    '$b = New-Object byte[] 1; $r = $p.ReadAsync($b, 0, 1); ' +
+    'if (!$r.Wait(30000) -or $r.Result -ne 1 -or $b[0] -ne 1) { exit 1 } ' +
+    '} finally { $p.Dispose() }';
+  if not ExecAsOriginalUser(PowerShell,
       '-NoProfile -NonInteractive -Command "' + Script + '"',
-      '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) or
+      ExpandConstant('{sys}'), SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) or
       not LoadStringFromFile(SIDFile, SIDText) then begin
-    Result := 'Cannot identify the current user for the local data directory.';
+    Log('Original-user identification failed, code ' + IntToStr(Code));
+    if LoadStringFromFile(SIDFile + '.error', SIDText) then
+      Log('User identification helper: ' + String(SIDText));
+    Result := 'Cannot identify the installing user. Please retry Setup with /LOG and check the installation log.';
     Exit;
   end;
   SID := Trim(String(SIDText));

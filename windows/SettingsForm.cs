@@ -142,7 +142,7 @@ internal sealed class SettingsForm : Form
         using var dialog = new OpenFileDialog
         {
             Title = "选择已安装的 Codex", Filter = "Codex 启动文件 (*.exe;*.cmd;*.bat)|*.exe;*.cmd;*.bat",
-            CheckFileExists = true, FileName = codex.Text
+            CheckFileExists = true, FileName = AgentSettings.ExpandExecutablePath(codex.Text)
         };
         if (dialog.ShowDialog(this) == DialogResult.OK) codex.Text = dialog.FileName;
     }

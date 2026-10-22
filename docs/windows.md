@@ -8,6 +8,8 @@ Windows x64 首版使用原生 Codex，不依赖 WSL。Gateway 与 Linux 共用�
 
 配置窗口依次扫描当前进程的 PATH，以及几个常见命令目录：`%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`、`%APPDATA%\npm`、`%ProgramFiles%\nodejs`，查找 `codex.exe`、`codex.cmd` 和 `codex.bat` 并去重。只找到一个时自动填入；找到多个时需要从列表选择一个，也可以输入其他启动文件的完整路径；没有找到时要求手动选择或输入。已保存的手动路径始终优先，失效时提示修正，不静默换用其他安装。保存后记录所选文件的绝对路径。
 
+手动输入和扫描目录均支持 `%LOCALAPPDATA%`、`%USERPROFILE%` 等 Windows 环境变量；保存时展开为绝对路径。
+
 EXE 直接运行；CMD、BAT 通过系统命令解释器启动。自定义脚本必须将参数、标准输入输出和退出码原样交给 Codex，不能向 App Server 的标准输出写入欢迎文字等额外内容。
 
 如果在托盘程序运行期间修改了 PATH，请退出并重新启动托盘程序，使其取得新的环境变量。

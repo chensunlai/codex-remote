@@ -154,6 +154,8 @@ internal static class SelfTest
     {
         var directory = Path.Combine(Path.GetTempPath(), "Codex PATH 测试 " + Guid.NewGuid());
         var previousDirectory = Environment.CurrentDirectory;
+        const string pathVariable = "CODEX_REMOTE_PATH_DISCOVERY_TEST";
+        var previousVariable = Environment.GetEnvironmentVariable(pathVariable);
         try
         {
             var first = Directory.CreateDirectory(Path.Combine(directory, "first 空格")).FullName;
@@ -189,6 +191,16 @@ internal static class SelfTest
             File.WriteAllText(manual, "manual");
             Require(AgentSettings.ResolveCodexExecutable($"\"{manual}\"", candidates) == manual,
                 "manual quoted path need not appear in discoveries");
+            Environment.SetEnvironmentVariable(pathVariable, directory);
+            var expandedManual = $"\"%{pathVariable}%\\自定义 Codex.cmd\"";
+            Require(AgentSettings.ResolveCodexExecutable(expandedManual, candidates) == manual,
+                "manual paths expand environment variables before validation");
+            Require(AgentSettings.DiscoverCodexExecutables($"\"%{pathVariable}%\\first 空格\";{first}",
+                new[] { $"%{pathVariable}%\\default" }).SequenceEqual(new[] { executable, command, fallbackExecutable }),
+                "PATH and default directories expand variables and deduplicate resolved paths");
+            Environment.SetEnvironmentVariable(pathVariable, "relative");
+            Require(AgentSettings.DiscoverCodexExecutables($"%{pathVariable}%", Array.Empty<string>()).Count == 0,
+                "expanded relative paths must not search the working directory");
             Reject(() => AgentSettings.ResolveCodexExecutable(Path.Combine(directory, "missing.exe"), candidates));
             Reject(() => AgentSettings.ResolveCodexExecutable(Path.Combine(second, "codex.exe"), candidates));
             Require(AgentSettings.DiscoverCodexExecutables(";relative;", new[] { fallback }).SequenceEqual(new[] { fallbackExecutable }),
@@ -203,6 +215,7 @@ internal static class SelfTest
         finally
         {
             Environment.CurrentDirectory = previousDirectory;
+            Environment.SetEnvironmentVariable(pathVariable, previousVariable);
             Directory.Delete(directory, recursive: true);
         }
     }

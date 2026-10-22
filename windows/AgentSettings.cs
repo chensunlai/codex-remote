@@ -62,7 +62,7 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
 
     public static string ResolveCodexExecutable(string input, IReadOnlyList<string>? candidates = null)
     {
-        var executable = input.Trim().Trim('"');
+        var executable = ExpandExecutablePath(input);
         if (executable.Length == 0 || new[] { "codex", "codex.exe", "codex.cmd", "codex.bat" }
             .Contains(executable, StringComparer.OrdinalIgnoreCase))
         {
@@ -88,7 +88,7 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
             .Concat(defaultDirectories ?? DefaultCodexDirectories());
         foreach (var entry in directories)
         {
-            var directory = entry.Trim().Trim('"');
+            var directory = ExpandExecutablePath(entry);
             if (!Path.IsPathFullyQualified(directory)) continue;
             foreach (var file in new[] { "codex.exe", "codex.cmd", "codex.bat" })
             {
@@ -103,6 +103,9 @@ internal sealed record AgentSettings(string GatewayUrl, string Token, string Nam
         }
         return candidates;
     }
+
+    internal static string ExpandExecutablePath(string value) =>
+        Environment.ExpandEnvironmentVariables(value.Trim().Trim('"'));
 
     private static IEnumerable<string> DefaultCodexDirectories()
     {
