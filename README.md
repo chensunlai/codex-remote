@@ -134,6 +134,10 @@ Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装
 
 具体配置见[网关连接状态与实验性入口](docs/usage.md#网关连接状态与实验性入口)。
 
+## 致谢
+
+感谢 [LINUX DO](https://linux.do/) 社区提供的交流平台与反馈。
+
 ## 声明
 
 本项目为第三方项目，与 OpenAI、Anthropic 无隶属关系。Codex、Claude Code 及相关商标归各自所有者所有。
