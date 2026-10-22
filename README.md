@@ -93,7 +93,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 程序默认安装到 **`~/.local/codex-remote`**。首次启动时依次填写 Gateway 地址、服务名称、访问令牌（与 App 使用的 Gateway Key 一致）及 Codex 路径，配置保存在安装目录的 `agent.json`；重新配置时添加 `--configure`。
 
-安装器不为 Agent 创建后台服务，可使用 tmux 托管：
+安装器不为 Agent 创建后台服务，可以自行决定用什么进行托管，譬如使用 tmux：
 
 ```bash
 tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
