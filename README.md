@@ -4,9 +4,9 @@
 
 <h1 align="center">Codex Remote</h1>
 
-把官方 Codex VS Code 插件带到 Android。**直接复用官方聊天界面和 `extension.js`，不重写会话、模型选择、审批或多端协调逻辑。**
+在 Android 上使用官方 Codex 与 Claude Code VS Code 插件。**直接运行官方 `extension.js` 并加载官方聊天界面，不重写会话、模型选择、审批或多端协调逻辑。**
 
-我们负责手机宿主、连接和传输，聊天行为由官方插件与 Codex App Server 处理。前端和扩展来自同一份官方插件包，文件保持原样，可独立更新；无需为每次界面变化重新实现一套聊天客户端。
+VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两部分组成，二者仅通过消息通信。Codex Remote 在服务器上提供实现 VS Code API 的扩展宿主并加载官方 `extension.js`，手机端 WebView 加载同一插件包中的官方前端，项目本身只负责宿主、连接与传输。插件文件保持原样，官方更新后更换插件版本即可同步界面与功能。
 
 <p align="center">
   <a href="https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk"><strong>下载 Android APK</strong></a> ·
@@ -15,36 +15,48 @@
   <a href="docs/development.md">开发与构建</a>
 </p>
 
+<!-- 截图占位：手机竖屏截图，建议宽度 1080 px、JPG 格式，按下列文件名放入 docs/assets/screenshots/ -->
 <p align="center">
-  <a href="docs/assets/screenshots/home-anthropic.jpg"><img src="docs/assets/screenshots/home-anthropic.jpg" alt="聊天首页" width="32%"></a>
-  <a href="docs/assets/screenshots/chat-dark.jpg"><img src="docs/assets/screenshots/chat-dark.jpg" alt="对话界面" width="32%"></a>
-  <a href="docs/assets/screenshots/files-light.jpg"><img src="docs/assets/screenshots/files-light.jpg" alt="文件浏览" width="32%"></a>
+  <img src="docs/assets/screenshots/welcome.jpg" alt="截图占位：工作页欢迎界面" width="24%">
+  <img src="docs/assets/screenshots/chat-codex.jpg" alt="截图占位：Codex 对话界面" width="24%">
+  <img src="docs/assets/screenshots/chat-claude.jpg" alt="截图占位：Claude Code 对话界面" width="24%">
+  <img src="docs/assets/screenshots/files.jpg" alt="截图占位：文件浏览与预览" width="24%">
 </p>
+
+## 主要功能
+
+- 会话与历史、模型切换、命令与文件改动审批、设置均由官方插件处理；服务器上 Codex 与 Claude 的配置（包括中转与第三方 provider）照常生效。
+- 支持多个工作窗口，Codex 与 Claude Code 可同时打开多个项目，每个窗口使用独立的扩展宿主与后端；最近访问的窗口驻留内存，切换时无需重新加载。
+- 任务在服务器上执行，手机锁屏、切换到后台或短暂断线不会中断已接受的任务。
+- 支持手机图片与文件作为聊天附件，远端文件浏览、预览与下载，以及 Linux 服务器终端。
+- 鼠标模式使依赖悬停的官方控件可在触屏上操作；提供黑色、白色与 Anthropic 暖色主题。
+- Agent 主动连接 Gateway，服务器无需开放入站端口；令牌、服务状态以及 Gateway 与 Codex CLI 的更新均可在 App 中管理。
 
 ## 架构
 
-![Codex Remote 架构：Android App 经 Gateway 连接运行官方扩展与 Codex App Server 的 Agent](docs/assets/diagrams/architecture.svg)
+![Codex Remote 架构：Android App 与 Agent 均连接 Gateway，Agent 为每个工作窗口运行独立的扩展宿主、官方插件与后端](docs/assets/diagrams/architecture.svg)
 
 | 组件 | 部署位置与职责 |
 | --- | --- |
-| App | 手机端；显示官方界面，补充附件选择、文件预览、鼠标模式等能力 |
-| Gateway | 手机和 Agent 都能访问的服务器；默认端口 `6767`，不解释官方聊天消息 |
-| Agent | 已安装并登录 Codex CLI 的服务器；运行官方扩展宿主，连接本机 App Server |
+| App | 手机端；显示官方前端，提供工作窗口、附件选择、文件预览、终端与鼠标模式 |
+| Gateway | 手机与 Agent 均可访问的服务器；默认端口 `6767`，负责令牌鉴权与路由，不解析聊天内容 |
+| Agent | 运行 Codex 或 Claude Code 的服务器；从 VS Code Marketplace 下载官方插件，为每个工作窗口运行扩展宿主及其后端 |
 
-Gateway 和 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，无需单独开放入站端口；一个 Gateway 可以接入多个 Agent。**App 和 Agent 使用同一个 Gateway 访问令牌，才能看到对应服务器。**
+Gateway 与 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，一个 Gateway 可以接入多个 Agent。**App 与 Agent 使用同一个 Gateway 访问令牌时，App 中才会显示对应服务器。**
 
-宿主实现插件所需的公开 VS Code API，不读取前端私有导出，不自行解析 Codex 会话文件。主题与触屏适配由宿主处理；当前不提供代码编辑、编辑器上下文、代码跳转或登录回调，也不支持 WSL。官方插件更新仍可能带来新的宿主能力要求。
+宿主仅实现插件所需的公开 VS Code API，不读取前端私有导出，也不解析会话文件。接入新的 Coding Agent 时，登记其插件包与侧边栏视图并补充所需的宿主 API 即可，Claude Code 即按此方式接入。当前不提供代码编辑、编辑器上下文、代码跳转与登录回调，也不支持 WSL。
 
-## 快速使用
+## 快速开始
 
-准备好以下环境：
+运行环境：
 
-- **Gateway / Linux Agent**：glibc Linux，支持 x86_64 和 arm64。
-- **Agent**：运行用户已安装并登录 Codex CLI，能够执行 `codex`。安装包自带 Node.js 和扩展宿主，无需另装 Node.js。
-- **Windows Agent**：原生 Windows x64，使用安装程序或 ZIP 便携包；与 Linux 共用 Gateway。
-- **App**：Android 8.0 及以上，系统 WebView 可用；默认使用 Gateway 的 **HTTPS 地址**。
+- **Gateway / Linux Agent**：glibc Linux，支持 x86_64 与 arm64。
+- **Agent**：运行用户已安装并登录 Codex CLI；使用 Claude Code 时，需在同一用户下完成 Claude 认证。安装包自带 Node.js 与扩展宿主。
+- **App**：Android 8.0 及以上，系统 WebView 可用。
 
-### 1. Gateway
+已有 Gateway 与访问令牌时，可直接从第 2 步开始。
+
+### 1. 部署 Gateway
 
 在 Gateway 服务器执行：
 
@@ -53,30 +65,22 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
   | sudo bash -s -- gateway --systemd
 ```
 
-默认安装到 **`/opt/codex-remote`**，创建并启动 systemd 服务。安装前需有 `curl`、`flock` 等系统工具。
+程序默认安装到 **`/opt/codex-remote`**，并创建、启动 systemd 服务；安装前需具备 `curl`、`flock` 等系统工具。App 默认通过 HTTPS 访问 Gateway，通常需要在 Gateway 前配置 nginx 等反向代理。
 
-查看运行状态和首次生成的管理员令牌：
+查看运行状态与首次生成的管理员令牌：
 
 ```bash
 sudo systemctl status codex-remote-gateway
 sudo cat /opt/codex-remote/data/api-token
 ```
 
-这个令牌就是 App 中的 **Gateway Key**，不是 OpenAI API Key。使用它连接 App 后，可以在手机上创建和管理令牌；新建令牌的明文只显示一次。
+该令牌即 App 中的 **Gateway Key**，并非 OpenAI API Key。使用该令牌连接 App 后，可在手机上创建与管理其他令牌；也可在服务器上执行 `sudo /opt/codex-remote/codex-remote-gateway` 打开交互式管理界面。不使用 systemd 时，省略安装命令中的 `--systemd`，再执行 `sudo /opt/codex-remote/codex-remote-gateway start` 启动服务。
 
-也可以在服务器打开交互式管理界面：
-
-```bash
-sudo /opt/codex-remote/codex-remote-gateway
-```
-
-安装脚本按参数安装，交互界面由程序提供。不使用 systemd 时，省略安装命令中的 `--systemd`，再执行 `sudo /opt/codex-remote/codex-remote-gateway start` 启动服务。
-
-### 2. Agent
+### 2. 部署 Agent
 
 #### Linux
 
-在运行 Codex 的服务器上，**以已登录 Codex 的用户**执行：
+以已登录 Codex 的用户执行：
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
@@ -85,59 +89,45 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 ~/.local/codex-remote/codex-remote-agent
 ```
 
-默认安装到 **`~/.local/codex-remote`**。首次启动按提示填写：
+程序默认安装到 **`~/.local/codex-remote`**。首次启动时依次填写 Gateway 地址、服务名称、访问令牌（与 App 使用的 Gateway Key 一致）及 Codex 路径，配置保存在安装目录的 `agent.json`；重新配置时添加 `--configure`。
 
-| 配置项 | 示例或说明 |
-| --- | --- |
-| Gateway 地址 | `https://codex.example.com` |
-| 服务名称 | App 中显示的名称，如 `开发服务器` |
-| 访问令牌 | 与 App 使用的 Gateway Key 一致 |
-| Codex 路径 | 默认 `codex`，也可指定可执行文件的绝对路径 |
-
-配置保存在安装目录的 `agent.json`，后续启动直接使用；需要重新配置时加 `--configure`。
-
-安装器不为 Agent 创建后台服务。完成配置并退出前台进程后，可用 tmux 托管：
+安装器不为 Agent 创建后台服务，可使用 tmux 托管：
 
 ```bash
 tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
 ```
 
-按 `Ctrl+B`，再按 `D` 离开；`tmux attach -t codex-remote-agent` 返回。不要同时运行同一配置的多个 Agent；tmux 不会随服务器重启自动恢复。
+同一配置不应同时运行多个 Agent。
 
 #### Windows
 
-先在 Windows 上安装 Codex CLI，完成登录和首次运行。从[版本发布](https://github.com/chensunlai/codex-remote/releases)下载 `codex-remote-windows-x64-setup.exe`，按向导安装；默认目录为 **`C:\Program Files\CodexRemote`**，可自行修改。安装包自带 Node.js 和 .NET，无需另装。
+Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装并登录 Codex CLI，再从[版本发布](https://github.com/chensunlai/codex-remote/releases)下载 `codex-remote-windows-x64-setup.exe` 或 `codex-remote-windows-x64.zip` 便携包；安装包自带 Node.js 与 .NET。
 
-1. 填写 Gateway 地址、访问令牌和服务器名称。
-2. 程序自动扫描 PATH 和常见安装目录；找到多个 Codex 时选择一个，也可手动指定 `.exe`、`.cmd` 或 `.bat`。
-3. 保存并启动，在手机 App 中选择这台服务器。
+首次运行时填写 Gateway 地址、访问令牌与服务器名称，并选择自动检测到的 Codex 或手动指定其启动文件。程序关闭窗口后驻留系统托盘，可在托盘中启动、停止、修改配置、设置登录后自动启动及检查更新；配置、日志与插件缓存保存在安装目录的 `data` 文件夹。Windows 当前支持聊天与文件操作，不提供终端与 Claude Code，详见 [Windows 使用说明](docs/windows.md)。
 
-关闭窗口会收起到右下角托盘，可从托盘启动、停止、修改配置，也可开启 **“登录后自动启动”**。配置、日志和插件缓存统一保存在 **安装目录下的 `data` 文件夹**。
+### 3. 安装 Android App
 
-通过设置窗口或托盘菜单中的 **“检查更新”** 下载并安装新版 Agent，配置会保留。也提供 `codex-remote-windows-x64.zip` 便携包，完整解压后双击 `CodexRemote.exe` 即可使用。
+安装 [Android APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk) 后：
 
-Windows 支持聊天和文件操作，手机端的终端入口置灰；Codex CLI 由用户自行更新。首次使用需配套更新 Gateway 和 Android App，详见 [Windows 使用说明](docs/windows.md)。
+1. 填写 Gateway 的 HTTPS 地址与同一访问令牌。
+2. 在工作页新建窗口，选择在线服务器、工具（Codex 或 Claude Code）与工作目录。
+3. 首次使用某个工具时，点击 **“检查并下载 Codex”** 或 **“检查并下载 Claude Code”**，等待官方插件下载与初始化完成。
 
-### 3. Android App
+官方插件由 Agent 从 Marketplace 下载，手机加载同一版本的前端资源。工作目录默认为 Agent 用户的主目录。
 
-安装 [Android APK](https://github.com/chensunlai/codex-remote/releases/latest/download/codex-remote-android.apk)，然后：
+> **自定义安装目录或升级旧安装：** 在安装命令中添加 `--install-dir /原安装目录`，配置与数据会保留；Agent 更新后需手动重启。手动部署 Agent 时，二进制与 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
 
-1. 填写 Gateway HTTPS 地址和同一访问令牌。
-2. 在“服务器”页面选择在线 Agent。
-3. 点击 **“检查并下载官方前端”**，等待插件下载与初始化完成。
-4. 用右上角文件夹按钮选择工作目录，再打开或新建会话。
-
-工作目录按服务器保存，默认是 Agent 用户的主目录。官方插件由 Agent 从 Marketplace 下载，手机加载同一版本的 WebView 资源。
-
-> **安装到其他目录或升级旧安装：** 安装命令添加 `--install-dir /原安装目录`，配置和数据会保留；Agent 更新后需自行重启。手动部署 Agent 时，二进制和 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
-
-使用 Sakura FRP 部署内外网访问，可参考 [Codex Remote 部署 Skill](skills/codex-remote-sakurafrp/SKILL.md)，包含隧道、HTTPS、systemd 与 App 多入口配置。
+使用 Sakura FRP 实现内外网访问时，可参考 [Codex Remote 部署 Skill](skills/codex-remote-sakurafrp/SKILL.md)，其中包含隧道、HTTPS、systemd 与 App 多入口配置。
 
 ## 实验性功能
 
-在 **App 设置 → 网关连接 → 实验性功能** 中按需开启，默认关闭：
+以下选项位于 **App 设置 → 网关连接 → 实验性功能**，默认关闭：
 
-- **允许 HTTP 网关**：适合手机通过可信局域网 IP 直连 Gateway，无需为内网地址配置 HTTPS。HTTP 会明文传输令牌和会话，仅用于可信网络。
-- **多个网关入口**：适合 Gateway 部署在内网、同时通过穿透或域名提供公网访问的场景。将内网地址排在前面、公网地址作为兜底，可减少延迟和穿透流量；连接、网络变化或重连时按顺序选择，稳定连接不主动切换。内网地址使用 HTTP 时，还需开启上面的选项。
+- **允许 HTTP 网关**：用于手机通过可信局域网地址直连 Gateway。HTTP 明文传输令牌与会话，仅适用于可信网络。
+- **多个网关入口**：为同一 Gateway 配置内网、公网等多个地址，连接时按顺序选择，以降低延迟与穿透流量。
 
 具体配置见[网关连接状态与实验性入口](docs/usage.md#网关连接状态与实验性入口)。
+
+## 声明
+
+本项目为第三方项目，与 OpenAI、Anthropic 无隶属关系。Codex、Claude Code 及相关商标归各自所有者所有。
