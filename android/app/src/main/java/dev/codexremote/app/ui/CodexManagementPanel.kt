@@ -101,7 +101,7 @@ internal fun CodexManagementPanel(service: RemoteService, api: GatewayApi) {
             TextButton(onClick = { refresh += 1 }, enabled = !busy) { Text("刷新") }
         }
         if (service.platform == "win32") {
-            Text("Windows Codex CLI 请使用官方安装器手动更新。", style = MaterialTheme.typography.bodySmall)
+            Text("Windows Codex CLI 请通过原安装方式手动更新。", style = MaterialTheme.typography.bodySmall)
         } else if (current != null && !current.optBoolean("updateSupported", false)) {
             Text("当前 CLI 不支持 update 命令。", style = MaterialTheme.typography.bodySmall)
         }

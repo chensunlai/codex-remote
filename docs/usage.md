@@ -26,7 +26,7 @@
 
 工作页默认使用窗口模式。顶部显示工具图标和窗口名称，点击展开按最近访问排序的窗口下拉表，只显示在线服务器的窗口；服务器恢复在线后，其窗口会重新出现。点击条目切换，右侧“×”直接关闭该窗口，底部“＋ 新建”打开创建弹窗。右上角菜单可重命名或关闭当前窗口。
 
-同一服务器可以打开多个窗口，每个窗口使用独立的官方扩展宿主及其管理的后端，窗口内部仍可照常切换会话。新建时选择服务器、工具和工作目录；Linux 支持 Codex 和 Claude Code，Windows 当前支持 Codex。默认名称使用服务器名，同服务器、同工具的后续窗口在名称中加入数字以避免默认重名；名称输入框留空时浅色预览默认名称，也可自行填写或改成重名。工具在创建后固定，窗口顺序及当前窗口在 App 重启后保留，其余窗口访问时再加载。
+同一服务器可以打开多个窗口，每个窗口使用独立的官方扩展宿主及其管理的后端，窗口内部仍可照常切换会话。新建时选择服务器、工具和工作目录；Linux 和 macOS 支持 Codex 和 Claude Code，Windows 当前支持 Codex；macOS、Windows 仍为实验性平台。默认名称使用服务器名，同服务器、同工具的后续窗口在名称中加入数字以避免默认重名；名称输入框留空时浅色预览默认名称，也可自行填写或改成重名。工具在创建后固定，窗口顺序及当前窗口在 App 重启后保留，其余窗口访问时再加载。
 
 开启实验性功能中的“旧版服务器模式”后，通过顶部服务器名称切换服务器。名称右侧的图标表示将要切换到的工具，点击可在 Codex／Claude 之间切换；两者各自保留独立 WebView 和工作目录，再次切换会优先恢复上次使用的页面。切换显示模式不会新建、关闭或重启后端。
 
@@ -54,7 +54,7 @@ Agent 保留最多 `48 MiB` 的未确认事件用于断线恢复，超过缓存�
 
 官方设置等独立面板显示在聊天页上层。App 返回箭头和 Android 返回操作可关闭上层面板；键盘、原生弹窗和未保存设置的确认窗口优先处理返回。
 
-### Claude Code（Linux）
+### Claude Code（Linux / macOS）
 
 新建窗口时选择 **Claude Code**。首次使用沿用官方插件下载入口，安装完整的 `Anthropic.claude-code` 平台包；默认使用插件附带的 Claude 运行程序，不要求安装 Codex。请先在运行 Agent 的同一用户下配置好 Claude 登录或认证，本版本不提供手机浏览器登录回调。
 
@@ -210,7 +210,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 
 ### Agent 多地址接入
 
-同一个 Gateway 的内网与公网入口可以同时配置，内网地址放在前面。Linux 首次配置或 `--configure` 的 Gateway 输入框、Windows 设置的 Gateway 输入框都支持逗号分隔：
+同一个 Gateway 的内网与公网入口可以同时配置，内网地址放在前面。Linux / macOS 首次配置或 `--configure` 的 Gateway 输入框、Windows 设置的 Gateway 输入框都支持逗号分隔：
 
 ```text
 http://192.168.1.20:6767,https://codex.example.com
@@ -230,6 +230,20 @@ http://192.168.1.20:6767,https://codex.example.com
 启动及每次断线重连都从第一个地址尝试。多地址模式下每个地址的 WebSocket 握手最多等待 5 秒；失败立即尝试下一个，全部失败才进入 1～30 秒退避重试。单地址沿用原来的 20 秒握手等待。连接稳定时不定时探测、不主动抢切内网；要立即切换可重启 Agent（会中断其管理的任务）。协议不兼容、消息超限等确定性错误仍停止重试并提示，不靠换地址绕过。
 
 地址必须指向同一个 Gateway，使用同一个 Token。切换连接不会重启 Agent 中的官方扩展或 Codex；不修改会话协议，不重发未确认的用户操作。App 页面是否需要重新同步仍取决于现有缓存与恢复机制。
+
+## 实验性平台：macOS Agent
+
+macOS 采用与 Linux 相同的命令行用法，提供 Intel（`darwin-x64`）和 Apple Silicon（`darwin-arm64`）发行包；Gateway 继续运行在 Linux。使用 Codex 时先在同一用户下安装并登录 Codex CLI，确认终端中 `codex --version` 可执行；Claude 使用官方插件附带程序，认证也由用户预先配置。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
+  | bash -s -- agent
+~/.local/codex-remote/codex-remote-agent
+```
+
+首次运行填写 Gateway、Token 和服务器名称。配置、插件缓存和配套 Node.js 均在 `~/.local/codex-remote/`，也可通过 `--install-dir` 安装到其他位置；命令参数、文件传输、多窗口、断线重连和远端终端沿用现有功能。直接运行的 Agent 随终端进程存活，不提供菜单栏应用、自启动或后台托管；如需后台运行，由用户按现有命令行习惯管理。
+
+更新时再次运行安装器，随后手动重新启动 Agent；安装本身不会停止正在运行的进程。原生 macOS CI 校验两种架构的安装、运行时、官方插件激活及传输，真实登录后的会话与审批仍需在 Mac 上验收。
 
 ## 常见问题
 

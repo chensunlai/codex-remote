@@ -199,8 +199,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         }
     }
 
-    LaunchedEffect(scopeKey, service.runtimeState) {
-        if (!supported) { error = "Claude Code 首版仅支持 Linux Agent"; return@LaunchedEffect }
+    LaunchedEffect(scopeKey, service.runtimeState, supported) {
+        if (!supported) { error = "Claude 需要 Linux Agent，或支持 Claude 的新版 macOS Agent"; return@LaunchedEffect }
         try { extension = viewModel.gatewayApi.extensionStatus(service.id, window.toolId); error = extension?.version("error") }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.message }

@@ -123,7 +123,7 @@ internal fun NewWorkspaceWindowDialog(state: AppState, viewModel: MainViewModel,
                         }
                     }
                 }
-                if (service != null && !tool.supports(service)) Text("Claude Code 首版仅支持 Linux Agent。",
+                if (service != null && !tool.supports(service)) Text("Claude 需要 Linux Agent，或支持 Claude 的新版 macOS Agent。",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 CodexTextField(title, { title = it.take(80) }, label = "窗口名称", modifier = Modifier.fillMaxWidth(),
                     placeholder = service?.let { defaultWorkspaceWindowTitle(state.windows, it.id, tool.id, it.name) }.orEmpty())

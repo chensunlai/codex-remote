@@ -105,11 +105,7 @@ tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
 
 同一配置不应同时运行多个 Agent。
 
-#### Windows
-
-Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装并登录 Codex CLI，再从[版本发布](https://github.com/chensunlai/codex-remote/releases)下载 `codex-remote-windows-x64-setup.exe` 或 `codex-remote-windows-x64.zip` 便携包；安装包自带 Node.js 与 .NET。
-
-首次运行时填写 Gateway 地址、访问令牌与服务器名称，并选择自动检测到的 Codex 或手动指定其启动文件。程序关闭窗口后驻留系统托盘，可在托盘中启动、停止、修改配置、设置登录后自动启动及检查更新；配置、日志与插件缓存保存在安装目录的 `data` 文件夹。Windows 当前支持聊天与文件操作，不提供终端与 Claude Code，详见 [Windows 使用说明](docs/windows.md)。
+Windows 与 macOS Agent 见下方[实验性功能](#实验性功能)。
 
 ### 3. 安装 Android App
 
@@ -133,6 +129,27 @@ Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装
 - **多个网关入口**：为同一 Gateway 配置内网、公网等多个地址，连接时按顺序选择，以降低延迟与穿透流量。
 
 具体配置见[网关连接状态与实验性入口](docs/usage.md#网关连接状态与实验性入口)。
+
+### Windows Agent（实验性）
+
+Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装并登录 Codex CLI，再从[版本发布](https://github.com/chensunlai/codex-remote/releases)下载 `codex-remote-windows-x64-setup.exe` 或 `codex-remote-windows-x64.zip` 便携包；安装包自带 Node.js 与 .NET。
+
+首次运行时填写 Gateway 地址、访问令牌与服务器名称，并选择自动检测到的 Codex 或手动指定其启动文件。程序关闭窗口后驻留系统托盘，可在托盘中启动、停止、修改配置、设置登录后自动启动及检查更新；配置、日志与插件缓存保存在安装目录的 `data` 文件夹。Windows 当前支持聊天与文件操作，不提供终端与 Claude Code，详见 [Windows 使用说明](docs/windows.md)。
+
+### macOS Agent（实验性）
+
+支持 Apple Silicon（arm64）与 Intel（x64），用法与 Linux 命令行 Agent 一致，不提供菜单栏程序。Gateway 继续部署在 Linux 上。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
+  | bash -s -- agent
+
+~/.local/codex-remote/codex-remote-agent
+```
+
+安装器按架构下载 Agent 与配套 Node.js，默认放在 `~/.local/codex-remote`；首次运行填写 Gateway、令牌及服务名称。Codex 从当前 PATH 查找，也可用 `--codex /完整路径/codex` 指定；使用前完成所选工具的登录或认证。支持 Codex、Claude、文件操作与终端；Claude 使用官方插件自带程序，手机端需更新到支持 macOS 工具能力的版本。
+
+按需用 tmux 等方式托管；配置、日志管理和多网关地址用法与 Linux 相同。安装需要包含 macOS 产物的版本，平台仍属实验性，真实桌面会话与睡眠恢复需进一步验证。
 
 ## 致谢
 

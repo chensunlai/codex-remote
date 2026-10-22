@@ -127,7 +127,7 @@ class WorkspaceWelcomeInstrumentedTest {
         }))
         compose.onNodeWithText("今天想做点什么？").assertIsDisplayed()
         compose.onNodeWithText("Codex").assertIsEnabled()
-        compose.onNodeWithContentDescription("Claude，需要在线的 Linux 服务器").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Claude，需要在线且支持 Claude 的 Linux 或 macOS 服务器").assertIsNotEnabled()
     }
 
     @Test fun noServersExplainsSetupAndNavigatesToServices() {

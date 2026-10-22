@@ -310,7 +310,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (!tool.supports(service)) {
-            _state.update { it.copy(error = "Claude Code 首版仅支持 Linux Agent") }
+            _state.update { it.copy(error = "Claude 需要 Linux Agent，或支持 Claude 的新版 macOS Agent") }
             return
         }
         val window = WorkspaceWindow(UUID.randomUUID().toString(), serviceId, workspace,

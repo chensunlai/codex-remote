@@ -20,7 +20,8 @@ enum class RuntimeState { CONNECTED, DISCONNECTED }
 enum class CodingTool(val id: String, val title: String) {
     CODEX("codex", "Codex"), CLAUDE("claude", "Claude Code");
 
-    fun supports(service: RemoteService): Boolean = this == CODEX || service.platform == "linux"
+    fun supports(service: RemoteService): Boolean = this == CODEX || service.platform == "linux" ||
+        (service.platform == "darwin" && service.capabilities?.contains("claude-extension-host-v1") == true)
 
     companion object {
         fun fromId(id: String): CodingTool? = entries.firstOrNull { it.id == id }

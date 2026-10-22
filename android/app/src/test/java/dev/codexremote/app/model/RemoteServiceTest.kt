@@ -16,5 +16,8 @@ class RemoteServiceTest {
         assertTrue(service("linux", setOf("terminal", "filesystem")).supportsTerminal)
         assertFalse(service("linux", emptySet()).supportsTerminal)
         assertFalse(service("linux", setOf("filesystem")).supportsTerminal)
+        assertTrue(service("darwin", null).supportsTerminal)
+        assertTrue(service("darwin", setOf("terminal", "filesystem")).supportsTerminal)
+        assertFalse(service("darwin", setOf("filesystem")).supportsTerminal)
     }
 }

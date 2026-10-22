@@ -370,7 +370,7 @@ private fun WorkspaceWelcome(
                                     val enabled = tool != CodingTool.CLAUDE || onlineServers.any { tool.supports(it) }
                                     FilledTonalButton(onClick = { onCreateWindow(tool) }, enabled = enabled,
                                         modifier = Modifier.height(48.dp).semantics {
-                                            if (!enabled) contentDescription = "Claude，需要在线的 Linux 服务器"
+                                            if (!enabled) contentDescription = "Claude，需要在线且支持 Claude 的 Linux 或 macOS 服务器"
                                         }, contentPadding = PaddingValues(horizontal = 20.dp)) {
                                         CodingToolIcon(tool.id, Modifier.size(20.dp))
                                         Spacer(Modifier.width(8.dp))
