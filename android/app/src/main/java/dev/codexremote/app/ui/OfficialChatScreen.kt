@@ -4,7 +4,6 @@ package dev.codexremote.app.ui
 
 import android.annotation.SuppressLint
 import android.net.Uri
-import dev.codexremote.app.data.restartChatBackend
 import dev.codexremote.app.model.RuntimeState
 import dev.codexremote.app.data.isRemoteAbsolutePath
 import dev.codexremote.app.data.joinRemotePath
@@ -78,10 +77,12 @@ import dev.codexremote.app.MainViewModel
 import dev.codexremote.app.data.GatewayApi
 import dev.codexremote.app.data.OfficialChatSession
 import dev.codexremote.app.data.frontendScope
+import dev.codexremote.app.data.windowStateScope
 import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.FilePreview
 import dev.codexremote.app.model.MainSection
+import dev.codexremote.app.model.WorkspaceWindow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
@@ -118,17 +119,19 @@ internal fun OfficialSettingsConfirmationDialog(confirmation: OfficialSettingsCo
 private fun JSONObject.version(name: String): String? = optString(name).takeIf { it.isNotBlank() && it != "null" }
 
 @Composable
-fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boolean = true,
-    residentWebViewIds: Set<String> = emptySet(), onWebViewRetainedChanged: (Boolean) -> Unit = {}) {
-    val service = state.services.firstOrNull { it.id == state.selectedServiceId }
+fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: WorkspaceWindow,
+    visible: Boolean = true, onShowWindows: () -> Unit = {}, onWebViewRetainedChanged: (Boolean) -> Unit = {}) {
+    val service = state.services.firstOrNull { it.id == window.serviceId }
     val link by viewModel.gatewayApi.link.collectAsStateWithLifecycle()
     val config = state.gatewayConfig
     if (service == null || config == null) {
-        EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
+        Column(Modifier.fillMaxSize()) {
+            CodexTopBar(title = { TextButton(onClick = onShowWindows) { Text(window.title); AppIcon(CodexIcons.ChevronDown, "窗口总览") } })
+            EmptyPane(title = "窗口的服务器暂不可用", icon = CodexIcons.Server, modifier = Modifier.weight(1f))
+        }
         return
     }
-    val scopeKey = frontendScope(config, service.id)
-    val store = viewModel.officialFrontends
+    val scopeKey = windowStateScope(config, window)
     val jobs = rememberCoroutineScope()
     var extension by remember(scopeKey) { mutableStateOf<JSONObject?>(null) }
     var requestInProgress by remember(scopeKey) { mutableStateOf(false) }
@@ -138,8 +141,9 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
     var mouseMode by remember(scopeKey) { mutableStateOf(false) }
     var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
     var restartConfirmation by remember(scopeKey) { mutableStateOf(false) }
-    var restarting by remember(scopeKey) { mutableStateOf(false) }
-    var workspace by remember(scopeKey) { mutableStateOf(store.workspace(scopeKey, service.home ?: "/")) }
+    val restarting = window.id in state.busyWindowIds
+    val workspace = window.workspace
+    var pendingWorkspace by remember(scopeKey) { mutableStateOf<String?>(null) }
     var chooseWorkspace by remember(scopeKey) { mutableStateOf(false) }
     var panelBack by remember(scopeKey) { mutableStateOf<(() -> Unit)?>(null) }
     var rendererGeneration by remember(scopeKey) { mutableStateOf(0) }
@@ -180,7 +184,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
         }
     }
 
-    LaunchedEffect(scopeKey) {
+    LaunchedEffect(scopeKey, service.runtimeState) {
         try { extension = viewModel.gatewayApi.extensionStatus(service.id); error = extension?.version("error") }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.message }
@@ -206,8 +210,13 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
 
     Scaffold(topBar = {
         CodexTopBar(title = {
-            ServiceSelector(state.services, service.id, viewModel::selectService, compact = true, enabled = visible,
-                residentWebViewIds = residentWebViewIds)
+            TextButton(onClick = onShowWindows, enabled = visible) {
+                Text(window.title, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface)
+                Text(" ${state.windows.size}", Modifier.padding(horizontal = 6.dp), style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary)
+                AppIcon(CodexIcons.ChevronDown, "窗口总览", Modifier.size(16.dp))
+            }
         }, navigationIcon = {
             if (panelBack != null) IconButton(onClick = { panelBack?.invoke() }) {
                 AppIcon(CodexIcons.ArrowBack, contentDescription = "返回对话")
@@ -228,9 +237,6 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                     AppIcon(CodexIcons.MousePointer, contentDescription = "鼠标模式",
                         tint = if (mouseMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = { chooseWorkspace = true }, enabled = !requestInProgress) {
-                    AppIcon(CodexIcons.FolderOpen, contentDescription = "选择工作目录")
-                }
                 Box {
                     IconButton(onClick = { menu = true }) { AppIcon(CodexIcons.More, contentDescription = "更多选项") }
                     CodexDropdownMenu(expanded = visible && menu, onDismissRequest = { menu = false }) {
@@ -240,8 +246,10 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
                             onClick = { menu = false; update() })
                         DropdownMenuItem(text = { Text("重新加载前端") }, enabled = installedVersion != null && !busy,
                             onClick = { menu = false; rendererGeneration += 1; status = "正在重新加载官方前端" })
-                        DropdownMenuItem(text = { Text("重启 Codex 和扩展后端") },
-                            enabled = !busy && service.runtimeState == RuntimeState.CONNECTED,
+                        DropdownMenuItem(text = { Text("更改工作目录") }, enabled = !busy && !restarting,
+                            onClick = { menu = false; chooseWorkspace = true })
+                        DropdownMenuItem(text = { Text("重启此窗口后端") },
+                            enabled = !busy && !restarting && service.runtimeState == RuntimeState.CONNECTED,
                             onClick = { menu = false; restartConfirmation = true })
                         DropdownMenuItem(text = { Text("App 设置") }, leadingIcon = { AppIcon(CodexIcons.Settings, null) },
                             onClick = { menu = false; viewModel.setSection(MainSection.SETTINGS) })
@@ -255,12 +263,12 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
             if (restarting) LinearProgressIndicator(Modifier.fillMaxWidth())
             else if (busy) FrontendDownloadPane(extension?.optJSONObject("progress"))
             if (installedVersion != null) {
-                key(scopeKey, installedVersion, workspace, rendererGeneration) {
-                    OfficialWebView(scopeKey, store.clientId(scopeKey), service.id, service.home ?: "/", workspace,
+                key(scopeKey, installedVersion, workspace, rendererGeneration, state.windowRevisions[window.id]) {
+                    OfficialWebView(scopeKey, window.id, service.id, service.home ?: "/", workspace,
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
-                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation, Modifier.weight(1f),
-                        onWebViewRetainedChanged)
+                        { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation || pendingWorkspace != null || restarting,
+                        Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id))
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
@@ -269,33 +277,29 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, visible: Boole
         }
     }
     if (visible && chooseWorkspace) RemoteDirectoryDialog(viewModel.gatewayApi, service.id, workspace,
-        onSelect = { path -> store.setWorkspace(scopeKey, path); workspace = path; chooseWorkspace = false },
+        onSelect = { path -> if (path != workspace) pendingWorkspace = path; chooseWorkspace = false },
         onDismiss = { chooseWorkspace = false })
+    if (visible && pendingWorkspace != null) CodexDialog(
+        onDismissRequest = { pendingWorkspace = null }, title = { Text("更改此窗口的工作目录？") },
+        text = { Text("将停止此窗口的 Codex 和扩展后端，在 ${pendingWorkspace.orEmpty()} 重新打开。正在运行的任务可能中断。") },
+        confirmButton = { TextButton(onClick = {
+            pendingWorkspace?.let { viewModel.changeWindowWorkspace(window.id, it) }
+            pendingWorkspace = null
+        }) { Text("更改并重启") } },
+        dismissButton = { TextButton(onClick = { pendingWorkspace = null }) { Text("取消") } },
+    )
     if (visible && restartConfirmation) CodexDialog(
-        onDismissRequest = { restartConfirmation = false }, title = { Text("重启 ${service.name} 的后端？") },
-        text = { Text("将重启该服务器由 Agent 管理的 Codex 和 extension.js，并重新连接工作页。正在运行的任务可能中断，未确认的操作不会自动重发；Codex 已退出时也可用此操作恢复。") },
+        onDismissRequest = { restartConfirmation = false }, title = { Text("重启此窗口的后端？") },
+        text = { Text("将重启此窗口的 Codex 和扩展后端。正在运行的任务可能中断；Codex 已退出时也可通过此操作恢复。") },
         confirmButton = { TextButton(onClick = {
             restartConfirmation = false
-            requestInProgress = true
-            restarting = true
-            error = null
-            status = "正在重启 Codex 和扩展后端"
-            jobs.launch {
-                try {
-                    viewModel.gatewayApi.restartChatBackend(service.id)
-                    extension = viewModel.gatewayApi.extensionStatus(service.id)
-                    rendererGeneration += 1
-                    status = "后端已重启，正在重新连接"
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Exception) { error = failure.message; status = null }
-                finally { requestInProgress = false; restarting = false }
-            }
+            viewModel.restartWindow(window.id)
         }) { Text("重启并连接") } },
         dismissButton = { TextButton(onClick = { restartConfirmation = false }) { Text("取消") } },
     )
     if (visible && applyConfirmation && stagedVersion != null) CodexDialog(
         onDismissRequest = { applyConfirmation = false }, title = { Text("应用官方前端更新？") },
-        text = { Text("版本 $stagedVersion 已准备好。应用更新将重新启动服务器上的扩展宿主，现有连接和正在进行的任务可能中断。") },
+        text = { Text("版本 $stagedVersion 已准备好。应用更新将重启该服务器全部 ${extension?.optInt("hosts", 0) ?: 0} 个扩展宿主，现有连接和正在进行的任务可能中断。") },
         confirmButton = { TextButton(onClick = {
             applyConfirmation = false
             requestInProgress = true
@@ -351,9 +355,11 @@ private fun OfficialWebView(
     theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, viewModel: MainViewModel,
     onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
     nativeModalOpen: Boolean, modifier: Modifier, onWebViewRetainedChanged: (Boolean) -> Unit,
+    windowId: String, resourceScope: String,
 ) {
     val context = LocalContext.current
     val pointerContainers = remember { mutableStateMapOf<String, MouseModeWebViewContainer>() }
+    WebViewRetentionEffect(pointerContainers["main"] != null, onWebViewRetainedChanged)
     var panels by remember { mutableStateOf<List<ExtensionSurface>>(emptyList()) }
     var preview by remember { mutableStateOf<FilePreview?>(null) }
     var notification by remember { mutableStateOf<HostNotification?>(null) }
@@ -381,7 +387,11 @@ private fun OfficialWebView(
                 val result = CompletableDeferred<Boolean>()
                 externalUrl = url to result
                 try { result.await() } finally { if (externalUrl?.second === result) externalUrl = null }
-            }, { panels = it })
+            }, { panels = it }, resourceScope = resourceScope)
+    }
+    DisposableEffect(session, windowId) {
+        val unregister = viewModel.windowConnections.register(windowId, session::setSuspended)
+        onDispose { unregister() }
     }
     DisposableEffect(session) {
         onDispose {
@@ -390,6 +400,7 @@ private fun OfficialWebView(
             notification?.result?.cancel()
             externalUrl?.second?.cancel()
             session.close()
+            android.util.Log.d("OfficialCodex", "resource-cache ${viewModel.officialFrontends.resources.diagnostics()} wireBytes=${viewModel.gatewayApi.resourceTrafficBytes()}")
             onPanelBackChanged(null)
         }
     }
@@ -433,7 +444,6 @@ private fun OfficialWebView(
             OfficialSurfaceWebView(session, "main", serviceId, theme, fontScale, visible && panels.isEmpty(), mouseMode && !modalOpen,
                 confirmation, viewModel, onStatus, onRendererGone, {
                     if (it == null) pointerContainers.remove("main") else pointerContainers["main"] = it
-                    onWebViewRetainedChanged(it != null)
                 })
             panels.forEachIndexed { index, panel -> key(panel.id) {
                 OfficialSurfaceWebView(session, panel.id, serviceId, theme, fontScale, visible && index == panels.lastIndex, mouseMode && !modalOpen,
@@ -491,6 +501,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
     var browser by remember { mutableStateOf<WebView?>(null) }
     var pointerContainer by remember { mutableStateOf<MouseModeWebViewContainer?>(null) }
     var script by remember { mutableStateOf<ScriptHandler?>(null) }
+    var pageStartedAt by remember { mutableStateOf(0L) }
     DisposableEffect(session, surfaceId) { onDispose {
         confirmation.cancelSurface(surfaceId)
         pointerContainer?.cancelPointer()
@@ -523,6 +534,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             }
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
+                    android.util.Log.d("OfficialCodex", "webview-ready surface=$surfaceId elapsedMs=${android.os.SystemClock.elapsedRealtime() - pageStartedAt}")
                     pointerContainer?.onDocumentReady()
                 }
                 override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -554,6 +566,7 @@ private fun OfficialSurfaceWebView(session: OfficialChatSession, surfaceId: Stri
             val bridgeSource = context.assets.open("bridge.js").bufferedReader().use { it.readText() }
             val themeCss = context.assets.open("theme.css").bufferedReader().use { it.readText() }
             session.attachSurface(surfaceId, this) { origin, html, documentId ->
+                pageStartedAt = android.os.SystemClock.elapsedRealtime()
                 confirmation.cancelSurface(surfaceId)
                 pointerContainer?.cancelPointer()
                 originHost = Uri.parse(origin).host

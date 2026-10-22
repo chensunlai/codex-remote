@@ -31,12 +31,16 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
@@ -78,6 +82,10 @@ fun CodexRemoteApp(state: AppState, viewModel: MainViewModel) {
             onClearError = viewModel::clearError,
             allowHttp = state.allowHttp, multipleEndpoints = state.multipleEndpoints,
             onExperiments = viewModel::setExperiments,
+            customWindowLimit = state.customWindowLimit, maxChatPages = state.maxChatPages,
+            customCacheLimit = state.customCacheLimit, resourceCacheBytes = state.resourceCacheBytes,
+            onCustomWindowLimitChange = viewModel::setCustomWindowLimit, onMaxChatPagesChange = viewModel::setMaxChatPages,
+            onCustomCacheLimitChange = viewModel::setCustomCacheLimit, onResourceCacheBytesChange = viewModel::setResourceCacheBytes,
         )
         return
     }
@@ -183,22 +191,31 @@ private fun MainContent(
     val residentWebViews = remember(state.gatewayConfig?.let { frontendScope(it, "") }) {
         mutableStateMapOf<String, Boolean>()
     }
+    var windowsOpen by remember(state.gatewayConfig?.let { frontendScope(it, "") }) { mutableStateOf(false) }
     Box(modifier.fillMaxSize()) {
         RetainedServerPanes(
             identity = state.gatewayConfig?.let { frontendScope(it, "") },
-            availableIds = state.services.map { it.id }.toSet(),
-            selectedId = state.selectedServiceId,
+            availableIds = state.windows.map { it.id }.toSet(),
+            selectedId = state.selectedWindowId,
             visible = chatVisible,
             maxPages = state.maxChatPages,
-        ) { serviceId, active ->
-            OfficialChatScreen(state.copy(selectedServiceId = serviceId), viewModel, visible = active && foreground,
-                residentWebViewIds = residentWebViews.keys.toSet(),
+        ) { windowId, active ->
+            val window = state.windows.first { it.id == windowId }
+            OfficialChatScreen(state, viewModel, window, visible = active && foreground && !windowsOpen,
+                onShowWindows = { windowsOpen = true },
                 onWebViewRetainedChanged = { retained ->
-                    if (retained) residentWebViews[serviceId] = true else residentWebViews.remove(serviceId)
+                    if (retained) residentWebViews[windowId] = true else residentWebViews.remove(windowId)
                 })
         }
-        if (chatVisible && (state.gatewayConfig == null || state.services.none { it.id == state.selectedServiceId })) {
-            EmptyPane(title = "选择在线服务器", icon = CodexIcons.Server, modifier = Modifier.fillMaxSize())
+        if (chatVisible && state.windows.none { it.id == state.selectedWindowId }) {
+            Column(Modifier.fillMaxSize()) {
+                CodexTopBar(title = { Text("工作窗口") }, actions = {
+                    IconButton(onClick = { windowsOpen = true }) { AppIcon(CodexIcons.Add, "新建窗口") }
+                })
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Button(onClick = { windowsOpen = true }) { Text("打开工作窗口") }
+                }
+            }
         }
         when (state.section) {
             MainSection.SERVICES -> ServicesScreen(state, viewModel)
@@ -212,4 +229,5 @@ private fun MainContent(
         }
         SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter))
     }
+    if (windowsOpen) WorkspaceWindows(state, viewModel, residentWebViews.keys.toSet(), onDismiss = { windowsOpen = false })
 }

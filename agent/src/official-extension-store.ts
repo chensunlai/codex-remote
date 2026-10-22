@@ -59,6 +59,8 @@ const maximumExtractedBytes = 2 * 1024 * 1024 * 1024;
 // Leave room for JSON/base64 envelopes inside the 16 MiB transport frame.
 export const maximumExtensionResourceBytes = 12 * 1024 * 1024 - 4096;
 const gzipAsync = promisify(gzip);
+const maximumCompressedResourceBytes = 64 * 1024 * 1024;
+const maximumCompressedResourceEntries = 1024;
 
 /** Complete, unmodified official packages. No private frontend exports or adapters. */
 export class OfficialExtensionStore {
@@ -67,6 +69,12 @@ export class OfficialExtensionStore {
   private readonly fetch: typeof globalThis.fetch;
   private readonly latest: () => Promise<OfficialExtensionSource>;
   private mutation: Promise<void> = Promise.resolve();
+  private readonly resourcePending = new Map<string, Promise<OfficialExtensionResource>>();
+  private readonly compressedResources = new Map<string, Buffer | null>();
+  private readonly compressionPending = new Map<string, Promise<Buffer | null>>();
+  private compressedResourceBytes = 0;
+  private compressionHits = 0;
+  private compressions = 0;
 
   constructor(private readonly root: string, options: OfficialExtensionStoreOptions = {}) {
     this.fetch = options.fetch ?? globalThis.fetch;
@@ -140,15 +148,62 @@ export class OfficialExtensionStore {
     const pathname = safeRelativePath(path);
     const target = resolve(installed.directory, pathname);
     await rejectSymlinkPath(installed.directory, pathname);
-    const metadata = await stat(target);
+    const metadata = await stat(target, { bigint: true });
     if (!metadata.isFile() || metadata.size > maximumExtensionResourceBytes) throw new Error("扩展资源不是文件或超过 12 MiB");
+    // Every caller still validates the package, path and file. Only identical validated reads
+    // in flight are shared; later requests hash the actual bytes before consulting gzip results.
+    const key = JSON.stringify([installed.sha256, pathname, options.acceptEncoding,
+      `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`]);
+    const pending = this.resourcePending.get(key);
+    if (pending) return pending;
+    const result = this.readResource(installed, pathname, target, options.acceptEncoding);
+    this.resourcePending.set(key, result);
+    try { return await result; } finally {
+      if (this.resourcePending.get(key) === result) this.resourcePending.delete(key);
+    }
+  }
+
+  resourceDiagnostics(): { compressionHits: number; compressions: number; cachedBytes: number; cachedEntries: number } {
+    return { compressionHits: this.compressionHits, compressions: this.compressions,
+      cachedBytes: this.compressedResourceBytes, cachedEntries: this.compressedResources.size };
+  }
+
+  private async readResource(installed: OfficialExtensionPackage, path: string, target: string, encoding?: "gzip"): Promise<OfficialExtensionResource> {
     const content = await readFile(target);
-    const result = { mime: mimeType(pathname), sha256: createHash("sha256").update(content).digest("hex"), packageSha256: installed.sha256 };
-    if (options.acceptEncoding === "gzip" && content.length >= 1024) {
-      const compressed = await gzipAsync(content);
-      if (compressed.length < content.length) return { ...result, encoding: "gzip", content: compressed.toString("base64") };
+    if (content.length > maximumExtensionResourceBytes) throw new Error("扩展资源不是文件或超过 12 MiB");
+    const result = { mime: mimeType(path), sha256: createHash("sha256").update(content).digest("hex"), packageSha256: installed.sha256 };
+    if (encoding === "gzip" && content.length >= 1024) {
+      const key = JSON.stringify([installed.sha256, path, result.sha256]);
+      const compressed = await this.compressResource(key, content);
+      if (compressed) return { ...result, encoding: "gzip", content: compressed.toString("base64") };
     }
     return { ...result, content: content.toString("base64") };
+  }
+
+  private async compressResource(key: string, content: Buffer): Promise<Buffer | null> {
+    if (this.compressedResources.has(key)) {
+      const compressed = this.compressedResources.get(key)!;
+      this.compressedResources.delete(key);
+      this.compressedResources.set(key, compressed);
+      this.compressionHits++;
+      return compressed;
+    }
+    const pending = this.compressionPending.get(key);
+    if (pending) return pending;
+    const result = gzipAsync(content).then((candidate) => {
+      this.compressions++;
+      const compressed = candidate.length < content.length ? candidate : null;
+      this.compressedResources.set(key, compressed);
+      this.compressedResourceBytes += compressed?.length ?? 0;
+      while (this.compressedResourceBytes > maximumCompressedResourceBytes || this.compressedResources.size > maximumCompressedResourceEntries) {
+        const oldest = this.compressedResources.keys().next().value!;
+        this.compressedResourceBytes -= this.compressedResources.get(oldest)?.length ?? 0;
+        this.compressedResources.delete(oldest);
+      }
+      return compressed;
+    });
+    this.compressionPending.set(key, result);
+    try { return await result; } finally { this.compressionPending.delete(key); }
   }
 
   private async performUpdate(): Promise<void> {

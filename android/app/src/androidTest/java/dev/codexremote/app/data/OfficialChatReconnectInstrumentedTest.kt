@@ -34,6 +34,26 @@ import kotlin.concurrent.thread
 class OfficialChatReconnectInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
 
+    @Test fun managementPauseRetainsThePageAndOnlyResumesOnFailureOrExplicitResume() {
+        Fixture().use { fixture ->
+            fixture.start()
+            fixture.evaluate("document.getElementById('draft').value='keep during management'")
+            val before = fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])")
+            fixture.suspendTransport(true)
+            assertFalse(fixture.api.link.value.checking)
+            kotlinx.coroutines.runBlocking { fixture.api.checkConnection(reconnect = true) }
+            assertEquals(null, fixture.server.pollConnection(1800))
+            assertEquals(before, fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])"))
+            fixture.suspendTransport(false)
+            val resumed = fixture.server.nextConnection()
+            resumed.ready()
+            resumed.awaitPacket("visibility")
+            assertEquals(before, fixture.evaluate("JSON.stringify([identity,document.getElementById('draft').value])"))
+            assertEquals(1, fixture.loads.get())
+            assertEquals(0, fixture.server.messages.size)
+        }
+    }
+
     @Test fun manualGatewayReconnectPreservesTheDocumentAndUnsentDraft() {
         Fixture().use { fixture ->
             fixture.start()
@@ -341,6 +361,8 @@ class OfficialChatReconnectInstrumentedTest {
                 }
             }
         }
+
+        fun suspendTransport(value: Boolean) = instrumentation.runOnMainSync { session.setSuspended(value) }
 
         fun start(): SocketFixture.Connection = server.nextConnection().also {
             it.ready()

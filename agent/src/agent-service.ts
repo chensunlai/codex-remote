@@ -67,6 +67,7 @@ export class AgentService {
             "codex-raw-channels",
             "codex-runtime-control",
             "official-extension-host-v1",
+            "extension-window-management-v1",
             ...(process.platform === "win32" ? [] : ["terminal"]),
             "files",
             "stream-transfer",

@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -30,12 +33,26 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import dev.codexremote.app.data.UiPreferences
 
 @Composable
-internal fun ExperimentalSettings(http: Boolean, multiple: Boolean, enabled: Boolean = true, onChange: (Boolean, Boolean) -> Unit) {
+internal fun ExperimentalSettings(
+    http: Boolean,
+    multiple: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean, Boolean) -> Unit,
+    customWindowLimit: Boolean = false,
+    maxChatPages: Int = UiPreferences.DEFAULT_MAX_CHAT_PAGES,
+    customCacheLimit: Boolean = false,
+    resourceCacheBytes: Long = UiPreferences.DEFAULT_RESOURCE_CACHE_BYTES,
+    onCustomWindowLimitChange: (Boolean) -> Unit = {},
+    onMaxChatPagesChange: (Int) -> Unit = {},
+    onCustomCacheLimitChange: (Boolean) -> Unit = {},
+    onResourceCacheBytesChange: (Long) -> Unit = {},
+) {
     var opened by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
-    val activeCount = listOf(http, multiple).count { it }
+    val activeCount = listOf(http, multiple, customWindowLimit, customCacheLimit).count { it }
     Surface(
         onClick = { opened = true }, enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
@@ -56,7 +73,7 @@ internal fun ExperimentalSettings(http: Boolean, multiple: Boolean, enabled: Boo
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text("实验性功能", style = MaterialTheme.typography.titleSmall, color = colors.onSurface)
                 Text(
-                    if (activeCount == 0) "HTTP 与多入口连接" else "已开启 $activeCount 项 · HTTP 与多入口连接",
+                    if (activeCount == 0) "连接方式、窗口与资源缓存" else "已开启 $activeCount 项 · 连接与性能调节",
                     style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
                 )
             }
@@ -80,6 +97,47 @@ internal fun ExperimentalSettings(http: Boolean, multiple: Boolean, enabled: Boo
                 ExperimentSwitch(
                     CodexIcons.Network, "多个网关入口", "为同一网关配置内网、外网地址。网络变化或重连时按顺序选择，连接稳定时不切换。", multiple, enabled,
                 ) { onChange(http, it) }
+                ExperimentSwitch(
+                    CodexIcons.Messages, "自定义内存驻留窗口数", "切换驻留窗口无需重新加载。数量越大，内存占用越多；释放页面后远端任务仍会继续。关闭开关后保留并继续使用已选数量。",
+                    customWindowLimit, enabled,
+                    control = {
+                        Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("驻留窗口", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            Surface(color = colors.surfaceContainerLow, shape = MaterialTheme.shapes.small,
+                                border = BorderStroke(1.dp, colors.outlineVariant)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { onMaxChatPagesChange(maxChatPages - 1) },
+                                        enabled = enabled && customWindowLimit && maxChatPages > UiPreferences.MIN_CHAT_PAGES) {
+                                        AppIcon(CodexIcons.Minus, "减少驻留窗口")
+                                    }
+                                    Text("$maxChatPages", style = MaterialTheme.typography.bodyMedium)
+                                    IconButton(onClick = { onMaxChatPagesChange(maxChatPages + 1) },
+                                        enabled = enabled && customWindowLimit && maxChatPages < UiPreferences.MAX_CHAT_PAGES) {
+                                        AppIcon(CodexIcons.Add, "增加驻留窗口")
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onChange = onCustomWindowLimitChange,
+                )
+                ExperimentSwitch(
+                    CodexIcons.Download, "自定义资源缓存大小", "缓存官方前端资源，减少重复下载。缩小容量会清理最近未使用的缓存；关闭开关后保留并继续使用已选容量。",
+                    customCacheLimit, enabled,
+                    control = {
+                        FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            UiPreferences.RESOURCE_CACHE_CHOICES.forEach { bytes ->
+                                FilterChip(
+                                    selected = bytes == resourceCacheBytes,
+                                    onClick = { onResourceCacheBytesChange(bytes) },
+                                    enabled = enabled && customCacheLimit,
+                                    label = { Text(if (bytes >= 1024L * 1024 * 1024) "${bytes / (1024L * 1024 * 1024)} GiB" else "${bytes / (1024L * 1024)} MiB") },
+                                )
+                            }
+                        }
+                    },
+                    onChange = onCustomCacheLimitChange,
+                )
             }
         },
         confirmButton = {
@@ -89,7 +147,11 @@ internal fun ExperimentalSettings(http: Boolean, multiple: Boolean, enabled: Boo
 }
 
 @Composable
-private fun ExperimentSwitch(icon: ImageVector, title: String, description: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+private fun ExperimentSwitch(
+    icon: ImageVector, title: String, description: String, checked: Boolean, enabled: Boolean,
+    control: (@Composable () -> Unit)? = null,
+    onChange: (Boolean) -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     Surface(color = colors.background, shape = MaterialTheme.shapes.small, border = BorderStroke(1.dp, colors.outlineVariant)) {
         Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 14.dp)) {
@@ -109,6 +171,9 @@ private fun ExperimentSwitch(icon: ImageVector, title: String, description: Stri
                 )
             }
             Text(description, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+            control?.let { content ->
+                Box(Modifier.alpha(if (checked && enabled) 1f else 0.5f)) { content() }
+            }
         }
     }
 }

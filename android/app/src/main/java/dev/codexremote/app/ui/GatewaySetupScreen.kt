@@ -34,6 +34,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.model.GatewayConfig
+import dev.codexremote.app.data.UiPreferences
 
 @Composable
 fun GatewaySetupScreen(
@@ -45,6 +46,14 @@ fun GatewaySetupScreen(
     allowHttp: Boolean,
     multipleEndpoints: Boolean,
     onExperiments: (Boolean, Boolean) -> Unit,
+    customWindowLimit: Boolean = false,
+    maxChatPages: Int = UiPreferences.DEFAULT_MAX_CHAT_PAGES,
+    customCacheLimit: Boolean = false,
+    resourceCacheBytes: Long = UiPreferences.DEFAULT_RESOURCE_CACHE_BYTES,
+    onCustomWindowLimitChange: (Boolean) -> Unit = {},
+    onMaxChatPagesChange: (Int) -> Unit = {},
+    onCustomCacheLimitChange: (Boolean) -> Unit = {},
+    onResourceCacheBytesChange: (Long) -> Unit = {},
 ) {
     Box(
         Modifier
@@ -65,7 +74,9 @@ fun GatewaySetupScreen(
                 onChange = onClearError,
                 multipleEndpoints = multipleEndpoints,
             )
-            ExperimentalSettings(allowHttp, multipleEndpoints, !loading, onExperiments)
+            ExperimentalSettings(allowHttp, multipleEndpoints, !loading, onExperiments,
+                customWindowLimit, maxChatPages, customCacheLimit, resourceCacheBytes,
+                onCustomWindowLimitChange, onMaxChatPagesChange, onCustomCacheLimitChange, onResourceCacheBytesChange)
         }
     }
 }

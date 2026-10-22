@@ -179,6 +179,7 @@ function registerMetaRoutes(app: FastifyInstance, config: ServerConfig, settings
         "codex-channel-v2",
         "codex-runtime-management",
         "official-extension-host-v1",
+        "extension-window-management-v1",
         "gateway-admin-v1",
       ],
     },

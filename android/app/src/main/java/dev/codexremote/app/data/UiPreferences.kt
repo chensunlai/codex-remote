@@ -10,8 +10,26 @@ class UiPreferences(context: Context) {
 
     val allowHttp: Boolean get() = preferences.getBoolean("allow_http", false)
     val multipleEndpoints: Boolean get() = preferences.getBoolean("multiple_endpoints", false)
+    val customWindowLimit: Boolean get() = preferences.getBoolean("custom_window_limit", false)
+    val customCacheLimit: Boolean get() = preferences.getBoolean("custom_cache_limit", false)
     val maxChatPages: Int get() = preferences.getInt("max_chat_pages", DEFAULT_MAX_CHAT_PAGES)
         .coerceIn(MIN_CHAT_PAGES, MAX_CHAT_PAGES)
+    val resourceCacheBytes: Long get() = preferences.getLong("resource_cache_bytes", DEFAULT_RESOURCE_CACHE_BYTES)
+        .takeIf { it in RESOURCE_CACHE_CHOICES } ?: DEFAULT_RESOURCE_CACHE_BYTES
+
+    fun setCustomWindowLimit(value: Boolean) {
+        preferences.edit { putBoolean("custom_window_limit", value) }
+    }
+
+    fun setCustomCacheLimit(value: Boolean) {
+        preferences.edit { putBoolean("custom_cache_limit", value) }
+    }
+
+    fun setResourceCacheBytes(value: Long): Long {
+        val normalized = value.takeIf { it in RESOURCE_CACHE_CHOICES } ?: DEFAULT_RESOURCE_CACHE_BYTES
+        preferences.edit { putLong("resource_cache_bytes", normalized) }
+        return normalized
+    }
 
     fun setMaxChatPages(value: Int): Int {
         val normalized = value.coerceIn(MIN_CHAT_PAGES, MAX_CHAT_PAGES)
@@ -48,6 +66,8 @@ class UiPreferences(context: Context) {
         const val DEFAULT_MAX_CHAT_PAGES = 3
         const val MIN_CHAT_PAGES = 1
         const val MAX_CHAT_PAGES = 10
+        const val DEFAULT_RESOURCE_CACHE_BYTES = 1024L * 1024 * 1024
+        val RESOURCE_CACHE_CHOICES = listOf(128L, 256L, 512L, 1024L, 2048L).map { it * 1024 * 1024 }
         const val DEFAULT_FONT_SCALE = 1f
         const val MIN_FONT_SCALE = 0.85f
         const val MAX_FONT_SCALE = 1.30f

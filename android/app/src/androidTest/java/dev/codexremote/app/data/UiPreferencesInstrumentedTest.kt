@@ -7,6 +7,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.codexremote.app.model.AppTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.UUID
@@ -21,6 +23,32 @@ class UiPreferencesInstrumentedTest {
         assertEquals(8, UiPreferences(context).maxChatPages)
         assertEquals(1, preferences.setMaxChatPages(0))
         assertEquals(10, preferences.setMaxChatPages(100))
+    }
+
+    @Test fun tuningSwitchesPersistIndependentlyWithoutResettingActiveValues() {
+        val context = isolatedContext()
+        val preferences = UiPreferences(context)
+        assertFalse(preferences.customWindowLimit)
+        assertFalse(preferences.customCacheLimit)
+        assertEquals(1024L * 1024 * 1024, preferences.resourceCacheBytes)
+        preferences.setCustomWindowLimit(true)
+        preferences.setCustomCacheLimit(true)
+        preferences.setMaxChatPages(7)
+        preferences.setResourceCacheBytes(2L * 1024 * 1024 * 1024)
+        assertTrue(UiPreferences(context).customWindowLimit)
+        assertTrue(UiPreferences(context).customCacheLimit)
+        preferences.setCustomWindowLimit(false)
+        preferences.setCustomCacheLimit(false)
+        val reopened = UiPreferences(context)
+        assertFalse(reopened.customWindowLimit)
+        assertFalse(reopened.customCacheLimit)
+        assertEquals(7, reopened.maxChatPages)
+        assertEquals(2L * 1024 * 1024 * 1024, reopened.resourceCacheBytes)
+        UiPreferences.RESOURCE_CACHE_CHOICES.forEach { value ->
+            preferences.setResourceCacheBytes(value)
+            assertEquals(value, UiPreferences(context).resourceCacheBytes)
+        }
+        assertEquals(UiPreferences.DEFAULT_RESOURCE_CACHE_BYTES, preferences.setResourceCacheBytes(-1))
     }
 
     @Test

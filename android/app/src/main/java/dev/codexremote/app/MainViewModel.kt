@@ -16,6 +16,9 @@ import dev.codexremote.app.data.SecretStore
 import dev.codexremote.app.data.TerminalSession
 import dev.codexremote.app.data.TerminalSessionManager
 import dev.codexremote.app.data.UiPreferences
+import dev.codexremote.app.data.WorkspaceWindowStore
+import dev.codexremote.app.data.WindowConnectionRegistry
+import dev.codexremote.app.data.isRemoteAbsolutePath
 import dev.codexremote.app.data.parseFiles
 import dev.codexremote.app.data.parseServices
 import dev.codexremote.app.data.joinRemotePath
@@ -27,6 +30,7 @@ import dev.codexremote.app.model.MainSection
 import dev.codexremote.app.model.RemoteFile
 import dev.codexremote.app.model.RemoteFileType
 import dev.codexremote.app.model.RuntimeState
+import dev.codexremote.app.model.WorkspaceWindow
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -37,6 +41,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.FileNotFoundException
+import java.util.UUID
 
 /** Native shell state only. Conversations and approvals belong to the official frontend. */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -45,10 +50,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     internal val gatewayApi = GatewayApi()
     private val api get() = gatewayApi
     internal val officialFrontends = OfficialFrontendStore(application)
+    internal val windowConnections = WindowConnectionRegistry()
+    private val windowStore = WorkspaceWindowStore(application)
     private val terminalSessions = TerminalSessionManager(api)
-    private val _state = MutableStateFlow(AppState(fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints))
+    private val _state = MutableStateFlow(preferencesState())
     val state: StateFlow<AppState> = _state.asStateFlow()
     private var activeOperations = 0
+    private val deletingServiceIds = mutableSetOf<String>()
     private var configurationGeneration = 0
     private var connectionJob: Job? = null
     private var operationScope = newOperationScope()
@@ -65,6 +73,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             networkChanged(changed)
         }
         override fun onLost(network: Network) { networkChanged(forceReconnect = true) }
+    }
+
+    private fun preferencesState(config: GatewayConfig? = null): AppState {
+        val saved = config?.let(windowStore::load)
+        return AppState(
+            configured = config != null, gatewayConfig = config,
+            fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages,
+            customWindowLimit = uiPreferences.customWindowLimit, customCacheLimit = uiPreferences.customCacheLimit,
+            resourceCacheBytes = uiPreferences.resourceCacheBytes,
+            theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints,
+            windows = saved?.windows.orEmpty(), selectedWindowId = saved?.selectedId,
+            selectedServiceId = saved?.windows?.firstOrNull { it.id == saved.selectedId }?.serviceId,
+        )
     }
 
     private fun networkChanged(forceReconnect: Boolean = false) {
@@ -118,10 +139,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     init {
+        officialFrontends.resources.setMaxBytes(uiPreferences.resourceCacheBytes)
         secretStore.load()?.let { saved ->
             val config = saved.copy(allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
             api.updatePolicy(config)
-            _state.update { it.copy(configured = true, gatewayConfig = config) }
+            _state.value = preferencesState(config)
             launchOperation("正在连接 Gateway") {
                 api.checkConnection(preferPrimary = true)
                 applyMeta(api.meta())
@@ -155,7 +177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 resetOperations()
                 terminalSessions.closeAll()
                 api.configure(config, selection.endpoint, selection.latencyMs)
-                _state.update { AppState(configured = true, gatewayConfig = config, fontScale = it.fontScale, maxChatPages = it.maxChatPages, theme = it.theme, allowHttp = it.allowHttp, multipleEndpoints = it.multipleEndpoints) }
+                _state.value = preferencesState(config)
                 applyMeta(selection.metadata)
                 launchOperation("正在刷新服务") { loadServicesAndSelect() }
             } catch (error: CancellationException) {
@@ -175,7 +197,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         terminalSessions.closeAll()
         api.clear()
         secretStore.clear()
-        _state.value = AppState(fontScale = uiPreferences.fontScale, maxChatPages = uiPreferences.maxChatPages, theme = uiPreferences.theme, allowHttp = uiPreferences.allowHttp, multipleEndpoints = uiPreferences.multipleEndpoints)
+        _state.value = preferencesState()
     }
 
     fun setSection(section: MainSection) {
@@ -183,10 +205,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (section == MainSection.TERMINAL && current.services.firstOrNull { it.id == current.selectedServiceId }?.supportsTerminal == false) current
             else current.copy(section = section)
         }
+        if (section == MainSection.SESSIONS) {
+            _state.value.selectedWindowId?.let { id ->
+                _state.value.windows.firstOrNull { it.id == id }?.let { selectService(it.serviceId) }
+            }
+        } else if (section == MainSection.FILES && _state.value.remotePath.isBlank()) {
+            val service = _state.value.services.firstOrNull { it.id == _state.value.selectedServiceId }
+            if (service?.runtimeState == RuntimeState.CONNECTED) {
+                launchOperation("正在读取目录") { loadServiceWorkspace(service.id) }
+            }
+        }
     }
     fun clearError() { _state.update { it.copy(error = null) } }
     fun updateFontScale(value: Float) { _state.update { it.copy(fontScale = uiPreferences.setFontScale(value)) } }
     fun setMaxChatPages(value: Int) { _state.update { it.copy(maxChatPages = uiPreferences.setMaxChatPages(value)) } }
+    fun setCustomWindowLimit(value: Boolean) {
+        uiPreferences.setCustomWindowLimit(value)
+        _state.update { it.copy(customWindowLimit = value) }
+    }
+    fun setCustomCacheLimit(value: Boolean) {
+        uiPreferences.setCustomCacheLimit(value)
+        _state.update { it.copy(customCacheLimit = value) }
+    }
+    fun setResourceCacheBytes(value: Long) {
+        val saved = uiPreferences.setResourceCacheBytes(value)
+        officialFrontends.resources.setMaxBytes(saved)
+        _state.update { it.copy(resourceCacheBytes = saved) }
+    }
     fun setTheme(value: AppTheme) {
         uiPreferences.setTheme(value)
         _state.update { it.copy(theme = value) }
@@ -197,13 +242,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshGatewayMetadata() { launchOperation("正在刷新网关参数") { applyMeta(api.meta()) } }
 
     fun deleteService(serviceId: String) {
+        if (_state.value.windows.any { it.serviceId == serviceId }) {
+            _state.update { it.copy(error = "请先关闭该服务器的工作窗口") }
+            return
+        }
+        if (!deletingServiceIds.add(serviceId)) return
         launchOperation("正在删除服务") {
-            terminalSessions.close(serviceId)
-            api.deleteService(serviceId)
-            if (_state.value.selectedServiceId == serviceId) {
-                _state.update { it.copy(selectedServiceId = null, remotePath = "", remoteFiles = emptyList(), filePreview = null) }
+            try {
+                terminalSessions.close(serviceId)
+                api.deleteService(serviceId)
+                if (_state.value.selectedServiceId == serviceId) {
+                    _state.update { it.copy(selectedServiceId = null, remotePath = "", remoteFiles = emptyList(), filePreview = null) }
+                }
+                loadServicesAndSelect()
+            } finally {
+                deletingServiceIds.remove(serviceId)
             }
-            loadServicesAndSelect()
         }
     }
 
@@ -218,7 +272,123 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(selectedServiceId = serviceId, remotePath = "", remoteFiles = emptyList(), filePreview = null,
                 section = if (current.section == MainSection.TERMINAL && unsupportedTerminal) MainSection.SESSIONS else current.section)
         }
-        launchOperation("正在读取目录") { loadServiceWorkspace(serviceId) }
+        if (_state.value.section == MainSection.FILES &&
+            _state.value.services.any { it.id == serviceId && it.runtimeState == RuntimeState.CONNECTED }) {
+            launchOperation("正在读取目录") { loadServiceWorkspace(serviceId) }
+        }
+    }
+
+    fun createWindow(serviceId: String, workspace: String, title: String = "", toolId: String = "codex") {
+        if (serviceId in deletingServiceIds) {
+            _state.update { it.copy(error = "正在删除服务器，请稍后再试") }
+            return
+        }
+        val service = _state.value.services.firstOrNull { it.id == serviceId } ?: return
+        if (!isRemoteAbsolutePath(workspace) || toolId != "codex") {
+            _state.update { it.copy(error = if (toolId != "codex") "尚不支持该工具" else "工作目录必须为远端绝对路径") }
+            return
+        }
+        val window = WorkspaceWindow(UUID.randomUUID().toString(), serviceId, workspace,
+            title.trim().ifBlank { service.name }, toolId)
+        _state.update { it.copy(windows = it.windows + window, selectedWindowId = window.id, section = MainSection.SESSIONS) }
+        persistWindows()
+        selectService(serviceId)
+    }
+
+    /** Opening a server from Services reuses its latest window; file/terminal selection stays independent. */
+    fun openServiceWindow(serviceId: String) {
+        val existing = _state.value.windows.lastOrNull { it.serviceId == serviceId }
+        if (existing != null) {
+            selectWindow(existing.id)
+            return
+        }
+        val service = _state.value.services.firstOrNull { it.id == serviceId } ?: return
+        val config = _state.value.gatewayConfig ?: return
+        val path = officialFrontends.workspace(dev.codexremote.app.data.frontendScope(config, serviceId), service.home.orEmpty())
+        if (isRemoteAbsolutePath(path)) createWindow(serviceId, path)
+        else launchOperation("正在读取工作目录") { createWindow(serviceId, api.home(serviceId)) }
+    }
+
+    fun selectWindow(id: String) {
+        val window = _state.value.windows.firstOrNull { it.id == id } ?: return
+        _state.update { it.copy(selectedWindowId = id, section = MainSection.SESSIONS) }
+        persistWindows()
+        selectService(window.serviceId)
+    }
+
+    fun renameWindow(id: String, title: String) {
+        val name = title.trim()
+        if (name.isBlank() || id in _state.value.busyWindowIds) return
+        _state.update { current -> current.copy(windows = current.windows.map { if (it.id == id) it.copy(title = name) else it }) }
+        persistWindows()
+    }
+
+    fun closeWindow(id: String) = manageWindow(id, "正在关闭窗口") { window ->
+        api.closeExtensionWindow(window.serviceId, window.id, window.workspace)
+        windowConnections.invalidate(id)
+        val current = _state.value
+        val index = current.windows.indexOfFirst { it.id == id }
+        val remaining = current.windows.filterNot { it.id == id }
+        val selected = if (current.selectedWindowId == id) remaining.getOrNull(index.coerceAtMost(remaining.lastIndex))?.id
+            else current.selectedWindowId
+        _state.update { it.copy(windows = remaining, selectedWindowId = selected,
+            windowRevisions = it.windowRevisions - id) }
+        persistWindows()
+        if (current.selectedWindowId == id && selected != null) {
+            remaining.firstOrNull { it.id == selected }?.let { selectService(it.serviceId) }
+        }
+    }
+
+    fun restartWindow(id: String) = manageWindow(id, "正在重启此窗口后端") { window ->
+        api.restartExtensionWindow(window.serviceId, window.id, window.workspace)
+        windowConnections.invalidate(id)
+        _state.update { it.copy(windowRevisions = it.windowRevisions + (id to ((it.windowRevisions[id] ?: 0) + 1))) }
+    }
+
+    fun changeWindowWorkspace(id: String, path: String) {
+        if (!isRemoteAbsolutePath(path)) {
+            _state.update { it.copy(error = "工作目录必须为远端绝对路径") }
+            return
+        }
+        if (_state.value.windows.firstOrNull { it.id == id }?.workspace == path) return
+        manageWindow(id, "正在更改工作目录") { window ->
+            // Validate the destination while the original backend and renderer are still recoverable.
+            api.files(window.serviceId, path)
+            api.closeExtensionWindow(window.serviceId, window.id, window.workspace)
+            windowConnections.invalidate(id)
+            _state.update { current -> current.copy(
+                windows = current.windows.map { if (it.id == id) it.copy(workspace = path) else it },
+                windowRevisions = current.windowRevisions + (id to ((current.windowRevisions[id] ?: 0) + 1)),
+            ) }
+            persistWindows()
+        }
+    }
+
+    private fun manageWindow(id: String, label: String, operation: suspend (WorkspaceWindow) -> Unit) {
+        val generation = configurationGeneration
+        val window = _state.value.windows.firstOrNull { it.id == id } ?: return
+        if (id in _state.value.busyWindowIds) return
+        if (_state.value.services.none { it.id == window.serviceId && it.runtimeState == RuntimeState.CONNECTED }) {
+            _state.update { it.copy(error = "服务器离线，连接恢复后再操作此窗口") }
+            return
+        }
+        _state.update { it.copy(busyWindowIds = it.busyWindowIds + id) }
+        // Synchronous transport suspension prevents an old renderer reconnecting during the HTTP operation.
+        windowConnections.setSuspended(id, true)
+        launchOperation(label) {
+            try { operation(window) }
+            finally {
+                if (generation == configurationGeneration) {
+                    _state.update { it.copy(busyWindowIds = it.busyWindowIds - id) }
+                    windowConnections.setSuspended(id, false)
+                }
+            }
+        }
+    }
+
+    private fun persistWindows() {
+        val current = _state.value
+        current.gatewayConfig?.let { windowStore.save(it, current.windows, current.selectedWindowId) }
     }
 
     fun browse(path: String? = null) {
@@ -350,6 +520,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun loadServicesAndSelect() {
         val services = parseServices(api.services())
+        val config = _state.value.gatewayConfig
+        if (config != null && windowStore.load(config) == null) {
+            val migrated = services.mapNotNull { officialFrontends.legacyWindow(config, it) }
+            val windows = if (migrated.isNotEmpty()) migrated else {
+                val initial = services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }
+                    ?: services.firstOrNull()
+                val directory = initial?.home?.takeIf(::isRemoteAbsolutePath)
+                    ?: if (initial?.runtimeState == RuntimeState.CONNECTED) api.home(initial.id) else null
+                if (initial != null && directory != null && isRemoteAbsolutePath(directory)) {
+                    listOf(WorkspaceWindow(UUID.randomUUID().toString(), initial.id, directory, initial.name))
+                } else emptyList()
+            }
+            val selectedWindow = windows.firstOrNull { it.serviceId == _state.value.selectedServiceId }
+                ?: windows.firstOrNull()
+            windowStore.save(config, windows, selectedWindow?.id)
+            _state.update { it.copy(windows = windows, selectedWindowId = selectedWindow?.id,
+                selectedServiceId = selectedWindow?.serviceId ?: it.selectedServiceId) }
+        }
         val selected = _state.value.selectedServiceId?.takeIf { id -> services.any { it.id == id } }
             ?: services.firstOrNull { it.runtimeState == RuntimeState.CONNECTED }?.id
             ?: services.firstOrNull()?.id
@@ -359,8 +547,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 section = if (current.section == MainSection.TERMINAL && services.firstOrNull { it.id == selected }?.supportsTerminal == false) MainSection.SESSIONS else current.section)
         }
         if (selected != null && services.any { it.id == selected && it.runtimeState == RuntimeState.CONNECTED }) {
-            if (_state.value.remotePath.isBlank()) loadServiceWorkspace(selected)
-        } else _state.update { it.copy(section = MainSection.SERVICES) }
+            if (_state.value.section == MainSection.FILES && _state.value.remotePath.isBlank()) loadServiceWorkspace(selected)
+        } else if (_state.value.windows.isEmpty()) _state.update { it.copy(section = MainSection.SERVICES) }
     }
 
     private suspend fun loadServiceWorkspace(serviceId: String) {
@@ -394,6 +582,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resetOperations() {
+        windowConnections.clear()
         operationScope.coroutineContext[Job]?.cancel()
         operationScope = newOperationScope()
         activeOperations = 0

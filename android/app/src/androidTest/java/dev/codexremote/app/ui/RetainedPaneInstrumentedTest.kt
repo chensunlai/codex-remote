@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
@@ -22,6 +24,55 @@ import java.util.concurrent.atomic.AtomicReference
 
 class RetainedPaneInstrumentedTest {
     @get:Rule val compose = createComposeRule()
+
+    @Test
+    fun replacingWebViewKeepsResidentIndicatorUntilTheReplacementIsReleased() {
+        val generation = mutableStateOf(0)
+        val visible = mutableStateOf(true)
+        val mounted = mutableStateOf(true)
+        val residents = mutableSetOf("other-server")
+        val events = mutableListOf<String>()
+        var releaseBrowser: () -> Unit = {}
+        compose.setContent {
+            if (mounted.value) RetainedPane(visible.value) {
+                key(generation.value) {
+                    val instance = generation.value
+                    val browser = remember { mutableStateOf<WebView?>(null) }
+                    WebViewRetentionEffect(browser.value != null) { retained ->
+                        if (retained) residents.add("current-server") else residents.remove("current-server")
+                    }
+                    DisposableEffect(Unit) {
+                        onDispose { events.add("destroy $instance"); browser.value?.destroy() }
+                    }
+                    AndroidView(factory = { context ->
+                        WebView(context).also {
+                            events.add("create $instance")
+                            browser.value = it
+                            releaseBrowser = { it.destroy(); browser.value = null }
+                        }
+                    })
+                }
+            }
+        }
+        compose.runOnIdle { assertEquals(setOf("other-server", "current-server"), residents) }
+        repeat(3) { index ->
+            compose.runOnIdle { generation.value += 1 }
+            compose.runOnIdle {
+                assertEquals(setOf("other-server", "current-server"), residents)
+                // AndroidView's new factory runs before the old composition is disposed.
+                assertEquals(true, events.indexOf("create ${index + 1}") < events.indexOf("destroy $index"))
+                visible.value = false
+            }
+            compose.runOnIdle {
+                assertEquals(setOf("other-server", "current-server"), residents)
+                visible.value = true
+            }
+        }
+        compose.runOnIdle { releaseBrowser() }
+        compose.runOnIdle { assertEquals(setOf("other-server"), residents); generation.value += 1 }
+        compose.runOnIdle { assertEquals(setOf("other-server", "current-server"), residents); mounted.value = false }
+        compose.runOnIdle { assertEquals(setOf("other-server"), residents) }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Test

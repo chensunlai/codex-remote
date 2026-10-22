@@ -3,6 +3,8 @@ package dev.codexremote.app.data
 import android.content.Context
 import androidx.core.content.edit
 import dev.codexremote.app.model.GatewayConfig
+import dev.codexremote.app.model.RemoteService
+import dev.codexremote.app.model.WorkspaceWindow
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -24,6 +26,25 @@ class OfficialFrontendStore(context: Context) {
     fun clientId(scope: String): String = preferences.getString("client-$scope", null)
         ?: UUID.randomUUID().toString().also { id -> preferences.edit { putString("client-$scope", id) } }
 
+    /** Reuse the old renderer's identity, including its opaque state, without starting another host. */
+    internal fun legacyWindow(config: GatewayConfig, service: RemoteService): WorkspaceWindow? {
+        val scope = frontendScope(config, service.id)
+        if (!preferences.contains("client-$scope") && !preferences.contains("workspace-$scope")) return null
+        val path = workspace(scope, service.home.orEmpty())
+        if (!isRemoteAbsolutePath(path)) return null
+        val window = WorkspaceWindow(clientId(scope), service.id, path, service.name)
+        val target = windowStateScope(config, window)
+        pageState.edit {
+            pageState.all.forEach { (key, value) ->
+                if (key.startsWith("$scope:") && value is String) {
+                    val migratedKey = target + key.removePrefix(scope)
+                    if (!pageState.contains(migratedKey)) putString(migratedKey, value)
+                }
+            }
+        }
+        return window
+    }
+
     /** Public WebView getState/setState values are opaque JSON; the host never reads their fields. */
     internal fun state(scope: String, viewId: String): String = pageState.getString("$scope:$viewId", "null") ?: "null"
 
@@ -34,4 +55,10 @@ class OfficialFrontendStore(context: Context) {
 
 fun frontendScope(config: GatewayConfig, serviceId: String): String =
     MessageDigest.getInstance("SHA-256").digest("${config.baseUrl}\u0000${config.token}\u0000$serviceId".toByteArray())
+        .joinToString("") { "%02x".format(it) }
+
+/** Static resources keep using frontendScope; only renderer state includes the window and directory. */
+fun windowStateScope(config: GatewayConfig, window: WorkspaceWindow): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest("${frontendScope(config, window.serviceId)}\u0000${window.id}\u0000${window.workspace}".toByteArray())
         .joinToString("") { "%02x".format(it) }

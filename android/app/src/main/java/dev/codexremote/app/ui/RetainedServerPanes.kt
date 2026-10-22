@@ -14,6 +14,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import dev.codexremote.app.data.UiPreferences
 
+/** Report after composition commits, so an old WebView's disposal cannot clear its replacement. */
+@Composable
+internal fun WebViewRetentionEffect(retained: Boolean, onChanged: (Boolean) -> Unit) {
+    DisposableEffect(retained) {
+        onChanged(retained)
+        onDispose { if (retained) onChanged(false) }
+    }
+}
+
 internal fun retainedServerPageIds(
     retained: List<String>, availableIds: Set<String>, selectedId: String?, visible: Boolean, maxPages: Int,
 ): List<String> {

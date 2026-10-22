@@ -108,4 +108,44 @@ class ExtensionResourceCacheTest {
         val cache = ExtensionResourceCache(file)
         assertArrayEquals(byteArrayOf(1), cache.load("scope", packageId, "1.0", "index.js") { byteArrayOf(1) })
     }
+
+    @Test fun resizingEvictsOldestAssetsInTheBackgroundAndGrowthKeepsExistingBytes() {
+        val directory = temporary.newFolder()
+        val cache = ExtensionResourceCache(directory, maxBytes = 240)
+        fun load(path: String, fetch: () -> ByteArray = { ByteArray(20) }) =
+            cache.load("scope", packageId, "1.0", path, fetch)
+        load("a.js"); load("b.js"); load("c.js")
+        load("a.js") { error("Touching a cached asset must not download") }
+        cache.setMaxBytes(120).get(5, TimeUnit.SECONDS)
+        assertEquals(2, directory.listFiles()!!.size)
+        load("a.js") { error("Recently used asset should survive shrinking") }
+        load("c.js") { error("Newest asset should survive shrinking") }
+        cache.setMaxBytes(300).get(5, TimeUnit.SECONDS)
+        load("b.js") { ByteArray(20) { 2 } }
+        assertEquals(3, directory.listFiles()!!.size)
+        assertTrue(directory.listFiles()!!.sumOf(File::length) <= 300)
+    }
+
+    @Test fun recordsHitsAndFetchedDecodedBytesWithoutCountingFailedDownloads() {
+        val cache = ExtensionResourceCache(temporary.newFolder())
+        repeat(2) { cache.load("scope", packageId, "1.0", "app.js") { ByteArray(20) } }
+        runCatching { cache.load("scope", packageId, "1.0", "failed.js") { error("offline") } }
+        assertEquals(ExtensionResourceCache.Diagnostics(hits = 1, misses = 2, fetchedBytes = 20), cache.diagnostics())
+    }
+
+    @Test fun concurrentAssetsRemainBoundedAfterCapacityChanges() {
+        val directory = temporary.newFolder()
+        val cache = ExtensionResourceCache(directory, maxBytes = 500, maxEntries = 4)
+        val executor = Executors.newFixedThreadPool(6)
+        try {
+            val tasks = (1..24).map { index -> executor.submit {
+                cache.load("scope", packageId, "1.0", "$index.js") { ByteArray(20) }
+            } }
+            val resized = cache.setMaxBytes(120)
+            tasks.forEach { it.get(5, TimeUnit.SECONDS) }
+            resized.get(5, TimeUnit.SECONDS)
+            assertTrue(directory.listFiles()!!.sumOf(File::length) <= 120)
+            assertTrue(directory.listFiles()!!.size <= 2)
+        } finally { executor.shutdownNow() }
+    }
 }

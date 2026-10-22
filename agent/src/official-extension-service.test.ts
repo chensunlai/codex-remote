@@ -75,8 +75,11 @@ describe("official extension process lifecycle", () => {
     await until(async () => readFile(join(f.root, "starts"), "utf8").then(value => value === "start\n", () => false));
     process.kill(oldPid, "SIGKILL");
     await until(() => f.service.runtimeStatus().length === 0);
-    await f.service.restart();
-    expect((await f.service.status()).hosts).toBe(0);
+    const other = { ...f.attach, viewId: "other-independent-window" };
+    const otherSnapshot = await f.service.request("extension.view.attach", other) as { epoch: string };
+    await f.service.request("extension.view.restart", { viewId: f.attach.viewId });
+    expect((await f.service.request("extension.view.attach", other) as { epoch: string }).epoch).toBe(otherSnapshot.epoch);
+    expect((await f.service.status()).hosts).toBe(1);
     const attach = { ...f.attach, rendererId: "renderer-after-restart" };
     const restored = await f.service.request("extension.view.attach", attach) as { epoch: string };
     expect(restored.epoch).not.toBe(f.snapshot.epoch);
@@ -84,6 +87,26 @@ describe("official extension process lifecycle", () => {
     await until(() => f.service.runtimeStatus().length > 0);
     expect(Number(f.service.runtimeStatus()[0]!.channelId.split(":").at(-1))).not.toBe(oldPid);
     await until(async () => readFile(join(f.root, "starts"), "utf8").then(value => value === "start\nstart\n", () => false));
+    await f.service.restart();
+  });
+
+  it("serializes targeted close after attach, closes absent windows idempotently and protects newer epochs", async () => {
+    const f = await fixture();
+    const second = { ...f.attach, viewId: "second-window", rendererId: "second-renderer" };
+    const attaching = f.service.request("extension.view.attach", second);
+    const closing = f.service.request("extension.view.close", { viewId: second.viewId });
+    await attaching;
+    expect(await closing).toMatchObject({ stopped: true });
+    expect((await f.service.status()).hosts).toBe(1);
+    expect(await f.service.request("extension.view.close", { viewId: second.viewId })).toEqual({ stopped: true });
+    expect(await f.service.request("extension.view.close", { viewId: f.attach.viewId, epoch: "stale" })).toEqual({ stopped: false, epoch: f.snapshot.epoch });
+    expect((await f.service.status()).hosts).toBe(1);
+    // Detached or evicted renderers still have the same manageable Agent host.
+    await f.service.request("extension.view.detach", f.attach);
+    expect(await f.service.request("extension.view.close", { viewId: f.attach.viewId, epoch: f.snapshot.epoch })).toEqual({ stopped: true, epoch: f.snapshot.epoch });
+    expect((await f.service.status()).hosts).toBe(0);
+    const restored = await f.service.request("extension.view.attach", f.attach) as { epoch: string };
+    expect(restored.epoch).not.toBe(f.snapshot.epoch);
     await f.service.restart();
   });
 

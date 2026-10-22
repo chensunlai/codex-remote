@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { buildGateway, type BuiltGateway } from "./app.js";
 
@@ -26,6 +26,7 @@ describe("Official extension host relay", () => {
   let calls: AgentCall[];
   let sockets: WebSocket[];
   let respond: (method: string, params: Json) => unknown | Promise<unknown>;
+  let agentCapabilities: string[];
 
   beforeEach(async () => {
     process.env.LOG_LEVEL = "silent";
@@ -40,11 +41,14 @@ describe("Official extension host relay", () => {
     baseUrl = `http://127.0.0.1:${address.port}`;
     calls = [];
     sockets = [];
-    respond = (method, params) => method === "extension.view.attach" ? snapshot(params) : {};
+    agentCapabilities = ["extension-window-management-v1"];
+    respond = (method, params) => method === "extension.view.attach" ? snapshot(params)
+      : ["extension.view.close", "extension.view.restart"].includes(method) ? { stopped: true } : {};
     agent = await connectAgent();
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     for (const socket of sockets) socket.terminate();
     await gateway.app.close();
     await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
@@ -66,6 +70,93 @@ describe("Official extension host relay", () => {
     const close = new Promise<number>(resolve => socket.once("close", resolve));
     expect(await messages.next("error")).toMatchObject({ code: "UPGRADE_AGENT_REQUIRED" });
     expect(await close).toBe(4400);
+    expect(calls.some(call => call.method === "extension.view.attach")).toBe(false);
+  });
+
+  it("manages an evicted window by its owner-derived identity and keeps close idempotent", async () => {
+    const ownerId = await gateway.services.tokens.verify(TOKEN);
+    const viewId = createHash("sha256").update(JSON.stringify([ownerId, SERVICE_ID, CLIENT_ID, WORKSPACE])).digest("hex");
+    for (const action of ["close", "close", "restart"]) {
+      const result = await api(`/view/${action}`, "POST", { clientId: CLIENT_ID, workspace: WORKSPACE });
+      expect(result.status).toBe(200);
+      expect(await result.json()).toEqual({ data: { stopped: true } });
+    }
+    expect(calls.filter(call => ["extension.view.close", "extension.view.restart"].includes(call.method))).toEqual([
+      { method: "extension.view.close", params: { viewId } },
+      { method: "extension.view.close", params: { viewId } },
+      { method: "extension.view.restart", params: { viewId } },
+    ]);
+    const before = calls.length;
+    expect((await api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE }, OTHER_TOKEN)).status).toBe(409);
+    for (const body of [{ clientId: "bad", workspace: WORKSPACE }, { clientId: CLIENT_ID, workspace: "relative" }]) {
+      expect((await api("/view/close", "POST", body)).status).toBe(400);
+    }
+    expect(calls.length).toBe(before);
+  });
+
+  it("closes only the target connection and leaves another window on the same service usable", async () => {
+    const first = await connectView();
+    const firstReady = await first.messages.next("ready");
+    const secondClient = "55efc088-e146-4711-9d11-96412ea50cc9";
+    const second = await connectView({ clientId: secondClient });
+    const secondReady = await second.messages.next("ready");
+    const closed = onClose(first.socket);
+    const result = await api("/view/restart", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE, epoch: EPOCH });
+    expect(result.status).toBe(200);
+    expect(await closed).toBe(4002);
+    expect(calls.find(call => call.method === "extension.view.restart")?.params).toEqual({ viewId: firstReady.viewId, epoch: EPOCH });
+    expect(second.socket.readyState).toBe(WebSocket.OPEN);
+    second.socket.send(JSON.stringify({ type: "message", messageId: "survives", epoch: EPOCH, payload: "other window" }));
+    await second.messages.next("delivery");
+    expect(calls.find(call => call.method === "extension.view.send")?.params.viewId).toBe(secondReady.viewId);
+  });
+
+  it("waits for an in-flight attach before stopping and rejects reconnects during the operation", async () => {
+    let release!: () => void;
+    const attached = new Promise<void>(resolve => { release = resolve; });
+    respond = async (method, params) => {
+      if (method === "extension.view.attach") { await attached; return snapshot(params); }
+      return { stopped: true };
+    };
+    const first = await connectView();
+    await eventually(() => calls.some(call => call.method === "extension.view.attach"));
+    const closed = onClose(first.socket);
+    const closing = api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE });
+    expect(await closed).toBe(4002);
+    expect(calls.some(call => call.method === "extension.view.close")).toBe(false);
+    const reconnect = new WebSocket(viewUrl(), { headers: { Authorization: `Bearer ${TOKEN}` } });
+    sockets.push(reconnect);
+    expect(await onClose(reconnect)).toBe(4002);
+    release();
+    expect((await closing).status).toBe(200);
+    expect(calls.filter(call => call.method === "extension.view.attach")).toHaveLength(1);
+    expect(calls.at(-1)?.method).toBe("extension.view.close");
+  });
+
+  it("requests an upgrade for an old Agent and rejects stale epochs without stopping the active connection", async () => {
+    const first = await connectView(); await first.messages.next("ready");
+    agentCapabilities = [];
+    const legacy = await api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE });
+    expect(legacy.status).toBe(409);
+    expect(await legacy.json()).toMatchObject({ error: { code: "UPGRADE_AGENT_REQUIRED" } });
+    agentCapabilities = ["extension-window-management-v1"];
+    const stale = await api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE, epoch: "previous-host" });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "EXTENSION_VIEW_CHANGED" } });
+    expect(first.socket.readyState).toBe(WebSocket.OPEN);
+    expect(calls.some(call => call.method === "extension.view.close")).toBe(false);
+  });
+
+  it("cancels an unfinished transport handshake so it cannot attach after HTTP close completes", async () => {
+    vi.spyOn(gateway.services.agents, "transportLimit").mockReturnValue(128 * 1024 * 1024);
+    const url = viewUrl(); url.pathname = url.pathname.replace("/api/v3/", "/api/v4/");
+    const socket = new WebSocket(url, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    sockets.push(socket);
+    const messages = new MessageQueue(socket);
+    await messages.next("transport-config");
+    const closed = onClose(socket);
+    expect((await api("/view/close", "POST", { clientId: CLIENT_ID, workspace: WORKSPACE })).status).toBe(200);
+    expect(await closed).toBe(4002);
     expect(calls.some(call => call.method === "extension.view.attach")).toBe(false);
   });
 
@@ -300,6 +391,8 @@ describe("Official extension host relay", () => {
     expect((await api("/status", "GET", undefined, OTHER_TOKEN)).status).toBe(409);
     const meta = await fetch(`${baseUrl}/api/v1/meta`, { headers: { Authorization: `Bearer ${TOKEN}` } });
     expect((await meta.json() as { data: { capabilities: string[] } }).data.capabilities).toContain("official-extension-host-v1");
+    const capabilities = await (await fetch(`${baseUrl}/api/v1/meta`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json() as { data: { capabilities: string[] } };
+    expect(capabilities.data.capabilities).toContain("extension-window-management-v1");
   });
 
   it("returns resource bytes and MIME unchanged with checksum validation and ownership", async () => {
@@ -374,7 +467,7 @@ describe("Official extension host relay", () => {
       const request = JSON.parse(raw.toString()) as { id: string; method: string; params: Json };
       if (request.method === "service.describe") {
         socket.send(JSON.stringify({ type: "response", id: request.id, ok: true, result: {
-          hostname: "fixture", platform: "linux", arch: "x64", home: "/tmp", agentVersion: "test", capabilities: [],
+          hostname: "fixture", platform: "linux", arch: "x64", home: "/tmp", agentVersion: "test", capabilities: agentCapabilities,
         } }));
         return;
       }

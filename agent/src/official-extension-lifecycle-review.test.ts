@@ -67,7 +67,7 @@ describe("extension host process cleanup regressions", () => {
   it("kills an owned app-server that ignores SIGTERM when explicitly restarting", async () => {
     const { service, pid } = await fixture("ignore-term");
     expect(await running(pid)).toBe(true);
-    await service.restart();
+    await service.request("extension.view.restart", { viewId: "lifecycle-review" });
     await vi.waitFor(async () => expect(await running(pid)).toBe(false), { timeout: 2000 });
   });
 

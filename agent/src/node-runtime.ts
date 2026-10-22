@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 export const minimumNodeRuntimeVersion = "24.18.0";
+const verifiedRuntimes = new Map<string, { signature: string; result: Promise<void> }>();
 
 /** The official extension must run in real Node, never inside Bun's compiled runtime. */
 export async function resolveNodeExecutable(programPath = process.execPath): Promise<string> {
@@ -45,6 +46,27 @@ export async function resolveExtensionHostDirectory(programPath = process.execPa
 }
 
 export async function verifyNodeExecutable(executable: string): Promise<void> {
+  let signature: string | undefined;
+  try {
+    const file = await stat(executable, { bigint: true });
+    signature = JSON.stringify([`${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}:${file.mode}`,
+      process.env.CODEX_REMOTE_NODE_PATH, process.env.PATH, process.env.PATHEXT]);
+  } catch { /* Let execFile report the original error; unresolved commands are not cached. */ }
+  if (signature === undefined) return checkNodeVersion(executable);
+  const cached = verifiedRuntimes.get(executable);
+  if (cached?.signature === signature) return cached.result;
+  const result = checkNodeVersion(executable);
+  verifiedRuntimes.delete(executable);
+  verifiedRuntimes.set(executable, { signature, result });
+  // Normal installations use a single runtime; bound development overrides as well.
+  while (verifiedRuntimes.size > 32) verifiedRuntimes.delete(verifiedRuntimes.keys().next().value!);
+  try { await result; } catch (error) {
+    if (verifiedRuntimes.get(executable)?.result === result) verifiedRuntimes.delete(executable);
+    throw error;
+  }
+}
+
+async function checkNodeVersion(executable: string): Promise<void> {
   const { stdout } = await execute(executable, ["--version"], { timeout: 10_000, maxBuffer: 1024, windowsHide: true });
   const match = /^v(\d+)\.(\d+)\.(\d+)\s*$/.exec(stdout);
   const actual = match?.slice(1).map(Number);

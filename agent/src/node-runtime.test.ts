@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -53,5 +53,33 @@ describe("official extension Node runtime", () => {
     const executable = join(directory, "not-node");
     await node(executable, "bun 1.3.14");
     await expect(verifyNodeExecutable(executable)).rejects.toThrow("24.18.0");
+  });
+
+  it("reuses successful concurrent checks but revalidates file and environment changes", async () => {
+    const directory = await fixture();
+    const executable = join(directory, "counted-node");
+    const calls = join(directory, "calls");
+    await writeFile(executable, `#!/bin/sh\nprintf x >> '${calls}'\nprintf 'v24.18.0\\n'\n`);
+    await chmod(executable, 0o755);
+    await Promise.all(Array.from({ length: 8 }, () => verifyNodeExecutable(executable)));
+    await verifyNodeExecutable(executable);
+    expect(await readFile(calls, "utf8")).toBe("x");
+    vi.stubEnv("CODEX_REMOTE_NODE_PATH", executable);
+    await verifyNodeExecutable(executable);
+    expect(await readFile(calls, "utf8")).toBe("xx");
+    await writeFile(executable, `#!/bin/sh\nprintf x >> '${calls}'\nprintf 'v25.1.0\\n'\n`);
+    await verifyNodeExecutable(executable);
+    expect(await readFile(calls, "utf8")).toBe("xxx");
+  });
+
+  it("does not remember failed version checks", async () => {
+    const directory = await fixture();
+    const executable = join(directory, "old-node");
+    const calls = join(directory, "calls");
+    await writeFile(executable, `#!/bin/sh\nprintf x >> '${calls}'\nprintf 'v22.0.0\\n'\n`);
+    await chmod(executable, 0o755);
+    await expect(verifyNodeExecutable(executable)).rejects.toThrow("24.18.0");
+    await expect(verifyNodeExecutable(executable)).rejects.toThrow("24.18.0");
+    expect(await readFile(calls, "utf8")).toBe("xx");
   });
 });

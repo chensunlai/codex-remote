@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,6 +116,63 @@ describe("complete official extension packages", () => {
     const tiny = await store.resource(imported.version, "webview/picture.png", { acceptEncoding: "gzip" });
     expect(tiny.encoding).toBeUndefined();
   });
+
+  it("merges concurrent resource compression and reuses only content-addressed results", async () => {
+    const root = await fixture();
+    const directory = await source(root);
+    const original = Buffer.from("official unchanged bytes\n".repeat(8192));
+    await writeFile(join(directory, "webview", "app.js"), original);
+    const store = new OfficialExtensionStore(join(root, "store"));
+    const installed = await store.importDirectory(directory);
+    const requests = await Promise.all(Array.from({ length: 8 }, () => store.resource(installed.version,
+      "webview/app.js", { acceptEncoding: "gzip", packageSha256: installed.sha256 })));
+    for (const response of requests) expect(gunzipSync(Buffer.from(response.content, "base64")).equals(original)).toBe(true);
+    expect(store.resourceDiagnostics().compressions).toBe(1);
+    const hits = store.resourceDiagnostics().compressionHits;
+    await store.resource(installed.version, "webview/app.js", { acceptEncoding: "gzip" });
+    expect(store.resourceDiagnostics()).toMatchObject({ compressions: 1, compressionHits: hits + 1, cachedEntries: 1 });
+
+    const changed = Buffer.from("different actual bytes\n".repeat(8192));
+    await writeFile(join(installed.directory, "webview", "app.js"), changed);
+    const response = await store.resource(installed.version, "webview/app.js", { acceptEncoding: "gzip" });
+    expect(gunzipSync(Buffer.from(response.content, "base64")).equals(changed)).toBe(true);
+    expect(response.sha256).toBe(createHash("sha256").update(changed).digest("hex"));
+    expect(store.resourceDiagnostics()).toMatchObject({ compressions: 2, cachedEntries: 2 });
+  });
+
+  it("still validates installed files and paths after gzip cache hits", async () => {
+    const root = await fixture();
+    const directory = await source(root);
+    await writeFile(join(directory, "webview", "app.js"), "unchanged".repeat(1000));
+    const store = new OfficialExtensionStore(join(root, "store"));
+    const installed = await store.importDirectory(directory);
+    await store.resource(installed.version, "webview/app.js", { acceptEncoding: "gzip" });
+    await rm(join(installed.directory, "webview", "app.js"));
+    await symlink(join(directory, "webview", "app.js"), join(installed.directory, "webview", "app.js"));
+    await expect(store.resource(installed.version, "webview/app.js", { acceptEncoding: "gzip" })).rejects.toThrow("符号链接");
+    await expect(store.resource(installed.version, "../app.js", { acceptEncoding: "gzip" })).rejects.toThrow("路径");
+    await expect(store.resource(installed.version, "webview/app.js", { acceptEncoding: "gzip", packageSha256: "0".repeat(64) })).rejects.toThrow("未安装");
+  });
+
+  it("bounds gzip results to 64 MiB and evicts the least recently used result", async () => {
+    const root = await fixture();
+    const directory = await source(root);
+    // A mostly incompressible resource with a compressible tail occupies about 10 MiB
+    // in gzip form; seven distinct paths exercise the production byte limit.
+    const resource = Buffer.concat([randomBytes(10 * 1024 * 1024), Buffer.alloc(1024 * 1024)]);
+    for (let index = 0; index < 7; index++) await writeFile(join(directory, "webview", `${index}.bin`), resource);
+    const store = new OfficialExtensionStore(join(root, "store"));
+    const installed = await store.importDirectory(directory);
+    for (let index = 0; index < 7; index++) await store.resource(installed.version, `webview/${index}.bin`, { acceptEncoding: "gzip" });
+    expect(store.resourceDiagnostics()).toMatchObject({ compressions: 7, cachedEntries: 6 });
+    expect(store.resourceDiagnostics().cachedBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    const recent = await store.resource(installed.version, "webview/6.bin", { acceptEncoding: "gzip" });
+    expect(gunzipSync(Buffer.from(recent.content, "base64")).equals(resource)).toBe(true);
+    expect(store.resourceDiagnostics().compressions).toBe(7);
+    await store.resource(installed.version, "webview/0.bin", { acceptEncoding: "gzip" });
+    expect(store.resourceDiagnostics().compressions).toBe(8);
+    expect(store.resourceDiagnostics().cachedBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+  }, 20_000);
 
   it("selects the exact installed package when two packages share a version", async () => {
     const root = await fixture();

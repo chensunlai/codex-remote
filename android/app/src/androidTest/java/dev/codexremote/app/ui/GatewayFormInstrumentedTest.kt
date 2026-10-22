@@ -12,10 +12,12 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.model.GatewayConfig
 import org.junit.Rule
@@ -33,7 +35,7 @@ class GatewayFormInstrumentedTest {
             CodexRemoteTheme {
                 Column {
                     GatewayForm(null, false, null, false, "连接网关", { _, _, _ -> }, multipleEndpoints = multiple.value)
-                    ExperimentalSettings(http.value, multiple.value) { h, m -> http.value = h; multiple.value = m }
+                    ExperimentalSettings(http.value, multiple.value, onChange = { h, m -> http.value = h; multiple.value = m })
                 }
             }
         }
@@ -51,6 +53,39 @@ class GatewayFormInstrumentedTest {
         compose.onNodeWithContentDescription("多个网关入口").performClick()
         compose.onNodeWithText("完成").performClick()
         compose.onNodeWithContentDescription("优先入口（每行一个，按顺序）").assertDoesNotExist()
+    }
+
+    @Test
+    fun performanceControlsRequireOptInAndKeepSelectedValuesWhenDisabled() {
+        val windows = mutableStateOf(false)
+        val cache = mutableStateOf(false)
+        val count = mutableStateOf(4)
+        val bytes = mutableStateOf(512L * 1024 * 1024)
+        compose.setContent {
+            CodexRemoteTheme {
+                ExperimentalSettings(
+                    http = false, multiple = false, onChange = { _, _ -> },
+                    customWindowLimit = windows.value, maxChatPages = count.value,
+                    customCacheLimit = cache.value, resourceCacheBytes = bytes.value,
+                    onCustomWindowLimitChange = { windows.value = it },
+                    onMaxChatPagesChange = { count.value = it },
+                    onCustomCacheLimitChange = { cache.value = it },
+                    onResourceCacheBytesChange = { bytes.value = it },
+                )
+            }
+        }
+        compose.onNodeWithText("实验性功能").performClick()
+        compose.onNodeWithContentDescription("增加驻留窗口").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("自定义内存驻留窗口数").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("增加驻留窗口").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("自定义内存驻留窗口数").performScrollTo().performClick()
+        compose.onNodeWithText("5").performScrollTo().assertExists()
+        compose.onNodeWithContentDescription("增加驻留窗口").assertIsNotEnabled()
+        compose.onNodeWithText("2 GiB").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("自定义资源缓存大小").performScrollTo().performClick()
+        compose.onNodeWithText("2 GiB").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("自定义资源缓存大小").performScrollTo().performClick()
+        compose.onNodeWithText("2 GiB").performScrollTo().assertIsSelected().assertIsNotEnabled()
     }
 
     @Test

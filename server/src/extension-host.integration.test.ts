@@ -212,6 +212,44 @@ describe("Gateway and real Agent official extension host integration", () => {
     expect((await gateway.services.agents.list(ownerId))[0]?.runtime.state).toBe("connected");
   }, 30_000);
 
+  it("closes and restarts independent windows through HTTP without disturbing the other host", async () => {
+    const otherClient = "55efc088-e146-4711-9d11-96412ea50cc9";
+    const first = await connect();
+    const firstReady = await first.messages.next(message => message.type === "ready");
+    const second = await connect({ clientId: otherClient });
+    const secondReady = await second.messages.next(message => message.type === "ready");
+    expect(secondReady.viewId).not.toBe(firstReady.viewId);
+    send(first.socket, firstReady.epoch, "first-task", "task");
+    send(second.socket, secondReady.epoch, "second-task", "task");
+    await first.messages.next(message => message.type === "message" && unwire(message.payload).event === "task-started");
+    await second.messages.next(message => message.type === "message" && unwire(message.payload).event === "task-started");
+
+    const control = async (action: string, clientId: string, epoch?: string) => {
+      const response = await fetch(`${baseUrl}/api/v3/services/${serviceId}/extension/view/${action}`, {
+        method: "POST", headers: { ...authorization, "content-type": "application/json" },
+        body: JSON.stringify({ clientId, workspace: directory, ...(epoch ? { epoch } : {}) }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ data: { stopped: true } });
+    };
+    const firstClosed = closed(first.socket);
+    await control("close", CLIENT, firstReady.epoch);
+    expect(await firstClosed).toBe(4002);
+    const status = await gateway.services.agents.request<{ hosts: number }>(ownerId, serviceId, "extension.status", {});
+    expect(status.hosts).toBe(1);
+    send(second.socket, secondReady.epoch, "other-survives", "still works");
+    expect(unwire((await second.messages.next(message => message.type === "message" && unwire(message.payload).echo === "still works")).payload).echo).toBe("still works");
+    // An evicted/disconnected window is managed by identity without a renderer.
+    const secondClosed = closed(second.socket); second.socket.close(); await secondClosed;
+    await control("restart", otherClient, secondReady.epoch);
+    await control("close", CLIENT);
+    const restored = await connect({ clientId: otherClient, rendererId: NEW_RENDERER });
+    const ready = await restored.messages.next(message => message.type === "ready");
+    expect(ready.epoch).not.toBe(secondReady.epoch);
+    send(restored.socket, ready.epoch, "after-target-restart", "restored");
+    expect(unwire((await restored.messages.next(message => message.type === "message")).payload).echo).toBe("restored");
+  }, 30_000);
+
   it("transfers an opaque message larger than 64 MiB in both directions and keeps later updates ordered", async () => {
     const channel = await connect();
     const ready = await channel.messages.next(message => message.type === "ready");

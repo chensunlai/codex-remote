@@ -23,6 +23,7 @@ const viewQuery = z.object({
   after: z.coerce.number().int().nonnegative().safe().default(0),
   epoch: z.string().min(1).max(255).optional(),
 });
+const viewControl = viewQuery.pick({ clientId: true, workspace: true, epoch: true });
 const incomingMessage = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("message"),
@@ -67,10 +68,13 @@ interface Attachment {
   operations: Promise<void>;
   acknowledgements: Promise<void>;
   superseded: boolean;
+  epoch?: string;
 }
 
 export function registerExtensionHostRoutes(app: FastifyInstance, services: GatewayServices, settings: GatewaySettingsStore): void {
   const attachments = new Map<string, Attachment>();
+  const controlling = new Map<string, Promise<unknown>>();
+  const negotiating = new Map<string, Set<WebSocket>>();
   const base = "/api/v3/services/:serviceId/extension";
 
   app.get(`${base}/status`, async (request) => {
@@ -87,6 +91,40 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     const params = parse(z.object({ confirmed: z.boolean() }), request.body);
     const data = await services.agents.request(request.ownerId, serviceId, "extension.apply", params);
     return reply.code(202).send({ data });
+  });
+  for (const action of ["close", "restart"] as const) app.post(`${base}/view/${action}`, async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const { clientId, workspace, epoch } = parse(viewControl, request.body);
+    const ownerId = request.ownerId;
+    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace);
+    const previous = controlling.get(viewId);
+    const operation = (async () => {
+      await previous?.catch(() => {});
+      // Query the live peer so persisted capabilities cannot accidentally grant
+      // this operation to an older Agent reconnecting under the same service ID.
+      const description = await services.agents.request<{ capabilities?: string[] }>(ownerId, serviceId, "service.describe", {});
+      if (!description.capabilities?.includes("extension-window-management-v1")) {
+        throw new AppError(409, "UPGRADE_AGENT_REQUIRED", "请升级 Agent 以管理独立聊天窗口");
+      }
+      const attachment = attachments.get(viewId);
+      if (epoch !== undefined && attachment?.epoch !== undefined && epoch !== attachment.epoch) {
+        throw new AppError(409, "EXTENSION_VIEW_CHANGED", "窗口后端已更新，请刷新后重试");
+      }
+      for (const socket of negotiating.get(viewId) ?? []) socket.close(4002, "Window backend explicitly stopped");
+      if (attachment) {
+        attachment.superseded = true;
+        attachment.socket.close(4002, "Window backend explicitly stopped");
+        await Promise.all([attachment.operations, attachment.acknowledgements]);
+      }
+      const result = await services.agents.request<{ stopped: boolean; epoch?: string }>(
+        ownerId, serviceId, `extension.view.${action}`, { viewId, ...(epoch ? { epoch } : {}) }, 120_000,
+      );
+      if (!result.stopped) throw new AppError(409, "EXTENSION_VIEW_CHANGED", "窗口后端已更新，请刷新后重试");
+      return result;
+    })();
+    controlling.set(viewId, operation);
+    try { return { data: await operation }; }
+    finally { if (controlling.get(viewId) === operation) controlling.delete(viewId); }
   });
   app.get(`${base}/resource`, async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
@@ -145,9 +183,17 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     const { serviceId } = parsedParams.data;
     const { clientId, rendererId, workspace, after, epoch } = parsedQuery.data;
     const ownerId = request.ownerId;
+    const viewId = extensionViewId(ownerId, serviceId, clientId, workspace);
+    if (controlling.has(viewId)) {
+      socket.close(4002, "Window backend operation in progress");
+      return;
+    }
     let transport: ChunkedTransport | undefined;
     let messageLimit = LEGACY_BUFFER_BYTES;
     if (path.startsWith("/api/v4/")) {
+      const pending = negotiating.get(viewId) ?? new Set<WebSocket>();
+      pending.add(socket);
+      negotiating.set(viewId, pending);
       try {
         const agentLimit = services.agents.transportLimit(ownerId, serviceId);
         if (agentLimit === undefined) {
@@ -162,14 +208,19 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       } catch (error) {
         if (socket.readyState === socket.OPEN) socket.close(1012, errorMessage(error).slice(0, 100));
         return;
+      } finally {
+        pending.delete(socket);
+        if (!pending.size && negotiating.get(viewId) === pending) negotiating.delete(viewId);
       }
       if (socket.readyState !== socket.OPEN) return;
     }
     const MAX_BUFFER_BYTES = messageLimit + (transport ? 4 * 1024 * 1024 : 0);
 
-    const viewId = createHash("sha256")
-      .update(JSON.stringify([ownerId, serviceId, clientId, workspace]))
-      .digest("hex");
+    // Transport negotiation may have yielded while a close/restart began.
+    if (controlling.has(viewId)) {
+      socket.close(4002, "Window backend operation in progress");
+      return;
+    }
     const previous = attachments.get(viewId);
     const attachment: Attachment = { socket, operations: Promise.resolve(), acknowledgements: Promise.resolve(), superseded: false };
     attachments.set(viewId, attachment);
@@ -268,6 +319,7 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       }, 120_000);
       if (!current()) return;
       if (snapshot.viewId !== viewId) throw new Error("Extension host returned a different view");
+      attachment.epoch = snapshot.epoch;
       send({ type: "ready", ...snapshot });
       for (const frame of buffered.sort((a, b) => a.sequence - b.sequence)) onFrame({ ownerId, serviceId, frame });
       buffered.length = 0;
@@ -353,6 +405,10 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
       });
     });
   });
+}
+
+function extensionViewId(ownerId: string, serviceId: string, clientId: string, workspace: string): string {
+  return createHash("sha256").update(JSON.stringify([ownerId, serviceId, clientId, workspace])).digest("hex");
 }
 
 function acceptsGzip(header: string | undefined): boolean {

@@ -48,6 +48,15 @@ data class FilePreview(
     val content: PreviewContent,
 )
 
+/** Host window identity; conversations remain opaque state owned by the official frontend. */
+data class WorkspaceWindow(
+    val id: String,
+    val serviceId: String,
+    val workspace: String,
+    val title: String,
+    val toolId: String = "codex",
+)
+
 data class AppState(
     val allowHttp: Boolean = false,
     val multipleEndpoints: Boolean = false,
@@ -55,6 +64,9 @@ data class AppState(
     val gatewayConfig: GatewayConfig? = null,
     val fontScale: Float = 1f,
     val maxChatPages: Int = 3,
+    val customWindowLimit: Boolean = false,
+    val customCacheLimit: Boolean = false,
+    val resourceCacheBytes: Long = 1024L * 1024 * 1024,
     val theme: AppTheme = AppTheme.DARK,
     val section: MainSection = MainSection.SESSIONS,
     val connecting: Boolean = false,
@@ -62,6 +74,10 @@ data class AppState(
     val error: String? = null,
     val services: List<RemoteService> = emptyList(),
     val selectedServiceId: String? = null,
+    val windows: List<WorkspaceWindow> = emptyList(),
+    val selectedWindowId: String? = null,
+    val busyWindowIds: Set<String> = emptySet(),
+    val windowRevisions: Map<String, Int> = emptyMap(),
     val remotePath: String = "",
     val remoteFiles: List<RemoteFile> = emptyList(),
     val filePreview: FilePreview? = null,

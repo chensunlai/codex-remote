@@ -68,7 +68,7 @@ export class OfficialExtensionService {
   ) { this.store = store ?? new OfficialExtensionStore(join(directory, "packages")); }
 
   async request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (method === "extension.view.attach" || method === "extension.apply") {
+    if (["extension.view.attach", "extension.view.close", "extension.view.restart", "extension.apply"].includes(method)) {
       const operation = this.transition.then(() => this.handleRequest(method, params));
       this.transition = operation.then(() => {}, () => {});
       return operation;
@@ -102,6 +102,19 @@ export class OfficialExtensionService {
         ...(params.packageSha256 === undefined ? {} : { packageSha256: text(params.packageSha256, "packageSha256") }),
       });
       case "extension.view.attach": return this.attach(params);
+      case "extension.view.close":
+      case "extension.view.restart": {
+        const view = this.views.get(text(params.viewId, "viewId"));
+        if (!view) return { stopped: true };
+        if (params.epoch !== undefined && text(params.epoch, "epoch") !== view.epoch) {
+          return { stopped: false, epoch: view.epoch };
+        }
+        // A window belongs to Agent, not to its current (or evicted) renderer.
+        // Replacement hosts are started only by a subsequent explicit attach.
+        view.attached = false;
+        await this.stop(view);
+        return { stopped: true, epoch: view.epoch };
+      }
       case "extension.view.detach": {
         const view = this.owned(params);
         view.attached = false;
@@ -256,7 +269,12 @@ export class OfficialExtensionService {
   }
 
   private async open(viewId: string, rendererId: string, workspace: string, extension: OfficialExtensionPackage): Promise<ExtensionView> {
+    const openedAt = performance.now();
+    const timing = (phase: string, startedAt = openedAt): void => {
+      process.stderr.write(`[extension-host] ${JSON.stringify({ viewId, phase, elapsedMs: Math.round(performance.now() - startedAt) })}\n`);
+    };
     const [node, hostDirectory] = await Promise.all([resolveNodeExecutable(), resolveExtensionHostDirectory()]);
+    timing("runtime-ready");
     const stateDirectory = join(this.directory, "state", viewId);
     await mkdir(stateDirectory, { recursive: true, mode: 0o700 });
     if (this.closed) throw new Error("官方扩展宿主已关闭");
@@ -266,6 +284,8 @@ export class OfficialExtensionService {
       cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: command.env,
       detached: process.platform === "linux", windowsHide: true,
     });
+    const spawnedAt = performance.now();
+    let mainHtmlReady = false;
     let resolveStart!: () => void, rejectStart!: (error: Error) => void;
     const started = new Promise<void>((resolve, reject) => { resolveStart = resolve; rejectStart = reject; });
     // Prevent an early child failure from becoming an unhandled rejection before attach awaits it.
@@ -278,7 +298,7 @@ export class OfficialExtensionService {
     const timer = setTimeout(() => { rejectStart(new Error("官方扩展启动超时")); void this.stop(view); }, 30_000);
     child.on("message", raw => {
       const event = raw as { type: string; surfaceId?: string; payload?: unknown; message?: string; fatal?: boolean; pid?: number; version?: string | null };
-      if (event.type === "started") { clearTimeout(timer); resolveStart(); }
+      if (event.type === "started") { clearTimeout(timer); timing("activated", spawnedAt); resolveStart(); }
       else if (event.type === "process-start" && event.pid) view.processes.set(event.pid, event.version ?? null);
       else if (event.type === "process-exit" && event.pid) view.processes.delete(event.pid);
       else if (event.type === "error") {
@@ -307,6 +327,7 @@ export class OfficialExtensionService {
         if (surfaceId !== "main" && !surface) return;
         if (event.type === "html") {
           const html = String((event.payload as { html?: string })?.html ?? "");
+          if (surfaceId === "main" && !mainHtmlReady) { mainHtmlReady = true; timing("main-html-ready"); }
           if (surface) surface.html = html; else view.html = html;
           this.frame(view, "html", event.payload, surfaceId);
         } else if (event.type === "host-request") {
@@ -392,13 +413,14 @@ export class OfficialExtensionService {
     view.stopping = true;
     view.stopped = (async () => {
       await new Promise<void>(resolve => {
-        if (view.child.exitCode !== null || view.child.signalCode !== null) { resolve(); return; }
+        if (!view.child.pid || view.child.exitCode !== null || view.child.signalCode !== null) { resolve(); return; }
         const timer = setTimeout(() => {
           // A stuck deactivation must release its app-server before a replacement starts.
           if (process.platform === "linux" && view.child.pid) {
             try { process.kill(-view.child.pid, "SIGKILL"); } catch { view.child.kill("SIGKILL"); }
           } else view.child.kill("SIGKILL");
-          resolve();
+          // Wait for the exit event before permitting a replacement host to
+          // acquire this window's App Server writers.
         }, 5_000);
         view.child.once("exit", () => { clearTimeout(timer); resolve(); });
         void this.send(view, { type: "stop" }).catch(() => view.child.kill("SIGTERM"));

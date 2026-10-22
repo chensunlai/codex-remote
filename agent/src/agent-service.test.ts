@@ -9,7 +9,7 @@ describe("Agent service metadata", () => {
       await expect(service.request("service.describe", {})).resolves.toEqual(
         expect.objectContaining({
           agentVersion: APP_VERSION,
-          capabilities: ["codex-raw-channels", "codex-runtime-control", "official-extension-host-v1", "terminal", "files", "stream-transfer"],
+          capabilities: ["codex-raw-channels", "codex-runtime-control", "official-extension-host-v1", "extension-window-management-v1", "terminal", "files", "stream-transfer"],
         }),
       );
     } finally {

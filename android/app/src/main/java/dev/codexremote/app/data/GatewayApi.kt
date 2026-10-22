@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.Callback
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -40,6 +41,9 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class GatewayApi {
+    private class ResourceTransfer(val startedAt: Long = System.nanoTime())
+    private val resourceBytes = AtomicLong()
+    internal fun resourceTrafficBytes(): Long = resourceBytes.get()
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
@@ -47,6 +51,15 @@ class GatewayApi {
         .pingInterval(30, TimeUnit.SECONDS)
         .followRedirects(false)
         .followSslRedirects(false)
+        .eventListenerFactory { call ->
+            val transfer = call.request().tag(ResourceTransfer::class.java)
+            if (transfer == null) EventListener.NONE else object : EventListener() {
+                override fun responseBodyEnd(call: Call, byteCount: Long) {
+                    resourceBytes.addAndGet(byteCount)
+                    java.util.logging.Logger.getLogger("OfficialCodex").fine("resource-network bytes=$byteCount elapsedMs=${(System.nanoTime() - transfer.startedAt) / 1_000_000}")
+                }
+            }
+        }
         .addInterceptor { chain ->
             val request = chain.request()
             val allowed = request.tag(HttpPermission::class.java)?.allowed ?: config?.allowHttp ?: false
@@ -163,6 +176,18 @@ class GatewayApi {
     fun chatConnecting() {
         chatConnecting = true
         _link.update { it.copy(checking = true) }
+    }
+
+    /** Intentional window disposal is not a failed Gateway connection. */
+    internal fun releaseChatSocket(socket: WebSocket?) {
+        if (socket == null) return
+        sockets.remove(socket)
+        if (chatSocket === socket) {
+            chatGeneration.incrementAndGet()
+            chatSocket = null
+            chatConnecting = false
+            _link.update { it.copy(checking = false) }
+        }
     }
 
     private fun openSocket(request: Request, listener: WebSocketListener, chat: Boolean = false): WebSocket {
@@ -291,6 +316,26 @@ class GatewayApi {
     suspend fun applyExtension(serviceId: String, confirmed: Boolean): JSONObject =
         data(request("POST", "api/v3/services/$serviceId/extension/apply", JSONObject().put("confirmed", confirmed))) as JSONObject
 
+    suspend fun closeExtensionWindow(serviceId: String, clientId: String, workspace: String) =
+        manageExtensionWindow(serviceId, clientId, workspace, "close")
+
+    suspend fun restartExtensionWindow(serviceId: String, clientId: String, workspace: String) =
+        manageExtensionWindow(serviceId, clientId, workspace, "restart")
+
+    private suspend fun manageExtensionWindow(serviceId: String, clientId: String, workspace: String, action: String): JSONObject {
+        val capabilities = meta().optJSONArray("capabilities")
+        require(capabilities != null && (0 until capabilities.length()).any { capabilities.optString(it) == "extension-window-management-v1" }) {
+            "请升级 Gateway 后使用窗口关闭和重启功能"
+        }
+        return try {
+            data(request("POST", "api/v3/services/$serviceId/extension/view/$action",
+                JSONObject().put("clientId", clientId).put("workspace", workspace))) as JSONObject
+        } catch (error: GatewayException) {
+            if (error.code == "UPGRADE_AGENT_REQUIRED") throw IOException("请升级该服务器的 Agent 后管理窗口", error)
+            throw error
+        }
+    }
+
     fun extensionChannel(
         serviceId: String, clientId: String, rendererId: String, workspace: String,
         after: Long, epoch: String?, listener: WebSocketListener,
@@ -312,7 +357,7 @@ class GatewayApi {
             .addQueryParameter("version", version).addQueryParameter("path", path)
         packageSha256?.let { target.addQueryParameter("packageSha256", it) }
         return execute(Request.Builder().url(target.build())
-            .header("Authorization", "Bearer " + current.token).get().build()).use { response ->
+            .header("Authorization", "Bearer " + current.token).tag(ResourceTransfer::class.java, ResourceTransfer()).get().build()).use { response ->
             ensureSuccess(response)
             val bytes = response.body.bytes()
             val expected = response.header("x-resource-sha256")

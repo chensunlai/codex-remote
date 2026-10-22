@@ -44,6 +44,7 @@ internal class OfficialChatSession(
     private val onNotification: suspend (String, JSONObject) -> String?,
     private val onExternalUrl: suspend (String) -> Boolean,
     private val onSurfacesChanged: (List<ExtensionSurface>) -> Unit = {},
+    val resourceScope: String = scope,
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -62,11 +63,13 @@ internal class OfficialChatSession(
     private var socket: WebSocket? = null
     private var wire: ChunkedSocket? = null
     private var connectionGeneration = 0
+    private var connectionStartedAt = 0L
     private var sequence = 0L
     private var epoch: String? = null
     private var viewId = ""
     private var connected = false
     private var closed = false
+    private var suspended = false
     private var visible = true
     private var reconnect: Runnable? = null
     private var connectionJob: Job? = null
@@ -80,7 +83,6 @@ internal class OfficialChatSession(
     private var pendingBytes = 0
     @Volatile var packageSha256: String? = null
         private set
-    val resourceScope: String get() = scope
     private var resourceFailureReported = false
     private val handledRequests = mutableSetOf<String>()
     private val nativeJobs = mutableMapOf<String, Job>()
@@ -91,7 +93,7 @@ internal class OfficialChatSession(
     init {
         jobs.launch {
             api.reconnections.collect {
-                if (!closed) {
+                if (!closed && !suspended) {
                     connectionJob?.cancel()
                     connectionJob = null
                     val previous = socket
@@ -178,6 +180,7 @@ internal class OfficialChatSession(
         reconnect?.let(main::removeCallbacks)
         reconnect = null
         wire?.dispose()
+        api.releaseChatSocket(socket)
         socket?.close(1000, "Renderer closed")
         socket = null
         surfaces.values.forEach { it.view = null; it.loader = null; it.queue.clear() }
@@ -189,9 +192,30 @@ internal class OfficialChatSession(
         jobs.cancel()
     }
 
+    fun setSuspended(value: Boolean) {
+        if (closed || suspended == value) return
+        suspended = value
+        if (!value) { connect(); return }
+        connectionJob?.cancel()
+        connectionJob = null
+        connectionGeneration += 1
+        reconnect?.let(main::removeCallbacks)
+        reconnect = null
+        wire?.dispose()
+        wire = null
+        val previous = socket
+        api.releaseChatSocket(previous)
+        socket = null
+        connected = false
+        previous?.cancel()
+        if (unconfirmed.isNotEmpty()) invalidateRenderer()
+        cancelNativeRequests()
+    }
+
     private fun connect() {
-        if (closed || socket != null || connectionJob?.isActive == true) return
+        if (closed || suspended || socket != null || connectionJob?.isActive == true) return
         val attempt = ++connectionGeneration
+        connectionStartedAt = android.os.SystemClock.elapsedRealtime()
         onStatus("正在连接官方扩展")
         val listener = object : WebSocketListener() {
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -208,20 +232,20 @@ internal class OfficialChatSession(
                 }
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     webSocket.close(if (code == 1005) 1000 else code, reason)
-                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4400, 4409)) }
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4002, 4400, 4409)) }
                 }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     main.post { disconnected(attempt, if (response?.code in listOf(404, 426)) "请升级 Gateway 以支持分块传输" else response?.let { "HTTP ${it.code} ${t.message}" } ?: t.message, response?.code !in listOf(404, 426)) }
                 }
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4400, 4409)) }
+                    main.post { disconnected(attempt, "$code ${reason.take(160)}", code !in listOf(4002, 4400, 4409)) }
                 }
             }
         api.chatConnecting()
         connectionJob = jobs.launch {
             try {
                 if (!api.prepareSocketConnection()) return@launch
-                if (closed || attempt != connectionGeneration) return@launch
+                if (closed || suspended || attempt != connectionGeneration) return@launch
                 wire = ChunkedSocket(listener)
                 socket = api.extensionChannel(serviceId, clientId, rendererId, workspace, sequence, epoch, requireNotNull(wire))
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -230,7 +254,7 @@ internal class OfficialChatSession(
     }
 
     private fun disconnected(attempt: Int, reason: String?, retry: Boolean = true) {
-        if (closed || attempt != connectionGeneration) return
+        if (closed || suspended || attempt != connectionGeneration) return
         connectionGeneration += 1 // Fence the old socket's later onClosed/onFailure and queued messages.
         if (unconfirmed.isNotEmpty()) invalidateRenderer()
         connected = false
@@ -266,6 +290,7 @@ internal class OfficialChatSession(
                 origin = nextOrigin
                 packageSha256 = snapshot.optString("packageSha256").lowercase().takeIf { it.matches(Regex("[a-f0-9]{64}")) }
                 connected = true
+                android.util.Log.d("OfficialCodex", "extension-ready elapsedMs=${android.os.SystemClock.elapsedRealtime() - connectionStartedAt} reusedHost=${!changedHost} resync=${snapshot.optBoolean("resyncRequired")}")
                 mustRecreatePage = false
                 setHtml(surfaces.getValue("main"), nextHtml, force)
                 reconcileSurfaces(snapshot, force)
@@ -512,7 +537,7 @@ internal class OfficialChatSession(
             val payload = runCatching { JSONArray(encoded) }.getOrNull() ?: return
             val bytes = encoded.toByteArray(Charsets.UTF_8).size
             main.post {
-                if (closed || surface(page) == null) return@post
+                if (closed || suspended || surface(page) == null) return@post
                 val limit = wire?.maxMessageBytes ?: TRANSPORT_MAX_BYTES
                 if (bytes > limit) {
                     val active = socket

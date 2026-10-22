@@ -67,7 +67,7 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
                         service = service,
                         selected = service.id == state.selectedServiceId,
                         onSelect = {
-                            viewModel.selectService(service.id)
+                            viewModel.openServiceWindow(service.id)
                             viewModel.setSection(MainSection.SESSIONS)
                         },
                         onTest = { viewModel.testService(service.id) },

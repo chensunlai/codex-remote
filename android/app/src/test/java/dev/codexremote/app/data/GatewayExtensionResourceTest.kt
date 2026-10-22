@@ -2,8 +2,11 @@ package dev.codexremote.app.data
 
 import dev.codexremote.app.model.GatewayConfig
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayOutputStream
 import java.net.ServerSocket
 import java.security.MessageDigest
@@ -12,13 +15,38 @@ import java.util.zip.GZIPOutputStream
 import kotlin.concurrent.thread
 
 class GatewayExtensionResourceTest {
+    @get:Rule val temporary = TemporaryFolder()
     private val packageId = "a".repeat(64)
+
+    @Test fun secondWindowAndDiskReopenReuseTheSameVerifiedResourceWithoutMoreTraffic() {
+        val bytes = "official unchanged JS 图片🙂".repeat(20_000).toByteArray()
+        val compressed = ByteArrayOutputStream().also { buffer -> GZIPOutputStream(buffer).use { it.write(bytes) } }.toByteArray()
+        serveResource(compressed, digest(bytes), packageId, gzip = true) { api, _ ->
+            val directory = temporary.newFolder()
+            val cache = ExtensionResourceCache(directory)
+            fun load(source: ExtensionResourceCache): ByteArray = source.load("owner-service", packageId, "1.0", "webview/index.js") {
+                api.extensionResource("service", "1.0", "webview/index.js", packageId)
+            }
+            val first = System.nanoTime()
+            assertArrayEquals(bytes, load(cache))
+            val second = System.nanoTime()
+            assertArrayEquals(bytes, load(cache))
+            val reopen = System.nanoTime()
+            assertArrayEquals(bytes, load(ExtensionResourceCache(directory)))
+            val end = System.nanoTime()
+            assertEquals(compressed.size.toLong(), api.resourceTrafficBytes())
+            assertEquals(1L, cache.diagnostics().misses)
+            assertEquals(1L, cache.diagnostics().hits)
+            println("resource-reuse decodedBytes=${bytes.size} wireBytes=${api.resourceTrafficBytes()} firstMs=${(second-first)/1_000_000.0} secondWindowMs=${(reopen-second)/1_000_000.0} diskReopenMs=${(end-reopen)/1_000_000.0}")
+        }
+    }
 
     @Test fun checksExactDecodedBytesWhenGatewayCompressesResources() {
         val bytes = "unmodified official javascript 图片".repeat(100).toByteArray()
         val compressed = ByteArrayOutputStream().also { buffer -> GZIPOutputStream(buffer).use { it.write(bytes) } }.toByteArray()
         serveResource(compressed, digest(bytes), packageId, gzip = true) { api, request ->
             assertArrayEquals(bytes, api.extensionResource("service", "1.0", "webview/index.js", packageId))
+            assertEquals(compressed.size.toLong(), api.resourceTrafficBytes())
             assertTrue(request.get().contains("packageSha256=$packageId"))
             assertTrue(request.get().contains("Authorization: Bearer owner-token", ignoreCase = true))
         }
