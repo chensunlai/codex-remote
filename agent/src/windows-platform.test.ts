@@ -35,7 +35,9 @@ describe("Windows packaging and desktop control", () => {
     expect(officialExtensionTarget("linux", "x64")).toBe("linux-x64");
     expect(officialExtensionTarget("linux", "arm64")).toBe("linux-arm64");
     expect(officialExtensionTarget("win32", "x64")).toBe("win32-x64");
-    expect(() => officialExtensionTarget("darwin", "x64")).toThrow("darwin-x64");
+    expect(officialExtensionTarget("darwin", "x64")).toBe("darwin-x64");
+    expect(officialExtensionTarget("darwin", "arm64")).toBe("darwin-arm64");
+    expect(() => officialExtensionTarget("freebsd", "x64")).toThrow("freebsd-x64");
     expect(() => officialExtensionTarget("win32", "ia32")).toThrow("win32-ia32");
   });
 

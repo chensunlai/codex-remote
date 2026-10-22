@@ -14,7 +14,9 @@ describe("Agent service metadata", () => {
       await expect(service.request("service.describe", {})).resolves.toEqual(
         expect.objectContaining({
           agentVersion: APP_VERSION,
-          capabilities: ["codex-raw-channels", "codex-runtime-control", "official-extension-host-v1", "extension-window-management-v1", "extension-tools-v1", "claude-extension-host-v1", "terminal", "files", "stream-transfer"],
+          capabilities: ["codex-raw-channels", "codex-runtime-control", "official-extension-host-v1", "extension-window-management-v1", "extension-tools-v1",
+            ...(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? ["claude-extension-host-v1"] : []),
+            ...(process.platform === "win32" ? [] : ["terminal"]), "files", "stream-transfer"],
         }),
       );
     } finally {
@@ -30,7 +32,7 @@ describe("Agent service metadata", () => {
     } finally { service.close(); }
   });
 
-  it.skipIf(process.platform !== "linux")("runs Codex and Claude independently and scopes management to the selected tool", async () => {
+  it.skipIf(!["linux", "darwin"].includes(process.platform))("runs Codex and Claude independently and scopes management to the selected tool", async () => {
     const directory = await mkdtemp(join(tmpdir(), "extension-tools-test-"));
     const stores = {} as Record<ExtensionToolId, OfficialExtensionStore>;
     const prepare = async (toolId: ExtensionToolId, version: string) => {

@@ -75,6 +75,23 @@ describe("complete official extension packages", () => {
     await expect(queryLatestOfficialExtension(fetch, "linux-x64", "codex")).rejects.toThrow("发布者身份");
   });
 
+  it.each(["codex", "claude"] as const)("selects native macOS packages for %s without mixing architectures", async toolId => {
+    const publisher = toolId === "codex" ? "OpenAI" : "Anthropic";
+    const name = toolId === "codex" ? "chatgpt" : "claude-code";
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({ results: [{ extensions: [{
+      publisher: { publisherName: publisher }, extensionName: name,
+      versions: ["linux-x64", "darwin-x64", "darwin-arm64"].map(targetPlatform => ({
+        version: "1.0.0", targetPlatform, files: [{ assetType: "Microsoft.VisualStudio.Services.VSIXPackage",
+          source: `https://${publisher.toLowerCase()}.gallery.vsassets.io/${targetPlatform}` }],
+      })),
+    }] }] }));
+    for (const target of ["darwin-x64", "darwin-arm64"]) {
+      expect(await queryLatestOfficialExtension(fetch, target, toolId)).toEqual({
+        version: "1.0.0", downloadUrl: `https://${publisher.toLowerCase()}.gallery.vsassets.io/${target}`,
+      });
+    }
+  });
+
   it("does not promote a candidate that changed after the host verified it", async () => {
     const root = await fixture();
     const store = new OfficialExtensionStore(join(root, "store"));

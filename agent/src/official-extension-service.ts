@@ -300,7 +300,7 @@ export class OfficialExtensionService {
     const command = this.toolId === "codex" ? codexCommand(this.executable) : { env: process.env };
     const child = spawn(node, [join(hostDirectory, "runtime.cjs")], {
       cwd: workspace, stdio: ["ignore", "pipe", "pipe", "ipc"], env: command.env,
-      detached: process.platform === "linux", windowsHide: true,
+      detached: process.platform !== "win32", windowsHide: true,
     });
     const spawnedAt = performance.now();
     let mainHtmlReady = false;
@@ -373,7 +373,7 @@ export class OfficialExtensionService {
       clearTimeout(timer);
       // The host may have exited before a child honored SIGTERM. Its isolated
       // process group must be gone before a replacement can acquire writers.
-      if (process.platform === "linux") {
+      if (process.platform !== "win32") {
         try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { /* Already exited. */ }
       }
       rejectStart(new Error(`官方扩展已退出 (${String(code ?? signal)})`));
@@ -446,7 +446,7 @@ export class OfficialExtensionService {
         if (!view.child.pid || view.child.exitCode !== null || view.child.signalCode !== null) { resolve(); return; }
         const timer = setTimeout(() => {
           // A stuck deactivation must release its app-server before a replacement starts.
-          if (process.platform === "linux" && view.child.pid) {
+          if (process.platform !== "win32" && view.child.pid) {
             try { process.kill(-view.child.pid, "SIGKILL"); } catch { view.child.kill("SIGKILL"); }
           } else view.child.kill("SIGKILL");
           // Wait for the exit event before permitting a replacement host to

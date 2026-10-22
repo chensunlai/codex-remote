@@ -1,0 +1,58 @@
+name: macOS Agent validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: darwin-x64
+          - runner: macos-15
+            target: darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.18.0
+          cache: npm
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Check platform runtime and installer
+        run: |
+          npm test --workspace agent -- src/node-runtime.test.ts src/config.test.ts src/official-extension-store.test.ts src/agent-service.test.ts src/official-extension-service.test.ts src/windows-platform.test.ts src/terminal-service.test.ts
+          node --test --test-name-pattern 'Agent installer|runtime checksum|older release|macOS' scripts/install.test.mjs
+      - name: Build macOS Agent and bundled Node runtime
+        run: node scripts/package-binaries.mjs --targets ${{ matrix.target }} --components agent
+      - name: Verify native installation and extension transport
+        run: |
+          bash install.sh agent --from release --install-dir "$RUNNER_TEMP/Agent 中文"
+          "$RUNNER_TEMP/Agent 中文/codex-remote-agent" --help
+          "$RUNNER_TEMP/Agent 中文/runtime/node" --version
+          CODEX_REMOTE_TEST_AGENT_BINARY="$RUNNER_TEMP/Agent 中文/codex-remote-agent" npm test --workspace server -- src/extension-host.integration.test.ts
+      - name: Activate unmodified official Codex and Claude extensions
+        run: |
+          npm install --global @openai/codex
+          CODEX_REMOTE_NODE_PATH="$RUNNER_TEMP/Agent 中文/runtime/node" node --import tsx scripts/smoke-macos-extensions.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-agent-${{ matrix.target }}
+          path: |
+            release/codex-remote-agent-${{ matrix.target }}
+            release/codex-remote-agent-runtime-${{ matrix.target }}.tar.gz
+            release/SHA256SUMS
+          if-no-files-found: error

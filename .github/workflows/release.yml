@@ -9,6 +9,8 @@ permissions:
   contents: write
 
 jobs:
+  macos:
+    uses: ./.github/workflows/macos-agent.yml
   windows:
     runs-on: windows-2025
     steps:
@@ -35,7 +37,7 @@ jobs:
             release/windows/SHA256SUMS
           if-no-files-found: error
   release:
-    needs: windows
+    needs: [windows, macos]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -119,6 +121,16 @@ jobs:
         run: |
           cp release/windows-release/*.zip release/windows-release/*.exe release/
           cat release/windows-release/SHA256SUMS >> release/SHA256SUMS
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-agent-*
+          path: release/macos-release
+      - name: Stage macOS Agent packages
+        run: |
+          for directory in release/macos-release/macos-agent-*; do
+            cp "$directory"/codex-remote-agent-* release/
+            cat "$directory/SHA256SUMS" >> release/SHA256SUMS
+          done
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -130,6 +142,10 @@ jobs:
             release/codex-remote-agent-linux-arm64 \
             release/codex-remote-agent-runtime-linux-x64.tar.gz \
             release/codex-remote-agent-runtime-linux-arm64.tar.gz \
+            release/codex-remote-agent-darwin-x64 \
+            release/codex-remote-agent-darwin-arm64 \
+            release/codex-remote-agent-runtime-darwin-x64.tar.gz \
+            release/codex-remote-agent-runtime-darwin-arm64.tar.gz \
             release/codex-remote-gateway-linux-x64 \
             release/codex-remote-gateway-linux-arm64 \
             release/codex-remote-android.apk \

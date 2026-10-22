@@ -324,7 +324,7 @@ export class OfficialExtensionStore {
 export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string, toolId: ExtensionToolId = "codex"): Promise<OfficialExtensionSource> {
   const tool = extensionTools[toolId];
   const target = targetPlatform ?? officialExtensionTarget();
-  if (toolId === "claude" && !/^linux-(?:x64|arm64)$/.test(target)) throw new Error("Claude Code 暂仅支持 Linux x64/arm64 Agent");
+  if (toolId === "claude" && !/^(?:linux|darwin)-(?:x64|arm64)$/.test(target)) throw new Error("Claude Code 暂仅支持 Linux/macOS x64/arm64 Agent");
   const response = await fetch("https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery", {
     method: "POST",
     headers: { "Accept": "application/json;api-version=7.2-preview.1", "Content-Type": "application/json" },
@@ -346,7 +346,7 @@ export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetc
 }
 
 export function officialExtensionTarget(platform: string = process.platform, arch: string = process.arch): string {
-  if (["linux", "win32"].includes(platform) && ["x64", "arm64"].includes(arch)) return `${platform}-${arch}`;
+  if (["linux", "darwin", "win32"].includes(platform) && ["x64", "arm64"].includes(arch)) return `${platform}-${arch}`;
   throw new Error(`暂不支持此平台的官方扩展：${platform}-${arch}`);
 }
 

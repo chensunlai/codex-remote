@@ -31,7 +31,7 @@ export class AgentService {
     this.extensions = new OfficialExtensionService(join(dataDirectory, "official-extension"), codexExecutable, frame => {
       void this.emit("extension.view", frame).catch(() => {});
     });
-    if (process.platform === "linux" && ["x64", "arm64"].includes(process.arch)) this.claudeExtension = new OfficialExtensionService(
+    if (["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch)) this.claudeExtension = new OfficialExtensionService(
       join(dataDirectory, "claude-extension"), "", frame => {
         void this.emit("extension.view", frame).catch(() => {});
       }, undefined, "claude",
@@ -64,7 +64,7 @@ export class AgentService {
     if (method.startsWith("extension.")) {
       const toolId = extensionToolId(params.toolId);
       const extension = toolId === "codex" ? this.extensions : this.claudeExtension;
-      if (!extension) throw new Error("Claude Code 暂仅支持 Linux Agent");
+      if (!extension) throw new Error("Claude Code 暂仅支持 Linux/macOS Agent");
       return extension.request(method, params);
     }
     switch (method) {

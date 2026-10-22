@@ -77,7 +77,11 @@ function spawnTerminal(
     const script = ["/usr/bin/script", "/bin/script"].find(existsSync);
     if (script) {
       const command = `stty cols ${cols} rows ${rows} 2>/dev/null; exec ${shellQuote(shell)} -l`;
-      return spawn(script, ["-qfec", command, "/dev/null"], {
+      // macOS ships BSD script, whose command is positional (no util-linux -c/-e flags).
+      const args = platform() === "darwin"
+        ? ["-q", "/dev/null", "/bin/sh", "-c", command]
+        : ["-qfec", command, "/dev/null"];
+      return spawn(script, args, {
         cwd,
         env: {
           ...process.env,

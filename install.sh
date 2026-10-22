@@ -62,14 +62,21 @@ while (($# > 0)); do
   esac
 done
 
-[[ "$(uname -s)" == "Linux" ]] || fail "当前 release 仅支持 Linux"
-if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+case "$(uname -s)" in
+  Linux) SYSTEM="linux" ;;
+  Darwin)
+    SYSTEM="darwin"
+    [[ "$COMPONENT" == "agent" ]] || fail "macOS 仅提供 Agent；Gateway 请安装在 Linux 上"
+    ;;
+  *) fail "当前安装器支持 Linux 和 macOS Agent" ;;
+esac
+if [[ "$SYSTEM" == "linux" ]] && command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
   fail "当前 release 面向 glibc Linux，检测到 musl/Alpine"
 fi
 
 case "$(uname -m)" in
-  x86_64|amd64) PLATFORM="linux-x64" ;;
-  aarch64|arm64) PLATFORM="linux-arm64" ;;
+  x86_64|amd64) PLATFORM="$SYSTEM-x64" ;;
+  aarch64|arm64) PLATFORM="$SYSTEM-arm64" ;;
   *) fail "不支持的 CPU 架构: $(uname -m)" ;;
 esac
 
@@ -107,9 +114,16 @@ if [[ -z "$LOCAL_SOURCE" && -n "$SCRIPT_DIRECTORY" && -f "$SCRIPT_DIRECTORY/rele
   LOCAL_SOURCE="$SCRIPT_DIRECTORY/release"
 fi
 
-for command in install mktemp sha256sum awk; do
+for command in install mktemp awk; do
   command -v "$command" >/dev/null 2>&1 || fail "缺少命令: $command"
 done
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA256_COMMAND=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+  SHA256_COMMAND=(shasum -a 256)
+else
+  fail "缺少 SHA-256 校验命令: sha256sum 或 shasum"
+fi
 
 TEMP_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/codex-remote-install.XXXXXX")"
 cleanup() {
@@ -204,7 +218,7 @@ verify_asset() {
   local expected actual
   expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$TEMP_DIRECTORY/SHA256SUMS")"
   [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || fail "SHA256SUMS 中没有 $asset 的唯一有效摘要"
-  actual="$(sha256sum "$TEMP_DIRECTORY/$asset" | awk '{print $1}')"
+  actual="$("${SHA256_COMMAND[@]}" "$TEMP_DIRECTORY/$asset" | awk '{print $1}')"
   [[ "$actual" == "$expected" ]] || fail "$asset 的 SHA-256 校验失败"
 }
 
@@ -620,7 +634,8 @@ install.sh <agent|gateway> [options]
   --data-dir DIRECTORY    Gateway 数据目录，默认位于程序目录的 data
   --systemd               安装并启动 Gateway systemd 服务（需要 root）
 
-Agent 安装器包含官方扩展宿主及 Node.js 运行时，不配置后台运行方式，也不会安装 Codex CLI。
+Agent 支持 Linux 和 macOS（Intel / Apple Silicon），包含官方扩展宿主及 Node.js 运行时。
+不配置后台运行方式，也不会安装 Codex CLI。Gateway 仅支持 Linux。
 EOF
 }
 

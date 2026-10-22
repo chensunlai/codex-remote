@@ -14,6 +14,8 @@ const root = resolve(import.meta.dirname, "..");
 const targets = {
   "linux-x64": "bun-linux-x64-baseline",
   "linux-arm64": "bun-linux-arm64",
+  "darwin-x64": "bun-darwin-x64",
+  "darwin-arm64": "bun-darwin-arm64",
 };
 const components = {
   agent: "agent/src/index.ts",
@@ -25,6 +27,8 @@ const nodeVersion = "24.18.0";
 const nodeArchives = {
   "linux-x64": "783130984963db7ba9cbd01089eaf2c2efb055c7c1693c943174b967b3050cb8",
   "linux-arm64": "6b4484c2190274175df9aa8f28e2d758a819cb1c1fe6ab481e2f95b463ab8508",
+  "darwin-x64": "dfd0dbd3e721503434df7b7205e719f61b3a3a31b2bcf9729b8b91fea240f080",
+  "darwin-arm64": "e1a97e14c99c803e96c7339403282ea05a499c32f8d83defe9ef5ec66f979ed1",
 };
 
 const options = parseArgs(process.argv.slice(2));
@@ -143,18 +147,20 @@ function parseArgs(args) {
   }
 
   const selectedTargets = list(requestedTargets ?? currentTarget());
-  const selectedComponents = list(requestedComponents ?? Object.keys(components).join(","));
+  const selectedComponents = list(requestedComponents ?? (selectedTargets.every(target => target.startsWith("darwin-")) ? "agent" : "agent,gateway"));
   validate(selectedTargets, targets, "目标");
   validate(selectedComponents, components, "组件");
+  if (selectedTargets.some(target => target.startsWith("darwin-")) && selectedComponents.includes("gateway")) {
+    throw new Error("macOS 发行版仅提供 Agent；Gateway 请使用 Linux 目标单独构建");
+  }
   return { targets: selectedTargets, components: selectedComponents, outputDirectory };
 }
 
 function currentTarget() {
-  if (process.platform !== "linux") {
-    throw new Error("standalone release 当前仅支持 Linux；请显式传入 --targets");
+  if (!["linux", "darwin"].includes(process.platform)) {
+    throw new Error("standalone release 支持 Linux 和 macOS；请显式传入 --targets");
   }
-  if (process.arch === "x64") return "linux-x64";
-  if (process.arch === "arm64") return "linux-arm64";
+  if (["x64", "arm64"].includes(process.arch)) return `${process.platform}-${process.arch}`;
   throw new Error(`不支持当前架构: ${process.arch}`);
 }
 
@@ -192,8 +198,8 @@ function printUsage() {
     [
       "node scripts/package-binaries.mjs [options]",
       "",
-      "  --targets linux-x64,linux-arm64  目标平台，默认当前 Linux 平台",
-      "  --components agent,gateway       构建组件，默认全部",
+      "  --targets <platforms>            linux-x64,linux-arm64,darwin-x64,darwin-arm64；默认当前平台",
+      "  --components agent,gateway       构建组件；macOS 默认且仅支持 agent，Linux 默认全部",
       "  --output <directory>              输出目录，默认 release",
       "",
     ].join("\n"),

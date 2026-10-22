@@ -1,5 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { OfficialExtensionService, type ExtensionViewFrame, type ExtensionSurface } from "./official-extension-service.js";
@@ -29,6 +30,9 @@ finally{fs.watch=original;}setTimeout(()=>view.webview.postMessage('watcher-aliv
 }
 if(message==='recoverable-error'){Promise.reject(new Error('nonfatal fixture'));return;}
 if(message==='exit-host'){process.exit(1);}
+if(message==='stubborn-task'){
+spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});const server=require('node:net').createServer(socket=>socket.end());server.listen(0,'127.0.0.1',()=>require('node:fs').writeFileSync('child-port',String(server.address().port)));"],{cwd:v.workspace.workspaceFolders[0].uri.fsPath,stdio:'ignore'});return;
+}
 if(message==='clipboard'){view.webview.postMessage(await v.env.clipboard.readText());return;}
 if(message==='close-settings-later'){setTimeout(()=>{panels[0].dispose();require('node:fs').writeFileSync(require('node:path').join(v.workspace.workspaceFolders[0].uri.fsPath,'panel-closed'),'closed');},50);return;}
 if(message==='panels'){
@@ -201,6 +205,26 @@ describe("official extension process lifecycle", () => {
     await f.send("exit", encode("exit-host"));
     await until(() => f.frames.some(frame => frame.type === "status"));
     expect(f.frames.find(frame => frame.type === "status")?.payload).toMatchObject({ state: "error", retryable: true, reloadRequired: true });
+    expect((await f.service.status()).hosts).toBe(0);
+  });
+
+  it.skipIf(process.platform === "win32")("cleans up the host process group after an unexpected exit", async () => {
+    const f = await fixture();
+    await f.send("stubborn", encode("stubborn-task"));
+    let port = 0;
+    await until(async () => {
+      port = Number(await readFile(join(f.root, "child-port"), "utf8").catch(() => "0"));
+      return port > 0;
+    });
+    const listening = () => new Promise<boolean>(resolve => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => { socket.destroy(); resolve(true); });
+      socket.once("error", () => resolve(false));
+    });
+    expect(await listening()).toBe(true);
+    await f.send("crash", encode("exit-host"));
+    await until(async () => !await listening());
+    await until(() => f.frames.some(frame => frame.type === "status"));
     expect((await f.service.status()).hosts).toBe(0);
   });
 
