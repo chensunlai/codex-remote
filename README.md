@@ -60,7 +60,7 @@ Gateway 与 Agent 可以同机部署。Agent 主动向 Gateway 建立连接，�
 
 ### 1. 部署 Gateway
 
-在 Gateway 服务器执行：
+在 Gateway 服务器执行，该服务器需要 Agent 侧与 APP 侧都能访问，可以是公网服务器，也可以是内网服务器配合穿透使用：
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
