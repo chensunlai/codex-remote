@@ -11,7 +11,7 @@ function Test-InstallingUser {
     $password = ConvertTo-SecureString ('Cr!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
     $privateDir = Join-Path $env:RUNNER_TEMP $name
     $server = $null
-    $client = $null
+    $taskRegistered = $false
     try {
         $user = New-LocalUser -Name $name -Password $password
         Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545') -Member $user
@@ -44,12 +44,14 @@ try {
 '@
         $script = $script.Replace('__PIPE__', $name).Replace('__OUTPUT__', $output.Replace("'", "''"))
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-        $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $password)
-        $client = Start-Process $powershell -Credential $credential -WorkingDirectory $env:WINDIR `
-            -ArgumentList '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded -PassThru
-        if (!$client.WaitForExit(45000)) { throw 'Original-user client timed out' }
-        if ($client.ExitCode -ne 0) { throw "Original-user client failed: $($client.ExitCode)" }
-        if (!$server.WaitForExit(10000) -or $server.ExitCode -ne 0) {
+        # Task Scheduler works in non-interactive CI sessions where
+        # CreateProcessWithLogonW (Start-Process -Credential) rejects std handles.
+        $action = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -NonInteractive -EncodedCommand $encoded" -WorkingDirectory $env:WINDIR
+        $plainPassword = [Net.NetworkCredential]::new('', $password).Password
+        Register-ScheduledTask -TaskName $name -Action $action -User "$env:COMPUTERNAME\$name" -Password $plainPassword -RunLevel Limited | Out-Null
+        $taskRegistered = $true
+        Start-ScheduledTask -TaskName $name
+        if (!$server.WaitForExit(45000) -or $server.ExitCode -ne 0) {
             if (Test-Path ($output + '.error')) { Get-Content ($output + '.error') }
             throw 'User identity helper failed'
         }
@@ -58,7 +60,11 @@ try {
         }
         Write-Host 'PASS original non-admin user identification with a protected installer temp directory'
     } finally {
-        foreach ($process in @($client, $server)) {
+        if ($taskRegistered) {
+            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+            Unregister-ScheduledTask -TaskName $name -Confirm:$false
+        }
+        foreach ($process in @($server)) {
             if ($process -and !$process.HasExited) { $process.Kill(); $process.WaitForExit() }
         }
         if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $name }
