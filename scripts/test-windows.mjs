@@ -11,7 +11,7 @@ await run(supervisor, ["--self-test"]);
 await run(process.execPath, ["scripts/smoke-packaged-agent.mjs"]);
 await run(process.execPath, [require.resolve("vitest/vitest.mjs"), "run",
   "agent/src/windows-platform.test.ts", "agent/src/windows-host-supervisor.test.ts",
-  "agent/src/config.test.ts", "agent/src/protocol-client.test.ts",
+  "agent/src/file-service.test.ts", "agent/src/config.test.ts", "agent/src/protocol-client.test.ts",
   "server/src/remote-path.test.ts"]);
 
 function run(executable, args) {

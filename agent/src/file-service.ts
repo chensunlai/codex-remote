@@ -36,13 +36,17 @@ export class FileService {
     const files = await Promise.all(
       entries.map(async (entry) => {
         const fullPath = join(path, entry.name);
-        const attributes = await lstat(fullPath);
+        const linkAttributes = await lstat(fullPath);
+        // Follow links for browsing, but keep broken/inaccessible links visible.
+        const attributes = entry.isSymbolicLink()
+          ? await stat(fullPath).catch(() => linkAttributes)
+          : linkAttributes;
         return {
           name: entry.name,
           path: fullPath,
-          type: entry.isDirectory()
+          type: attributes.isDirectory()
             ? "directory"
-            : entry.isFile()
+            : attributes.isFile()
               ? "file"
               : entry.isSymbolicLink()
                 ? "symlink"
@@ -68,7 +72,8 @@ export class FileService {
 
   async delete(path: string, directory: boolean): Promise<void> {
     assertAbsolute(path);
-    if (directory) await rmdir(path);
+    if ((await lstat(path)).isSymbolicLink()) await unlink(path);
+    else if (directory) await rmdir(path);
     else await unlink(path);
   }
 

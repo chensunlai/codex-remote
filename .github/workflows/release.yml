@@ -24,6 +24,8 @@ jobs:
         with:
           dotnet-version: 10.0.402
       - run: npm ci
+      - name: Verify Windows directory links
+        run: npm test --workspace agent -- src/file-service.test.ts
       - run: node scripts/package-windows.mjs
       - name: Verify Windows installer
         shell: pwsh
