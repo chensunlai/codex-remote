@@ -91,7 +91,7 @@ begin
   PipeName := 'CodexRemote-Setup-' + ExtractFileName(ExpandConstant('{tmp}'));
   PowerShell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   ExtractTemporaryFile('installer-user.ps1');
-  { Only the elevated helper touches {tmp}. Authenticate the original user
+  { Only the elevated helper touches the temporary directory. Authenticate the original user
     through a local pipe instead of making Setup's temporary files writable. }
   if not Exec(PowerShell,
       '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +

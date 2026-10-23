@@ -30,13 +30,17 @@ describe("native terminal launch", () => {
 
   it.skipIf(process.platform === "win32")("starts a real terminal and preserves UTF-8 output", async () => {
     vi.stubEnv("SHELL", "/bin/sh");
+    vi.stubEnv("PS1", "CR_TERMINAL_READY> ");
     const { TerminalService } = await import("./terminal-service.js");
     let output = "";
     const terminal = new TerminalService({ data: (_id, text) => { output += text; }, exit: () => {} });
     try {
       const { terminalId } = terminal.open(80, 24);
+      // BSD script/login-shell setup can flush input while initializing the PTY.
+      // Send only once the interactive shell is ready, as a terminal user does.
+      await vi.waitFor(() => expect(output).toContain("CR_TERMINAL_READY>"), { timeout: 10000 });
       terminal.write(terminalId, "printf '\\344\\270\\255\\346\\226\\207\\360\\237\\231\\202'; exit\n");
       await vi.waitFor(() => expect(output).toContain("中文🙂"), { timeout: 5000 });
     } finally { terminal.closeAll(); }
-  });
+  }, 20000);
 });
