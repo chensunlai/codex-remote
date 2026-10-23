@@ -17,10 +17,10 @@ describe("native terminal launch", () => {
     const terminal = new TerminalService({ data: vi.fn(), exit: vi.fn() });
     terminal.open(100, 40, "/Users/测试 dir");
     const [binary, args, options] = spawn.mock.calls[0] as unknown as [string, string[], { cwd: string; env: NodeJS.ProcessEnv }];
-    expect(binary).toBe("/usr/bin/script");
-    if (platform === "darwin") expect(args.slice(0, 4)).toEqual(["-q", "/dev/null", "/bin/sh", "-c"]);
+    expect(binary).toBe(platform === "darwin" ? "/bin/bash" : "/usr/bin/script");
+    if (platform === "darwin") expect(args.slice(0, 8)).toEqual(["-c", 'exec "$@" < <(cat)', "codex-remote-terminal", "/usr/bin/script", "-q", "/dev/null", "/bin/sh", "-c"]);
     else { expect(args[0]).toBe("-qfec"); expect(args.at(-1)).toBe("/dev/null"); }
-    const command = platform === "darwin" ? args[4] : args[1];
+    const command = platform === "darwin" ? args[8] : args[1];
     expect(command).toContain("stty cols 100 rows 40");
     expect(command).toContain("exec '/Users/测试 dir/it'\"'\"'s shell' -l");
     expect(options.cwd).toBe("/Users/测试 dir");

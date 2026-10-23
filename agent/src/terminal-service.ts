@@ -81,7 +81,12 @@ function spawnTerminal(
       const args = platform() === "darwin"
         ? ["-q", "/dev/null", "/bin/sh", "-c", command]
         : ["-qfec", command, "/dev/null"];
-      return spawn(script, args, {
+      // Node's "pipe" is a socketpair on macOS; BSD script rejects its tty ioctl.
+      // Feed it through an actual pipe, then exec so the tracked PID stays script.
+      const executable = platform() === "darwin" ? "/bin/bash" : script;
+      const launchArgs = platform() === "darwin"
+        ? ["-c", 'exec "$@" < <(cat)', "codex-remote-terminal", script, ...args] : args;
+      return spawn(executable, launchArgs, {
         cwd,
         env: {
           ...process.env,
