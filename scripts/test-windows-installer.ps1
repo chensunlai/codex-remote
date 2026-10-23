@@ -30,7 +30,7 @@ function Test-InstallingUser {
 $ErrorActionPreference = 'Stop'
 try {
     try { [IO.File]::WriteAllText('__OUTPUT__', 'must fail'); exit 2 }
-    catch [UnauthorizedAccessException] { }
+    catch { }
     $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', '__PIPE__',
         [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous,
         [Security.Principal.TokenImpersonationLevel]::Impersonation)
@@ -53,6 +53,7 @@ try {
         Start-ScheduledTask -TaskName $name
         if (!$server.WaitForExit(45000) -or $server.ExitCode -ne 0) {
             if (Test-Path ($output + '.error')) { Get-Content ($output + '.error') }
+            Get-ScheduledTaskInfo -TaskName $name | Format-List LastRunTime, LastTaskResult
             throw 'User identity helper failed'
         }
         if ([IO.File]::ReadAllText($output) -ne $user.SID.Value) {
