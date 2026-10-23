@@ -255,9 +255,10 @@ describe("official extension process lifecycle", () => {
     await f.service.request("extension.view.attach", { ...f.attach, epoch: f.snapshot.epoch, after: f.snapshot.sequence });
     await f.send("draft", encode("kept")); f.service.disconnected();
     await until(() => f.service.status().then(status => status.hosts === 1));
-    await new Promise(resolve => setTimeout(resolve, 50));
-    const replay = await f.service.request("extension.view.attach", { ...f.attach, epoch: f.snapshot.epoch, after: f.snapshot.sequence }) as { frames: ExtensionViewFrame[] };
-    expect(replay.frames.some(frame => frame.type === "message")).toBe(true);
+    await until(async () => {
+      const replay = await f.service.request("extension.view.attach", { ...f.attach, epoch: f.snapshot.epoch, after: f.snapshot.sequence }) as { frames: ExtensionViewFrame[] };
+      return replay.frames.some(frame => frame.type === "message");
+    });
     const cold = await f.service.request("extension.view.attach", { ...f.attach, rendererId: "renderer-two" }) as { frames: ExtensionViewFrame[] };
     expect(cold.frames).toEqual([]);
     await expect(f.send("stale", encode("bad"))).rejects.toThrow("接管");

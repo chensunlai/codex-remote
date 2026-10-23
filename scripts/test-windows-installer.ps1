@@ -11,7 +11,6 @@ function Test-InstallingUser {
     $password = ConvertTo-SecureString ('Cr!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
     $privateDir = Join-Path $env:RUNNER_TEMP $name
     $server = $null
-    $taskRegistered = $false
     try {
         $user = New-LocalUser -Name $name -Password $password
         Add-LocalGroupMember -Group (Get-LocalGroup -SID 'S-1-5-32-545') -Member $user
@@ -26,34 +25,40 @@ function Test-InstallingUser {
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
             '-File', "`"$helper`"", '-PipeName', $name, '-OutputFile', "`"$output`""
         ) -PassThru
-        $script = @'
-$ErrorActionPreference = 'Stop'
-try {
-    try { [IO.File]::WriteAllText('__OUTPUT__', 'must fail'); exit 2 }
-    catch { }
-    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', '__PIPE__',
-        [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous,
-        [Security.Principal.TokenImpersonationLevel]::Impersonation)
-    $pipe.Connect(30000)
-    $pipe.WriteByte(1)
-    $pipe.Flush()
-    $bytes = New-Object byte[] 1
-    $read = $pipe.ReadAsync($bytes, 0, 1)
-    if (!$read.Wait(30000) -or $read.Result -ne 1 -or $bytes[0] -ne 1) { exit 3 }
-} catch { exit 4 } finally { if ($pipe) { $pipe.Dispose() } }
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
+public static class InstallerUserProbe {
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool LogonUser(string user, string domain, string password, int type, int provider, out SafeAccessTokenHandle token);
+    public static void Run(string user, string password, string pipeName, string output) {
+        if (!LogonUser(user, ".", password, 2, 0, out var token))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        using (token) WindowsIdentity.RunImpersonated(token, () => {
+            bool denied = false;
+            try { File.WriteAllText(output, "must fail"); }
+            catch (UnauthorizedAccessException) { denied = true; }
+            if (!denied) throw new Exception("Protected installer temp directory was writable");
+            using var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut,
+                PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation);
+            pipe.Connect(30000);
+            pipe.WriteByte(1); pipe.Flush();
+            var bytes = new byte[1];
+            var read = pipe.ReadAsync(bytes, 0, 1);
+            if (!read.Wait(30000) || read.Result != 1 || bytes[0] != 1)
+                throw new Exception("Identity helper did not acknowledge the user");
+        });
+    }
+}
 '@
-        $script = $script.Replace('__PIPE__', $name).Replace('__OUTPUT__', $output.Replace("'", "''"))
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
-        # Task Scheduler works in non-interactive CI sessions where
-        # CreateProcessWithLogonW (Start-Process -Credential) rejects std handles.
-        $action = New-ScheduledTaskAction -Execute $powershell -Argument "-NoProfile -NonInteractive -EncodedCommand $encoded" -WorkingDirectory $env:WINDIR
         $plainPassword = [Net.NetworkCredential]::new('', $password).Password
-        Register-ScheduledTask -TaskName $name -Action $action -User "$env:COMPUTERNAME\$name" -Password $plainPassword -RunLevel Limited | Out-Null
-        $taskRegistered = $true
-        Start-ScheduledTask -TaskName $name
+        [InstallerUserProbe]::Run($name, $plainPassword, $name, $output)
         if (!$server.WaitForExit(45000) -or $server.ExitCode -ne 0) {
             if (Test-Path ($output + '.error')) { Get-Content ($output + '.error') }
-            Get-ScheduledTaskInfo -TaskName $name | Format-List LastRunTime, LastTaskResult
             throw 'User identity helper failed'
         }
         if ([IO.File]::ReadAllText($output) -ne $user.SID.Value) {
@@ -61,10 +66,6 @@ try {
         }
         Write-Host 'PASS original non-admin user identification with a protected installer temp directory'
     } finally {
-        if ($taskRegistered) {
-            Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-            Unregister-ScheduledTask -TaskName $name -Confirm:$false
-        }
         foreach ($process in @($server)) {
             if ($process -and !$process.HasExited) { $process.Kill(); $process.WaitForExit() }
         }
