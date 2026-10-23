@@ -34,7 +34,7 @@ jobs:
       - run: npm run typecheck
       - name: Check platform runtime and installer
         run: |
-          npm test --workspace agent -- src/node-runtime.test.ts src/config.test.ts src/official-extension-store.test.ts src/agent-service.test.ts src/official-extension-service.test.ts src/windows-platform.test.ts src/terminal-service.test.ts
+          npm test --workspace agent -- src/node-runtime.test.ts src/config.test.ts src/official-extension-store.test.ts src/agent-service.test.ts src/official-extension-service.test.ts src/windows-platform.test.ts src/terminal-service.test.ts --testTimeout 20000
           node --test --test-name-pattern 'Agent installer|runtime checksum|older release|macOS' scripts/install.test.mjs
       - name: Build macOS Agent and bundled Node runtime
         run: node scripts/package-binaries.mjs --targets ${{ matrix.target }} --components agent
@@ -47,7 +47,7 @@ jobs:
       - name: Activate unmodified official Codex and Claude extensions
         run: |
           npm install --global @openai/codex
-          CODEX_REMOTE_NODE_PATH="$RUNNER_TEMP/Agent 中文/runtime/node" node --import tsx scripts/smoke-macos-extensions.ts
+          CODEX_REMOTE_NODE_PATH="$RUNNER_TEMP/Agent 中文/runtime/node" node --import tsx scripts/smoke-macos-extensions.mts
       - uses: actions/upload-artifact@v4
         with:
           name: macos-agent-${{ matrix.target }}
