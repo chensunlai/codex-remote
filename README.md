@@ -31,7 +31,7 @@ VS Code 插件本身由扩展宿主中的 `extension.js` 与 WebView 前端两�
 - 任务在服务器上执行，手机锁屏、切换到后台或短暂断线不会中断已接受的任务。
 - 支持手机图片与文件作为聊天附件，远端文件浏览、预览与下载，以及 Linux 服务器终端。
 - 鼠标模式使依赖悬停的官方控件可在触屏上操作；提供黑色、白色与 Anthropic 暖色主题。
-- Agent 主动连接 Gateway，服务器无需开放入站端口；令牌、服务状态以及 Gateway 与 Codex CLI 的更新均可在 App 中管理。
+- Agent 主动连接 Gateway，服务器无需开放入站端口；令牌、服务状态以及 Gateway、Agent 与 Codex CLI 的更新均可在 App 中管理。
 
 <p align="center">
   <a href="docs/assets/screenshots/codex-home.jpg"><img src="docs/assets/screenshots/codex-home.jpg" alt="Codex 聊天首页" width="24%"></a>
@@ -93,19 +93,18 @@ sudo cat /opt/codex-remote/data/api-token
 ```bash
 wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
-
-~/.local/codex-remote/codex-remote-agent
 ```
 
-程序默认安装到 **`~/.local/codex-remote`**。首次启动时依次填写 Gateway 地址、服务名称、访问令牌（与 App 使用的 Gateway Key 一致）及 Codex 路径，配置保存在安装目录的 `agent.json`；重新配置时添加 `--configure`。
+程序默认安装到 **`~/.local/codex-remote`**。安装时填写 Gateway 地址、服务名称、访问令牌（与 App 使用的 Gateway Key 一致）及 Codex 路径，配置保存在安装目录的 `agent.json`。
 
-安装器不为 Agent 创建后台服务，可以自行决定用什么进行托管，譬如使用 tmux：
+安装器默认配置并启动**当前用户的 systemd 服务**，启用异常重启、开机自启和退出登录后继续运行，无需再开终端或 tmux。启用 linger 若需要管理员授权，按安装器提示执行 `sudo loginctl enable-linger "$USER"` 后重新安装；Agent 本身始终使用原用户运行。
 
 ```bash
-tmux new -s codex-remote-agent "$HOME/.local/codex-remote/codex-remote-agent"
+systemctl --user status codex-remote-agent
+journalctl --user -u codex-remote-agent -f
 ```
 
-同一配置不应同时运行多个 Agent。
+已有 tmux／手动运行的 Agent，应先停止原进程，再以原用户、原安装目录重新安装一次，避免同一配置重复运行。仅下载、不配置服务时添加 `--no-service`，随后自行运行 Agent。
 
 Windows 与 macOS Agent 见下方[实验性功能](#实验性功能)。
 
@@ -119,7 +118,9 @@ Windows 与 macOS Agent 见下方[实验性功能](#实验性功能)。
 
 官方插件由 Agent 从 Marketplace 下载，手机加载同一版本的前端资源。工作目录默认为 Agent 用户的主目录。
 
-> **自定义安装目录或升级旧安装：** 在安装命令中添加 `--install-dir /原安装目录`，配置与数据会保留；Agent 更新后需手动重启。手动部署 Agent 时，二进制与 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
+**App 更新**在“App 设置 → 应用更新”；**Agent 更新**在底部“服务器”页对应服务器下。托管安装支持检查更新并点击“更新 Agent”，确认后下载、校验并重启；更新会影响该服务器的所有窗口，请在任务结束后操作。
+
+> **自定义安装目录或升级旧安装：** 在安装命令中添加 `--install-dir /原安装目录`，配置与数据会保留；默认托管的 Agent 会自动重启。手动部署 Agent 时，二进制与 `runtime/` 必须配套更新。详见[更新说明](docs/usage.md#更新)。
 
 使用 Sakura FRP 实现内外网访问时，可参考 [Codex Remote 部署 Skill](skills/codex-remote-sakurafrp/SKILL.md)，其中包含隧道、HTTPS、systemd 与 App 多入口配置。
 
@@ -145,13 +146,11 @@ Windows Agent 支持原生 Windows x64，相关功能仍在完善中。先安装
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
-
-~/.local/codex-remote/codex-remote-agent
 ```
 
-安装器按架构下载 Agent 与配套 Node.js，默认放在 `~/.local/codex-remote`；首次运行填写 Gateway、令牌及服务名称。Codex 从当前 PATH 查找，也可用 `--codex /完整路径/codex` 指定；使用前完成所选工具的登录或认证。支持 Codex、Claude、文件操作与终端；Claude 使用官方插件自带程序，手机端需更新到支持 macOS 工具能力的版本。
+安装器按架构下载 Agent 与配套 Node.js，默认放在 `~/.local/codex-remote`；安装时填写 Gateway、令牌及服务名称。Codex 从当前 PATH 查找，也可在配置时指定完整路径；使用前完成所选工具的登录或认证。支持 Codex、Claude、文件操作与终端；Claude 使用官方插件自带程序，手机端需更新到支持 macOS 工具能力的版本。
 
-按需用 tmux 等方式托管；配置、日志管理和多网关地址用法与 Linux 相同。安装需要包含 macOS 产物的版本，平台仍属实验性，真实桌面会话与睡眠恢复需进一步验证。
+默认由当前用户的 **launchd LaunchAgent** 托管，登录后自启、异常退出后重启；需在该用户已登录的桌面会话中安装，退出登录后不会继续运行。不提供菜单栏程序。添加 `--no-service` 可保留手动运行方式。安装需要包含 macOS 产物的版本，平台仍属实验性，真实桌面会话与睡眠恢复需进一步验证。
 
 ## 致谢
 

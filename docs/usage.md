@@ -116,9 +116,13 @@ Gateway 默认上传、预览和下载上限均为 **10 MiB**。管理员可在 
 
 Gateway 的远程更新和重启需要安装器配置的 systemd 管理组件。已有 systemd 安装需重新执行本版本安装命令以补齐组件；手动启动的 Gateway 可检查更新，App 会提示不支持远程更新或重启。更新包通过校验后替换程序；启动检查失败时回退到原程序。
 
-### App 与 Agent 检查更新
+### App 与 Agent 分别更新
 
-App 设置中可检查 Android App 和 Agent 的版本，分别显示当前版本、最新正式版和更新入口。App 更新通过浏览器下载官方 Release APK；Agent 检查提供 Release 信息，安装仍使用原目录的安装命令。检查更新不会自动安装或重启程序。
+**App 设置 → 应用更新**只检查 Android App，并通过浏览器下载 Release APK。
+
+**底部“服务器”页**在每台服务器下显示 Agent 版本与“检查更新”。Linux / macOS 使用本版安装器启用托管后，可点“更新 Agent”并确认。旧 Gateway 或 Agent 需先升级，旧安装需要以原用户、原安装目录重新运行一次安装器以补齐维护服务。Windows 继续从托盘菜单更新。
+
+Agent 更新由独立维护服务执行，关闭 App 或 Agent 重启不会终止已提交的更新。下载并通过 SHA-256 校验后，成套替换 Agent 和 runtime，随后启动检查；失败时尝试恢复旧版。配置与插件缓存保留，更新结果持久保存，回到服务器页或重连后可查看。检查更新本身不会安装；确认更新会中断该服务器所有窗口的后端，请在任务结束后操作。
 
 ## 更新
 
@@ -128,7 +132,7 @@ App 设置中可检查 Android App 和 Agent 的版本，分别显示当前版�
 | --- | --- |
 | Android App | App 设置中检查更新，从 Releases 下载新 APK 并安装 |
 | Gateway | 管理员在 App 中检查并更新，或重新运行安装器 |
-| Agent | App 中检查更新，重新运行安装器并指定原安装目录 |
+| Agent | 服务器页对应服务器 → 检查更新 → 更新 Agent；或以原用户重新运行安装器 |
 | 官方插件 | 聊天页右上角菜单 → 检查并更新前端 |
 | Codex CLI | App 设置 → Codex CLI → 更新，或在服务器按原安装方式更新 |
 
@@ -148,7 +152,7 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
   | bash -s -- agent
 ```
 
-安装器保留配置和数据。Gateway 使用 `--systemd` 时自动重启；Agent 安装后需自行重启进程以运行新版本，请在任务结束后操作。Agent 的 `runtime/` 与二进制配套更新；手动下载部署时，也要安装相同版本、相同架构的 runtime 压缩包。
+安装器保留配置和数据。Gateway 使用 `--systemd` 时自动重启；Agent 默认配置用户级 systemd（Linux）或 launchd（macOS）并自动重启，请在任务结束后操作。使用 `--no-service` 的手动安装仍需自行重启。Agent 的 `runtime/` 与二进制配套更新；手动下载部署时，也要安装相同版本、相同架构的 runtime 压缩包。
 
 已有 `gateway.env` 中设置的传输限制会保留。需要将旧安装的上传限制调整为 10 MiB，可在 App 管理页面修改并保存；App 保存的限制优先于环境变量。
 
@@ -176,6 +180,9 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 | Agent 连接配置 | `~/.local/codex-remote/agent.json` |
 | Agent 插件和宿主状态 | `~/.local/codex-remote/agent-data/` |
 | Agent 自带 Node.js 与宿主代码 | `~/.local/codex-remote/runtime/` |
+| Agent 托管信息与更新结果 | `~/.local/codex-remote/agent-maintenance/` |
+| Linux Agent 服务与维护单元 | `~/.config/systemd/user/codex-remote-agent*` |
+| macOS Agent 服务与维护配置 | `~/Library/LaunchAgents/dev.codexremote.agent*.plist` |
 | 聊天上传附件 | Agent 用户的 `~/.codex-remote-uploads/` |
 
 这里的 `~` 指运行 Agent 的用户主目录。使用 `--config` 指定其他配置文件时，`agent-data/` 跟随配置文件所在目录。Codex 自身的登录、模型和会话配置仍由所配置的 CLI 和官方插件管理。
@@ -205,6 +212,8 @@ wget -qO- https://raw.githubusercontent.com/chensunlai/codex-remote/main/install
 | `--codex <path>` | Codex 可执行文件，默认 `codex` |
 | `--config <path>` | 指定 Agent 配置文件 |
 | `--configure` | 重新输入连接配置 |
+| `--configure-only` | 保存配置后退出，不启动 Agent |
+| `--install-service` | 按当前配置安装并启动用户托管服务，安装器默认调用 |
 
 运行 `~/.local/codex-remote/codex-remote-agent --help` 可查看参数说明。
 
@@ -231,19 +240,41 @@ http://192.168.1.20:6767,https://codex.example.com
 
 地址必须指向同一个 Gateway，使用同一个 Token。切换连接不会重启 Agent 中的官方扩展或 Codex；不修改会话协议，不重发未确认的用户操作。App 页面是否需要重新同步仍取决于现有缓存与恢复机制。
 
-## 实验性平台：macOS Agent
+## Agent 后台托管
 
-macOS 采用与 Linux 相同的命令行用法，提供 Intel（`darwin-x64`）和 Apple Silicon（`darwin-arm64`）发行包；Gateway 继续运行在 Linux。使用 Codex 时先在同一用户下安装并登录 Codex CLI，确认终端中 `codex --version` 可执行；Claude 使用官方插件附带程序，认证也由用户预先配置。
+### Linux：用户 systemd
+
+默认安装会启用 `codex-remote-agent.service` 和独立维护单元。启用 linger 后，用户服务在开机时启动，退出 SSH 或注销后继续运行。安装器会尝试启用；权限不足时按提示执行 `sudo loginctl enable-linger "$USER"`，再重新运行安装器。Agent 不需要 root，也不应使用 sudo 安装到另一用户的主目录。
+
+```bash
+systemctl --user status codex-remote-agent
+systemctl --user restart codex-remote-agent
+journalctl --user -u codex-remote-agent -f
+journalctl --user -u codex-remote-agent-maintenance -n 50
+```
+
+修改配置时先停止服务，执行 `codex-remote-agent --configure --configure-only`，再启动服务。原来通过 tmux 或手动运行的进程需要自行停止；安装器不会按进程名结束其他 Agent。自定义目录使用绝对路径，目录和文件须由运行用户拥有写权限。
+
+安装器保留安装时的 PATH、代理及 Codex / Claude 配置目录；Linux 还可在安装目录的 `agent.env` 中设置服务需要的环境变量，修改后重启服务。令牌保存在 `agent.json`，不写入服务命令参数。运行时包中的独立维护程序由服务管理器启动，不依赖正在更新的 Agent 子进程。
+
+### macOS：用户 launchd（实验性）
+
+macOS 采用相同命令行参数，支持 Intel（`darwin-x64`）和 Apple Silicon（`darwin-arm64`）。在当前用户已登录的桌面会话中安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/install.sh \
   | bash -s -- agent
-~/.local/codex-remote/codex-remote-agent
 ```
 
-首次运行填写 Gateway、Token 和服务器名称。配置、插件缓存和配套 Node.js 均在 `~/.local/codex-remote/`，也可通过 `--install-dir` 安装到其他位置；命令参数、文件传输、多窗口、断线重连和远端终端沿用现有功能。直接运行的 Agent 随终端进程存活，不提供菜单栏应用、自启动或后台托管；如需后台运行，由用户按现有命令行习惯管理。
+默认安装到 `~/.local/codex-remote`，配置后由 launchd 托管，**当前用户登录后自启**，异常退出后自动重启。不提供菜单栏程序，不承诺注销或睡眠期间持续运行；仅手动运行可加 `--no-service`。
 
-更新时再次运行安装器，随后手动重新启动 Agent；安装本身不会停止正在运行的进程。原生 macOS CI 校验两种架构的安装、运行时、官方插件激活及传输，真实登录后的会话与审批仍需在 Mac 上验收。
+```bash
+launchctl print "gui/$(id -u)/dev.codexremote.agent"
+launchctl kickstart -k "gui/$(id -u)/dev.codexremote.agent"
+tail -f ~/.local/codex-remote/agent-maintenance/agent.log
+```
+
+维护日志位于同目录的 `maintenance.log`。更新可从手机服务器页发起，或以原用户重新运行安装器。Gateway 继续部署在 Linux；Codex / Claude 仍需在相同用户下预先配置认证。原生 macOS CI 校验发行包；真实桌面会话与睡眠恢复需要在 Mac 上验收。
 
 ## 常见问题
 
