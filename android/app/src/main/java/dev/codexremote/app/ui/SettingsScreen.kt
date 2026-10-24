@@ -111,10 +111,8 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 GatewayAdministration(state, viewModel.gatewayApi, viewModel::refreshGatewayMetadata)
-                key(state.gatewayConfig, state.selectedServiceId) {
-                    CodexSettingsGroup("应用与 Agent 更新") {
-                        ProductUpdatePanel(state.gatewayConfig, state.services.firstOrNull { it.id == state.selectedServiceId }, viewModel.gatewayApi)
-                    }
+                CodexSettingsGroup("应用更新") {
+                    ProductUpdatePanel()
                 }
                 val selectedWindow = state.windows.firstOrNull { it.id == state.selectedWindowId }
                 state.services.firstOrNull { it.id == state.selectedServiceId }?.takeIf { service ->

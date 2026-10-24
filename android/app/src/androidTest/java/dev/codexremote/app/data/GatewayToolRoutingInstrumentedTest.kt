@@ -84,6 +84,22 @@ class GatewayToolRoutingInstrumentedTest {
         }
     }
 
+    @Test fun agentUpdateTargetsOneServerAndStatusReadsNeverResubmitTheOperation() = runBlocking {
+        val status = """{"data":{"currentVersion":"3.0.4","updateSupported":true}}"""
+        val queued = """{"data":{"operation":{"id":"update-1","state":"queued"}}}"""
+        val done = """{"data":{"operation":{"id":"update-1","state":"succeeded"}}}"""
+        serve(listOf(200 to status, 202 to queued, 200 to done)) { api, requests ->
+            assertTrue(api.agentRuntime("server-a").getBoolean("updateSupported"))
+            assertEquals("queued", api.updateAgent("server-a").getJSONObject("operation").getString("state"))
+            assertEquals("succeeded", api.agentRuntime("server-a").getJSONObject("operation").getString("state"))
+            assertTrue(requests[0].startsWith("GET /api/v1/services/server-a/agent/runtime "))
+            assertTrue(requests[1].startsWith("POST /api/v1/services/server-a/agent/update "))
+            assertTrue(JSONObject(requests[1].substringAfter("\r\n\r\n")).getBoolean("confirmed"))
+            assertEquals(1, requests.count { it.startsWith("POST ") })
+            assertTrue(requests.all { it.contains("Authorization: Bearer test-owner", ignoreCase = true) })
+        }
+    }
+
     private suspend fun serve(responses: List<Pair<Int, String>>, block: suspend (GatewayApi, List<String>) -> Unit) {
         ServerSocket(0).use { server ->
             server.soTimeout = 5000

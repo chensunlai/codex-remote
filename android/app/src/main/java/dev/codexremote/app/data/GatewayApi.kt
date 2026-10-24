@@ -299,6 +299,12 @@ class GatewayApi {
     suspend fun gatewayOperation(update: Boolean): JSONObject = data(request("POST",
         "api/v1/admin/${if (update) "update" else "restart"}", JSONObject().put("confirmed", true))) as JSONObject
 
+    suspend fun agentRuntime(serviceId: String): JSONObject =
+        data(request("GET", "api/v1/services/$serviceId/agent/runtime")) as JSONObject
+
+    suspend fun updateAgent(serviceId: String): JSONObject =
+        data(request("POST", "api/v1/services/$serviceId/agent/update", JSONObject().put("confirmed", true))) as JSONObject
+
     suspend fun codexRuntime(serviceId: String): JSONObject =
         data(request("GET", "api/v2/services/$serviceId/codex/runtime")) as JSONObject
 

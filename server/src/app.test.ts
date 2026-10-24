@@ -172,6 +172,27 @@ describe("Gateway Agent relay", () => {
     expect(await (await api("/api/v1/services", TOKEN_A)).json()).toEqual({ data: [] });
   });
 
+  it("scopes Agent maintenance to its owner and requires an explicit update confirmation", async () => {
+    agent = await MockAgent.connect(baseUrl, TOKEN_A);
+    const runtime = `/api/v1/services/${SERVICE_ID}/agent/runtime`;
+    const update = `/api/v1/services/${SERVICE_ID}/agent/update`;
+    expect((await fetch(`${baseUrl}${runtime}`)).status).toBe(401);
+    expect((await api(runtime, TOKEN_B)).status).toBe(409);
+    expect((await api(update, TOKEN_B, { method: "POST" })).status).toBe(409);
+    expect(agent.updateConfirmations).toEqual([]);
+    expect((await api(runtime, TOKEN_A)).status).toBe(200);
+    const preview = await api(update, TOKEN_A, { method: "POST" });
+    expect(preview.status).toBe(202);
+    expect(await preview.json()).toMatchObject({ data: { confirmationRequired: true } });
+    expect(agent.updateConfirmations).toEqual([false]);
+    expect((await api(update, TOKEN_A, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true, command: "unexpected" }) })).status).toBe(400);
+    expect(agent.updateConfirmations).toEqual([false]);
+    expect((await api(update, TOKEN_A, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }) })).status).toBe(202);
+    expect(agent.updateConfirmations).toEqual([false, true]);
+  });
+
   function api(path: string, token: string, init?: RequestInit): Promise<Response> {
     return fetch(`${baseUrl}${path}`, {
       ...init,
@@ -184,6 +205,7 @@ class MockAgent {
   readonly downloadStarts: string[] = [];
   readonly listPaths: string[] = [];
   terminalOpens = 0;
+  readonly updateConfirmations: boolean[] = [];
 
   private constructor(private readonly socket: WebSocket, private readonly platform = "linux") {
     socket.on("message", (raw, binary) => {
@@ -238,6 +260,11 @@ class MockAgent {
         home: "/home/fixture",
         capabilities: this.platform === "win32" ? ["files"] : ["terminal", "files"],
       });
+    } else if (message.method === "agent.runtime.status") {
+      this.respond(message.id!, { currentVersion: "3.0.4", updateSupported: true });
+    } else if (message.method === "agent.runtime.update") {
+      this.updateConfirmations.push(params.confirmed === true);
+      this.respond(message.id!, { confirmationRequired: params.confirmed !== true });
     } else if (message.method === "fs.list") {
       this.listPaths.push(String(params.path));
       this.respond(message.id!, []);

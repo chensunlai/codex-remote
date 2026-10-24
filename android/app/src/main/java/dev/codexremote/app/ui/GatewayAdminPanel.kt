@@ -28,10 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import dev.codexremote.app.data.GatewayApi
-import dev.codexremote.app.data.ProductRelease
-import dev.codexremote.app.data.ProductUpdates
 import dev.codexremote.app.data.objects
-import dev.codexremote.app.data.productUpdateAvailable
 import dev.codexremote.app.model.GatewayConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -48,8 +45,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, onSettingsSaved: () -> Unit, sharedApi: GatewayApi? = null) {
     val api = remember(config, sharedApi) { sharedApi ?: GatewayApi().apply { configure(config) } }
-    val updates = remember { ProductUpdates() }
-    DisposableEffect(api, updates) { onDispose { if (sharedApi == null) api.clear(); updates.close() } }
+    DisposableEffect(api) { onDispose { if (sharedApi == null) api.clear() } }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var tab by remember { mutableStateOf("访问令牌") }
@@ -71,7 +67,6 @@ internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, o
     var revoke by remember { mutableStateOf<JSONObject?>(null) }
     var removeService by remember { mutableStateOf<JSONObject?>(null) }
     var operation by remember { mutableStateOf<String?>(null) }
-    var latest by remember { mutableStateOf<ProductRelease?>(null) }
     var poll by remember { mutableStateOf(0) }
 
     suspend fun refresh() {
@@ -204,25 +199,11 @@ internal fun GatewayAdminPanel(config: GatewayConfig, currentTokenId: String?, o
                         Text("${service.optString("home")}\n服务 ID：${service.optString("id")}\n所属令牌：${service.optString("ownerId")}", style = MonoTextStyle)
                         Text("最近连接：${formatConnectionTime(service)}", style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        latest?.let { release ->
-                            Text(when (productUpdateAvailable(version, release.version)) {
-                                true -> "可更新至 ${release.version}"
-                                false -> "已是当前或更新版本"
-                                null -> "无法比较版本"
-                            }, color = MaterialTheme.colorScheme.primary)
-                        }
                         TextButton(onClick = { removeService = service }, enabled = !busy && !service.optBoolean("online")) { Text("删除离线服务") }
                         HorizontalDivider()
                     }
                 }
-                OutlinedButton(onClick = { act {
-                    val release = updates.latest()
-                    val current = api.adminServices().objects()
-                    coroutineContext.ensureActive()
-                    latest = release
-                    services = current
-                } }, enabled = !busy, shape = MaterialTheme.shapes.small) { Text("检查 Agent 更新") }
-                latest?.let { Text("最新稳定版 ${it.version}；请在 Agent 所在服务器更新安装。", style = MaterialTheme.typography.bodySmall) }
+                Text("Agent 更新请前往底部服务器页。", style = MaterialTheme.typography.bodySmall)
             }
         }
         HorizontalDivider()

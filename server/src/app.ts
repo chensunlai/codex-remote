@@ -223,6 +223,17 @@ function registerServiceRoutes(app: FastifyInstance, services: GatewayServices):
     return reply.status(204).send();
   });
 
+  app.get("/api/v1/services/:serviceId/agent/runtime", async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    return { data: await services.agents.request(request.ownerId, serviceId, "agent.runtime.status") };
+  });
+  app.post("/api/v1/services/:serviceId/agent/update", async (request, reply) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const { confirmed } = parse(z.object({ confirmed: z.boolean().default(false) }).strict(), request.body ?? {});
+    const data = await services.agents.request(request.ownerId, serviceId, "agent.runtime.update", { confirmed });
+    return reply.status(202).send({ data });
+  });
+
   app.post("/api/v1/services/:serviceId/test", async (request) => {
     const { serviceId } = parse(serviceParams, request.params);
     const description = await services.agents.request(

@@ -73,6 +73,7 @@ fun ServicesScreen(state: AppState, viewModel: MainViewModel) {
                         onTest = { viewModel.testService(service.id) },
                         onDelete = { deleteTarget = service },
                     )
+                    AgentUpdatePanel(service, viewModel.gatewayApi)
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                 }
             }
