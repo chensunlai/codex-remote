@@ -32,7 +32,7 @@ async function fixture({ runtime = true, platform = `${process.platform}-${proce
   }
   const checksums = await Promise.all(assets.map(async (asset) => `${createHash("sha256").update(await readFile(join(release, asset))).digest("hex")}  ${asset}`));
   await writeFile(join(release, "SHA256SUMS"), `${checksums.join("\n")}\n`);
-  const run = (env = process.env) => execute("bash", [resolve("install.sh"), "agent", "--from", release, "--install-dir", install], { env });
+  const run = (env = process.env) => execute("bash", [resolve("install.sh"), "agent", "--no-service", "--from", release, "--install-dir", install], { env });
   return { directory, release, install, binary, run };
 }
 
@@ -50,7 +50,7 @@ test("Agent installer verifies and installs the matching runtime without launchi
 test("Agent installer defaults to the user's ~/.local/codex-remote rather than the current directory", { skip: !["linux", "darwin"].includes(process.platform) }, async () => {
   const { directory, release } = await fixture();
   const userDirectory = join(directory, "user home");
-  await execute("bash", [resolve("install.sh"), "agent", "--from", release], {
+  await execute("bash", [resolve("install.sh"), "agent", "--no-service", "--from", release], {
     cwd: directory,
     env: { ...process.env, HOME: userDirectory, CODEX_REMOTE_INSTALL_DIR: "" },
   });
@@ -237,4 +237,23 @@ test("Gateway updater rejects unidentifiable running versions and does not downg
   await prerelease.run();
   assert.equal(await readFile(prerelease.binary, "utf8"), "version:3.0.0-beta.1\n");
   assert.match((await prerelease.status()).output, /未降级/);
+});
+
+
+test("Agent installer defaults to configuring and starting managed service; no-service opts out", { skip: !["linux", "darwin"].includes(process.platform) }, async () => {
+  const f = await fixture();
+  const staging = join(f.directory, "staging");
+  await mkdir(join(staging, "runtime/maintenance"));
+  await writeFile(join(staging, "runtime/maintenance/main.cjs"), "// fixture");
+  const runtime = `codex-remote-agent-runtime-${process.platform}-${process.arch}.tar.gz`;
+  await execute("tar", ["-czf", join(f.release, runtime), "-C", staging, "runtime"]);
+  await writeFile(join(f.release, f.binary), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$FIXTURE_CALLS"\n');
+  await writeFile(join(f.release, "SHA256SUMS"), (await Promise.all([f.binary, runtime].map(async asset =>
+    `${createHash("sha256").update(await readFile(join(f.release, asset))).digest("hex")}  ${asset}`))).join("\n") + "\n");
+  const calls = join(f.directory, "calls");
+  const env = { ...process.env, FIXTURE_CALLS: calls };
+  await execute("bash", [resolve("install.sh"), "agent", "--from", f.release, "--install-dir", f.install], { env });
+  assert.equal(await readFile(calls, "utf8"), "--configure-only\n--install-service\n");
+  await f.run(env);
+  assert.equal(await readFile(calls, "utf8"), "--configure-only\n--install-service\n");
 });

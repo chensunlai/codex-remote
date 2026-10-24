@@ -20,6 +20,7 @@ INSTALL_DIRECTORY="${CODEX_REMOTE_INSTALL_DIR:-}"
 DATA_DIRECTORY="${CODEX_REMOTE_DATA_DIR:-}"
 LOCAL_SOURCE=""
 INSTALL_SYSTEMD=false
+AGENT_SERVICE=true
 
 while (($# > 0)); do
   case "$1" in
@@ -47,6 +48,10 @@ while (($# > 0)); do
       require_value "$@"
       LOCAL_SOURCE="$2"
       shift 2
+      ;;
+    --no-service)
+      AGENT_SERVICE=false
+      shift
       ;;
     --systemd)
       INSTALL_SYSTEMD=true
@@ -81,7 +86,7 @@ case "$(uname -m)" in
 esac
 
 if [[ "$INSTALL_SYSTEMD" == true && "$COMPONENT" != "gateway" ]]; then
-  fail "--systemd 只适用于 Gateway；Agent 的后台方式由使用者管理"
+  fail "--systemd 只适用于 Gateway；Agent 默认使用用户服务，可加 --no-service 仅安装"
 fi
 if [[ "$INSTALL_SYSTEMD" == true && "$EUID" -ne 0 ]]; then
   fail "安装 systemd 服务需要 root，请使用 sudo"
@@ -179,6 +184,18 @@ if [[ "$WITH_RUNTIME" == true ]]; then
   [[ "$("$TEMP_DIRECTORY/extracted/runtime/node" --version)" == "v24.18.0" ]] || fail "Agent Node.js 运行时版本无效"
 fi
 
+if [[ "$COMPONENT" == agent && "$AGENT_SERVICE" == true ]]; then
+  [[ "$WITH_RUNTIME" == true ]] || fail "此版本不支持托管安装；旧版请加 --no-service"
+  [[ -f "$TEMP_DIRECTORY/extracted/runtime/maintenance/main.cjs" ]] || fail "此版本没有 Agent 托管组件；请安装新版或加 --no-service"
+  [[ ! -f "$INSTALL_DIRECTORY/agent-maintenance/requests/update.json" ]] || fail "Agent 正在更新，请等待完成后再运行安装器"
+  if [[ -f "$INSTALL_DIRECTORY/agent-maintenance/installation.json" ]]; then
+    if [[ "$SYSTEM" == linux ]]; then
+      systemctl --user stop codex-remote-agent.service
+    else
+      launchctl bootout "gui/$(id -u)/dev.codexremote.agent" || true
+    fi
+  fi
+fi
 install -d -m 0755 "$INSTALL_DIRECTORY"
 DESTINATION="$INSTALL_DIRECTORY/codex-remote-$COMPONENT"
 install -m 0755 "$TEMP_DIRECTORY/$ASSET" "$DESTINATION.new"
@@ -198,7 +215,15 @@ if [[ "$WITH_RUNTIME" == true ]]; then
 fi
 mv -f "$DESTINATION.new" "$DESTINATION"
 
-if [[ "$INSTALL_SYSTEMD" == true ]]; then
+if [[ "$COMPONENT" == agent && "$AGENT_SERVICE" == true ]]; then
+  if [[ ! -f "$INSTALL_DIRECTORY/agent.json" && -r /dev/tty && -w /dev/tty ]] && ( : </dev/tty ) 2>/dev/null; then
+    "$DESTINATION" --configure-only --config "$INSTALL_DIRECTORY/agent.json" </dev/tty >/dev/tty
+  else
+    "$DESTINATION" --configure-only --config "$INSTALL_DIRECTORY/agent.json"
+  fi
+  CODEX_REMOTE_REPO="$REPOSITORY" "$DESTINATION" --install-service --config "$INSTALL_DIRECTORY/agent.json"
+  print_completion
+elif [[ "$INSTALL_SYSTEMD" == true ]]; then
   install_gateway_service
 else
   print_completion
@@ -593,7 +618,7 @@ print_completion() {
   printf '%s\n' "$COMPONENT 已安装: $DESTINATION"
   if [[ "$COMPONENT" == "agent" ]]; then
     printf '%s\n' \
-      "运行: $DESTINATION" \
+      "手动运行（仅 --no-service 安装）: $DESTINATION" \
       "Codex CLI 不包含在安装包中，Agent 会调用系统中的 codex 或 --codex 指定路径。"
     if [[ "$WITH_RUNTIME" == true ]]; then
       printf '%s\n' "官方扩展宿主及 Node.js 运行时: $INSTALL_DIRECTORY/runtime"
@@ -633,9 +658,11 @@ install.sh <agent|gateway> [options]
   --install-dir DIRECTORY 程序目录；Agent 默认 ~/.local/codex-remote，Gateway 默认 /opt/codex-remote
   --data-dir DIRECTORY    Gateway 数据目录，默认位于程序目录的 data
   --systemd               安装并启动 Gateway systemd 服务（需要 root）
+  --no-service            Agent 只安装文件；默认配置并启动用户 systemd / launchd 服务
 
 Agent 支持 Linux 和 macOS（Intel / Apple Silicon），包含官方扩展宿主及 Node.js 运行时。
-不配置后台运行方式，也不会安装 Codex CLI。Gateway 仅支持 Linux。
+Agent 默认配置用户服务及自动重启；Linux 需启用 loginctl enable-linger，macOS 为登录自启。
+不会安装 Codex CLI。Gateway 仅支持 Linux。
 EOF
 }
 

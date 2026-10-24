@@ -16,7 +16,8 @@ describe("Agent service metadata", () => {
           agentVersion: APP_VERSION,
           capabilities: ["codex-raw-channels", "codex-runtime-control", "official-extension-host-v1", "extension-window-management-v1", "extension-tools-v1",
             ...(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? ["claude-extension-host-v1"] : []),
-            ...(process.platform === "win32" ? [] : ["terminal"]), "files", "stream-transfer"],
+            ...(process.platform === "win32" ? [] : ["terminal"]),
+            ...(["linux", "darwin"].includes(process.platform) ? ["agent-maintenance-v1"] : []), "files", "stream-transfer"],
         }),
       );
     } finally {

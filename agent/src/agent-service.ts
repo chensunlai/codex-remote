@@ -1,3 +1,4 @@
+import { status as agentStatus, enqueue as updateAgent } from "../maintenance/service.cjs";
 import { homedir, hostname, platform, arch } from "node:os";
 import type { Readable } from "node:stream";
 import { FileService } from "./file-service.js";
@@ -83,10 +84,15 @@ export class AgentService {
             "extension-tools-v1",
             ...(this.claudeExtension ? ["claude-extension-host-v1"] : []),
             ...(process.platform === "win32" ? [] : ["terminal"]),
+            ...(["linux", "darwin"].includes(process.platform) ? ["agent-maintenance-v1"] : []),
             "files",
             "stream-transfer",
           ],
         };
+      case "agent.runtime.status":
+        return agentStatus(process.execPath, APP_VERSION);
+      case "agent.runtime.update":
+        return updateAgent(process.execPath, APP_VERSION, params.confirmed === true);
       case "codex.channel.attach":
         return this.channels.attach({
           channelId: stringValue(params.channelId, "channelId"),

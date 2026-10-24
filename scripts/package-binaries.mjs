@@ -117,6 +117,7 @@ async function packageAgentRuntime(targetName) {
     const hostDirectory = resolve(root, "agent/src/extension-host");
     await access(join(hostDirectory, "runtime.cjs"));
     await cp(hostDirectory, join(runtime, "extension-host"), { recursive: true, filter: (source) => !source.endsWith(".test.cjs") });
+    await cp(resolve(root, "agent/maintenance"), join(runtime, "maintenance"), { recursive: true });
     await writeFile(join(runtime, "version.json"), `${JSON.stringify({ node: nodeVersion })}\n`);
     const output = resolve(outputDirectory, `codex-remote-agent-runtime-${targetName}.tar.gz`);
     await run("tar", ["-czf", output, "-C", temporary, "runtime"]);

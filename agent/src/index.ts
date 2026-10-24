@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { setTimeout as delay } from "node:timers/promises";
+import { installService, markStarted } from "../maintenance/service.cjs";
+import { APP_VERSION } from "./version.js";
 import { AgentService } from "./agent-service.js";
 import { loadAgentConfig, toAgentWebSocketUrl } from "./config.js";
 import { ProtocolClient, FatalTransportError } from "./protocol-client.js";
@@ -9,6 +11,10 @@ import { errorMessage } from "./error-message.js";
 import { dirname, join } from "node:path";
 import { DesktopControl, redactToken } from "./desktop-control.js";
 
+if (process.argv.includes("--version")) { console.log(APP_VERSION); process.exit(0); }
+const installManaged = process.argv.includes("--install-service");
+const configureOnly = process.argv.includes("--configure-only");
+process.argv = process.argv.filter(arg => !["--install-service", "--configure-only"].includes(arg));
 let client: ProtocolClient | undefined;
 let service: AgentService | undefined;
 let stopping = false;
@@ -26,6 +32,13 @@ const config = await loadAgentConfig().catch((error: unknown) => {
   );
   process.exit(1);
 });
+if (configureOnly) process.exit(0);
+if (installManaged) {
+  if (!process.versions.bun) throw new Error("请使用发行版 Agent 安装托管服务");
+  await installService(process.execPath, config.configPath);
+  process.exit(0);
+}
+await markStarted(process.execPath, APP_VERSION);
 service = new AgentService(config.codexExecutable, join(dirname(config.configPath), "agent-data"));
 const agent = service;
 const log = (message: string): void => { process.stderr.write(desktop ? redactToken(message, config.token) : message); };

@@ -34,13 +34,13 @@ jobs:
       - run: npm run typecheck
       - name: Check platform runtime and installer
         run: |
-          npm test --workspace agent -- src/file-service.test.ts src/node-runtime.test.ts src/config.test.ts src/official-extension-store.test.ts src/agent-service.test.ts src/official-extension-service.test.ts src/windows-platform.test.ts src/terminal-service.test.ts --testTimeout 20000
+          npm test --workspace agent -- src/managed-service.test.ts src/file-service.test.ts src/node-runtime.test.ts src/config.test.ts src/official-extension-store.test.ts src/agent-service.test.ts src/official-extension-service.test.ts src/windows-platform.test.ts src/terminal-service.test.ts --testTimeout 20000
           node --test --test-name-pattern 'Agent installer|runtime checksum|older release|macOS' scripts/install.test.mjs
       - name: Build macOS Agent and bundled Node runtime
         run: node scripts/package-binaries.mjs --targets ${{ matrix.target }} --components agent
       - name: Verify native installation and extension transport
         run: |
-          bash install.sh agent --from release --install-dir "$RUNNER_TEMP/Agent 中文"
+          bash install.sh agent --no-service --from release --install-dir "$RUNNER_TEMP/Agent 中文"
           "$RUNNER_TEMP/Agent 中文/codex-remote-agent" --help
           "$RUNNER_TEMP/Agent 中文/runtime/node" --version
           CODEX_REMOTE_TEST_AGENT_BINARY="$RUNNER_TEMP/Agent 中文/codex-remote-agent" npm test --workspace server -- src/extension-host.integration.test.ts
