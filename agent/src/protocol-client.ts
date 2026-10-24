@@ -33,6 +33,7 @@ interface ProtocolHandlers {
 
 interface ProtocolClientOptions {
   handshakeTimeout?: number;
+  heartbeatIntervalMs?: number;
   connected?: () => void;
   log?: (message: string) => void;
 }
@@ -41,6 +42,7 @@ export class ProtocolClient {
   private socket: WebSocket | undefined;
   private closed = false;
   private transport: ChunkedTransport | undefined;
+  private heartbeatTimer: NodeJS.Timeout | undefined;
 
   constructor(
     private readonly url: URL,
@@ -61,6 +63,7 @@ export class ProtocolClient {
       socket.on("open", () => {
         opened = true;
         this.closed = false;
+        this.startHeartbeat(socket);
         this.transport = new ChunkedTransport(socket, {
           onMessage: text => this.handleMessage(text),
           onFatal: (error, code) => reject(code === 4400 || code === 4409 ? new FatalTransportError(error.message) : error),
@@ -80,6 +83,7 @@ export class ProtocolClient {
         socket.terminate();
       });
       socket.on("close", (code, reason) => {
+        this.stopHeartbeat();
         this.closed = true;
         this.socket = undefined;
         this.transport?.dispose();
@@ -128,10 +132,33 @@ export class ProtocolClient {
   }
 
   close(): void {
+    this.stopHeartbeat();
     this.closed = true;
     this.transport?.dispose();
     if (this.socket?.readyState === WebSocket.CONNECTING) this.socket.terminate();
     else this.socket?.close(1000, "Agent stopped");
+  }
+
+  private startHeartbeat(socket: WebSocket): void {
+    const interval = this.options.heartbeatIntervalMs ?? 30_000;
+    if (interval <= 0) return;
+    let alive = true;
+    socket.on("pong", () => { alive = true; });
+    this.heartbeatTimer = setInterval(() => {
+      if (this.closed || socket.readyState !== WebSocket.OPEN) return;
+      if (!alive) {
+        socket.terminate();
+        return;
+      }
+      alive = false;
+      socket.ping();
+    }, interval);
+    this.heartbeatTimer.unref();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = undefined;
   }
 
   private handleMessage(raw: RawData | string): void {

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { afterEach, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
+import { ChunkedTransport } from "../../transport/websocket.cjs";
 import { ProtocolClient, FatalTransportError } from "./protocol-client.js";
 
 const handlers = { request: async () => ({}), notification: () => {}, stream: () => {} };
@@ -43,4 +44,21 @@ it("bounds an unresponsive endpoint's handshake so routing can continue", async 
     "fixture", handlers, {handshakeTimeout: 100});
   cleanups.push(async () => client.close());
   await expect(client.run()).rejects.toThrow(/timed out/i);
+});
+
+it("closes a half-open WebSocket so the Agent can enter its reconnect loop", async () => {
+  const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  server.on("connection", socket => {
+    // Remove ws' automatic pong responder to model a route that blackholes the
+    // old TCP connection after a router restart.
+    (socket as unknown as { _receiver?: { removeAllListeners: (event: string) => void } })._receiver
+      ?.removeAllListeners("ping");
+    new ChunkedTransport(socket as never, { server: true, onMessage: () => {} });
+  });
+  await once(server, "listening");
+  cleanups.push(() => { server.clients.forEach(socket => socket.terminate()); return new Promise(resolve => server.close(() => resolve())); });
+  const address = server.address() as { port: number };
+  const client = new ProtocolClient(new URL(`ws://127.0.0.1:${address.port}`), "fixture", handlers, { heartbeatIntervalMs: 20 });
+  cleanups.push(async () => client.close());
+  await expect(client.run()).resolves.toBeUndefined();
 });
