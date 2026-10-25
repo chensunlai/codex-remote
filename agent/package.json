@@ -2,6 +2,7 @@
   "name": "@codex-remote/agent",
   "version": "0.5.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "codex-remote-agent": "dist/index.js"

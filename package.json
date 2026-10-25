@@ -2,6 +2,7 @@
   "name": "codex-remote",
   "version": "3.0.5",
   "private": true,
+  "license": "Apache-2.0",
   "workspaces": [
     "server",
     "agent"

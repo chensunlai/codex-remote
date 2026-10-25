@@ -156,6 +156,12 @@ curl -fsSL https://raw.githubusercontent.com/chensunlai/codex-remote/main/instal
 
 感谢 [LINUX DO](https://linux.do/) 社区提供的交流平台与反馈。
 
+## 许可证
+
+本项目原创代码采用 [Apache License 2.0](LICENSE)，允许商业使用、修改与再分发，使用时须遵守许可证中的版权声明及修改标注等要求。
+
+OpenAI、Anthropic 官方插件及第三方依赖仍遵循各自的许可证和使用条款，不因本项目采用 Apache-2.0 而改变。
+
 ## 声明
 
 本项目为第三方项目，与 OpenAI、Anthropic 无隶属关系。Codex、Claude Code 及相关商标归各自所有者所有。
