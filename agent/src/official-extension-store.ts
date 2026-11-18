@@ -51,7 +51,7 @@ export interface OfficialExtensionResource {
 export interface OfficialExtensionStoreOptions {
   toolId?: ExtensionToolId;
   fetch?: typeof globalThis.fetch;
-  latest?: () => Promise<OfficialExtensionSource>;
+  latest?: (version?: string) => Promise<OfficialExtensionSource>;
   targetPlatform?: string;
 }
 
@@ -69,7 +69,7 @@ export class OfficialExtensionStore {
   private operation: ExtensionUpdateOperation | null = null;
   private inFlight: Promise<void> | null = null;
   private readonly fetch: typeof globalThis.fetch;
-  private readonly latest: () => Promise<OfficialExtensionSource>;
+  private readonly latest: (version?: string) => Promise<OfficialExtensionSource>;
   private readonly toolId: ExtensionToolId;
   private mutation: Promise<void> = Promise.resolve();
   private readonly resourcePending = new Map<string, Promise<OfficialExtensionResource>>();
@@ -82,7 +82,7 @@ export class OfficialExtensionStore {
   constructor(private readonly root: string, options: OfficialExtensionStoreOptions = {}) {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.toolId = options.toolId ?? "codex";
-    this.latest = options.latest ?? (() => queryLatestOfficialExtension(this.fetch, options.targetPlatform, this.toolId));
+    this.latest = options.latest ?? ((version) => queryLatestOfficialExtension(this.fetch, options.targetPlatform, this.toolId, version));
   }
 
   async status(): Promise<OfficialExtensionStatus> {
@@ -99,15 +99,17 @@ export class OfficialExtensionStore {
   }
 
   /** Start one manual check/download; callers poll status instead of holding an RPC open. */
-  async update(): Promise<OfficialExtensionStatus> {
+  async update(version?: string): Promise<OfficialExtensionStatus> {
     if (!this.inFlight) {
       this.operation = { state: "running", stage: "checking", downloadedBytes: 0, bytesPerSecond: 0 };
-      this.inFlight = this.performUpdate().catch((error: unknown) => {
+      this.inFlight = this.performUpdate(version).catch((error: unknown) => {
         this.operation = { ...this.operation!, state: "failed", error: error instanceof Error ? error.message : String(error) };
       }).finally(() => { this.inFlight = null; });
     }
     return this.status();
   }
+
+  async waitForUpdate(): Promise<void> { await this.inFlight; }
 
   /** Explicit application boundary: never changes the running host on a download. */
   async activate(expectedSha256?: string): Promise<OfficialExtensionPackage> {
@@ -210,8 +212,9 @@ export class OfficialExtensionStore {
     try { return await result; } finally { this.compressionPending.delete(key); }
   }
 
-  private async performUpdate(): Promise<void> {
-    const source = await this.latest();
+  private async performUpdate(version?: string): Promise<void> {
+    const source = await this.latest(version);
+    if (version && source.version !== version) throw new Error("Marketplace 返回的插件版本与 VS Code 不符");
     validVersion(source.version);
     this.operation = { ...this.operation!, version: source.version };
     const state = await this.status();
@@ -321,7 +324,7 @@ export class OfficialExtensionStore {
   }
 }
 
-export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string, toolId: ExtensionToolId = "codex"): Promise<OfficialExtensionSource> {
+export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetch = globalThis.fetch, targetPlatform?: string, toolId: ExtensionToolId = "codex", requestedVersion?: string): Promise<OfficialExtensionSource> {
   const tool = extensionTools[toolId];
   const target = targetPlatform ?? officialExtensionTarget();
   if (toolId === "claude" && !/^(?:linux|darwin)-(?:x64|arm64)$/.test(target)) throw new Error("Claude Code 暂仅支持 Linux/macOS x64/arm64 Agent");
@@ -337,9 +340,9 @@ export async function queryLatestOfficialExtension(fetch: typeof globalThis.fetc
   if (extension?.publisher?.publisherName?.toLowerCase() !== tool.publisher.toLowerCase() || extension.extensionName !== tool.name) throw new Error("官方扩展发布者身份不匹配");
   const versions = (extension.versions ?? []).filter((entry) => entry.targetPlatform === target && !entry.properties?.some((property) => property.key === "Microsoft.VisualStudio.Code.PreRelease" && property.value.toLowerCase() === "true"));
   versions.sort((left, right) => compareVersion(right.version, left.version));
-  const latest = versions[0];
+  const latest = requestedVersion ? versions.find(entry => entry.version === requestedVersion) : versions[0];
   const downloadUrl = latest?.files?.find((file) => file.assetType === "Microsoft.VisualStudio.Services.VSIXPackage")?.source;
-  if (!latest || !downloadUrl) throw new Error(`未找到适用于 ${target} 的官方扩展正式版`);
+  if (!latest || !downloadUrl) throw new Error(`未找到适用于 ${target} 的官方扩展正式版 ${requestedVersion ?? ""}`.trim());
   validVersion(latest.version);
   officialUrl(downloadUrl);
   return { version: latest.version, downloadUrl };
@@ -350,7 +353,7 @@ export function officialExtensionTarget(platform: string = process.platform, arc
   throw new Error(`暂不支持此平台的官方扩展：${platform}-${arch}`);
 }
 
-function compareVersion(a: string, b: string): number {
+export function compareVersion(a: string, b: string): number {
   const av = a.split(/[.+-]/).map(Number), bv = b.split(/[.+-]/).map(Number);
   for (let index = 0; index < Math.max(av.length, bv.length); index++) {
     const difference = (av[index] ?? 0) - (bv[index] ?? 0);

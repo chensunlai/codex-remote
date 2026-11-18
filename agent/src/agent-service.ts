@@ -32,6 +32,7 @@ export class AgentService {
     this.extensions = new OfficialExtensionService(join(dataDirectory, "official-extension"), codexExecutable, frame => {
       void this.emit("extension.view", frame).catch(() => {});
     });
+    this.extensions.startVersionFollower();
     if (["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch)) this.claudeExtension = new OfficialExtensionService(
       join(dataDirectory, "claude-extension"), "", frame => {
         void this.emit("extension.view", frame).catch(() => {});

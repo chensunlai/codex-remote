@@ -51,6 +51,7 @@ internal fun ExperimentalSettings(
     onResourceCacheBytesChange: (Long) -> Unit = {},
     windowMode: Boolean = true,
     onWindowModeChange: (Boolean) -> Unit = {},
+    serverExperiment: (@Composable () -> Unit)? = null,
 ) {
     var opened by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -93,6 +94,7 @@ internal fun ExperimentalSettings(
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("按需开启，修改后自动保存。", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+                serverExperiment?.invoke()
                 ExperimentSwitch(
                     CodexIcons.LockOpen, "允许 HTTP 网关", "连接使用 HTTP 的网关。仅用于可信网络，令牌和会话会以明文传输。", http, enabled,
                 ) { onChange(it, multiple) }
@@ -153,7 +155,7 @@ internal fun ExperimentalSettings(
 }
 
 @Composable
-private fun ExperimentSwitch(
+internal fun ExperimentSwitch(
     icon: ImageVector, title: String, description: String, checked: Boolean, enabled: Boolean,
     control: (@Composable () -> Unit)? = null,
     onChange: (Boolean) -> Unit,

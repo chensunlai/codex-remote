@@ -43,6 +43,13 @@ async function settled(store: OfficialExtensionStore) {
 }
 
 describe("complete official extension packages", () => {
+  it("selects the exact VS Code version for the Agent platform or reports it missing", async () => {
+    const fetch = async () => Response.json({ results: [{ extensions: [{ publisher: { publisherName: "OpenAI" },
+      extensionName: "chatgpt", versions: ["1.4.0", "1.3.0"].map(version => ({ version, targetPlatform: "linux-x64",
+        files: [{ assetType: "Microsoft.VisualStudio.Services.VSIXPackage", source: "https://openai.gallery.vsassets.io/" + version }] })) }] }] });
+    expect((await queryLatestOfficialExtension(fetch, "linux-x64", "codex", "1.3.0")).version).toBe("1.3.0");
+    await expect(queryLatestOfficialExtension(fetch, "linux-x64", "codex", "1.2.0")).rejects.toThrow("1.2.0");
+  });
   it("keeps Claude packages separate and verifies publisher/name without changing bundled executable bytes", async () => {
     const root = await fixture();
     const directory = await source(root, "2.1.117");

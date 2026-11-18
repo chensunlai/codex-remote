@@ -103,9 +103,14 @@ export function registerExtensionHostRoutes(app: FastifyInstance, services: Gate
     const data = await requestTool(request.ownerId, serviceId, params.toolId, "extension.update", params);
     return reply.code(202).send({ data });
   });
+  app.post(`${base}/follow`, async (request) => {
+    const { serviceId } = parse(serviceParams, request.params);
+    const params = parse(z.object({ enabled: z.boolean() }), request.body);
+    return { data: await requestTool(request.ownerId, serviceId, "codex", "extension.follow", params) };
+  });
   app.post(`${base}/apply`, async (request, reply) => {
     const { serviceId } = parse(serviceParams, request.params);
-    const params = parse(toolQuery.extend({ confirmed: z.boolean() }), request.body);
+    const params = parse(toolQuery.extend({ confirmed: z.boolean(), expectedVersion: z.string().max(128).optional() }), request.body);
     const data = await requestTool(request.ownerId, serviceId, params.toolId, "extension.apply", params);
     return reply.code(202).send({ data });
   });

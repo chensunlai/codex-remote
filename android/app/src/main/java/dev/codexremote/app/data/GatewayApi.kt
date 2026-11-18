@@ -350,8 +350,11 @@ class GatewayApi {
     suspend fun updateExtension(serviceId: String, toolId: String = "codex"): JSONObject =
         extensionRequest("POST", serviceId, "update", toolId)
 
-    suspend fun applyExtension(serviceId: String, confirmed: Boolean, toolId: String = "codex"): JSONObject =
-        extensionRequest("POST", serviceId, "apply", toolId, JSONObject().put("confirmed", confirmed))
+    suspend fun followVSCode(serviceId: String, enabled: Boolean): JSONObject =
+        extensionRequest("POST", serviceId, "follow", "codex", JSONObject().put("enabled", enabled))
+
+    suspend fun applyExtension(serviceId: String, confirmed: Boolean, toolId: String = "codex", expectedVersion: String? = null): JSONObject =
+        extensionRequest("POST", serviceId, "apply", toolId, JSONObject().put("confirmed", confirmed).put("expectedVersion", expectedVersion))
 
     suspend fun closeExtensionWindow(serviceId: String, clientId: String, workspace: String, toolId: String = "codex") =
         manageExtensionWindow(serviceId, clientId, workspace, "close", toolId)

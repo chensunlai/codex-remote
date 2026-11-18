@@ -22,6 +22,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +42,37 @@ import dev.codexremote.app.model.AppState
 import dev.codexremote.app.model.AppTheme
 import dev.codexremote.app.model.MainSection
 import kotlin.math.roundToInt
+
+@Composable
+private fun FollowVSCodeSetting(name: String, serviceId: String, viewModel: MainViewModel) {
+    var following by remember { mutableStateOf<Boolean?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(serviceId) {
+        try {
+            val status = viewModel.gatewayApi.extensionStatus(serviceId)
+            if (status.has("followVSCode")) {
+                following = status.getBoolean("followVSCode")
+                error = status.optString("followError").takeIf { it.isNotBlank() }
+            } else error = "请更新此服务器的 Agent"
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message }
+    }
+    ExperimentSwitch(CodexIcons.Download, "跟随 VS Code 插件版本 · $name",
+        error ?: "每 5 分钟检查此服务器的 Codex 插件，有新版本时下载，无运行窗口时应用。",
+        following == true, following != null && !busy) { enabled ->
+        busy = true
+        scope.launch {
+            try {
+                following = viewModel.gatewayApi.followVSCode(serviceId, enabled).getBoolean("followVSCode")
+                error = null
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { error = e.message }
+            finally { busy = false }
+        }
+    }
+}
 
 @Composable
 fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
@@ -63,7 +101,14 @@ fun SettingsScreen(state: AppState, viewModel: MainViewModel) {
                         customCacheLimit = state.customCacheLimit, resourceCacheBytes = state.resourceCacheBytes,
                         onCustomWindowLimitChange = viewModel::setCustomWindowLimit, onMaxChatPagesChange = viewModel::setMaxChatPages,
                         onCustomCacheLimitChange = viewModel::setCustomCacheLimit, onResourceCacheBytesChange = viewModel::setResourceCacheBytes,
-                        windowMode = state.windowMode, onWindowModeChange = viewModel::setWindowMode)
+                        windowMode = state.windowMode, onWindowModeChange = viewModel::setWindowMode,
+                        serverExperiment = {
+                            state.services.firstOrNull { it.id == state.selectedServiceId }?.let { service ->
+                                key(state.gatewayConfig, service.id) {
+                                    FollowVSCodeSetting(service.name, service.id, viewModel)
+                                }
+                            }
+                        })
                 }
                 CodexSettingsGroup("外观") {
                     Text("主题", style = MaterialTheme.typography.bodyMedium)

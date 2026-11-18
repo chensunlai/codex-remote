@@ -53,6 +53,28 @@ async function running(pid: number): Promise<boolean> {
 }
 
 describe("extension host process cleanup regressions", () => {
+  it("notifies a running window of the indexed VS Code version and waits for confirmation", async () => {
+    const { service, root } = await fixture("fast-exit");
+    const notices = vi.spyOn(service as unknown as { emit(frame: unknown): void }, "emit");
+    const registry = join(root, "vscode", "extensions");
+    await mkdir(registry, { recursive: true });
+    await writeFile(join(registry, "extensions.json"), JSON.stringify([{ identifier: { id: "OpenAI.chatgpt" }, version: "2.0.0" }]));
+    vi.stubEnv("VSCODE_AGENT_FOLDER", join(root, "vscode"));
+    try {
+      const source = join(root, "source");
+      await writeFile(join(source, "package.json"), JSON.stringify({ publisher: "openai", name: "chatgpt", version: "2.0.0", main: "extension.cjs" }));
+      await service.store.importDirectory(source);
+      await service.request("extension.follow", { enabled: true });
+      await vi.waitFor(() => expect(notices).toHaveBeenCalledWith(expect.objectContaining({ type: "status",
+        payload: { state: "update-ready", version: "2.0.0" } })));
+      expect(await service.status()).toMatchObject({ hosts: 1, version: "1.0.0", followCandidate: "2.0.0" });
+      await expect(service.request("extension.apply", { confirmed: true, expectedVersion: "1.9.0" })).rejects.toThrow("版本已变化");
+      await service.request("extension.apply", { confirmed: true, expectedVersion: "2.0.0" });
+      expect(await service.status()).toMatchObject({ hosts: 0, version: "2.0.0" });
+      await service.request("extension.follow", { enabled: false });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("serializes an in-flight attach before an explicit restart", async () => {
     const { service, root } = await fixture("fast-exit");
     const attaching = service.request("extension.view.attach", { viewId: "second-view", rendererId: "second-renderer", workspace: root });

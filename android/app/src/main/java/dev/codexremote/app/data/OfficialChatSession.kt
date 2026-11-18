@@ -53,6 +53,7 @@ internal class OfficialChatSession(
     private val onInput: suspend (JSONObject) -> String? = { error("当前移动端未提供输入对话框") },
     private val onQuickPick: suspend (JSONObject) -> Any? = { error("当前移动端未提供选择对话框") },
     private val onOpenText: (JSONObject) -> Unit = { error("当前移动端未提供虚拟文档预览") },
+    private val onUpdateReady: () -> Unit = {},
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -410,6 +411,7 @@ internal class OfficialChatSession(
             }
             "host-request" -> hostRequest(frame.getJSONObject("payload").apply { if (!has("surfaceId")) put("surfaceId", frame.optString("surfaceId", "main")) })
             "status" -> frame.optJSONObject("payload")?.let { status ->
+                if (status.optString("state") == "update-ready") onUpdateReady()
                 status.optString("message").takeIf(String::isNotBlank)?.let(onStatus)
                 val requiresReload = status.optString("state") == "reload" || status.optBoolean("reloadRequired",
                     status.optString("state") == "error" && status.optBoolean("retryable"))

@@ -153,6 +153,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
     var menu by remember(scopeKey) { mutableStateOf(false) }
     var mouseMode by remember(scopeKey) { mutableStateOf(false) }
     var applyConfirmation by remember(scopeKey) { mutableStateOf(false) }
+    var updateNotice by remember(scopeKey) { mutableStateOf(0) }
+    var promptedVersion by remember(scopeKey) { mutableStateOf<String?>(null) }
     var restartConfirmation by remember(scopeKey) { mutableStateOf(false) }
     var renaming by remember(scopeKey) { mutableStateOf(false) }
     var closing by remember(scopeKey) { mutableStateOf(false) }
@@ -199,9 +201,17 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
         }
     }
 
-    LaunchedEffect(scopeKey, service.runtimeState, supported) {
+    LaunchedEffect(scopeKey, service.runtimeState, supported, visible, updateNotice) {
         if (!supported) { error = "Claude 需要 Linux Agent，或支持 Claude 的新版 macOS Agent"; return@LaunchedEffect }
-        try { extension = viewModel.gatewayApi.extensionStatus(service.id, window.toolId); error = extension?.version("error") }
+        try {
+            extension = viewModel.gatewayApi.extensionStatus(service.id, window.toolId)
+            error = extension?.version("error")
+            val candidate = extension?.version("followCandidate")
+            if (visible && candidate != null && candidate != promptedVersion) {
+                promptedVersion = candidate
+                applyConfirmation = true
+            }
+        }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.message }
     }
@@ -290,7 +300,8 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
                         state.theme, state.fontScale, visible, mouseMode, viewModel, { status = it },
                         { rendererGeneration += 1; status = "页面已退出，正在恢复连接" },
                         { panelBack = it }, menu || chooseWorkspace || applyConfirmation || restartConfirmation || renaming || closing || pendingWorkspace != null || restarting,
-                        Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id, window.toolId), toolId = window.toolId)
+                        Modifier.weight(1f), onWebViewRetainedChanged, window.id, frontendScope(config, service.id, window.toolId), toolId = window.toolId,
+                        onUpdateReady = { updateNotice++ })
                 }
             } else if (!busy) Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(if (extension == null && error == null) "正在查询前端状态" else "在服务器安装官方插件后打开会话。")
@@ -329,7 +340,7 @@ fun OfficialChatScreen(state: AppState, viewModel: MainViewModel, window: Worksp
             requestInProgress = true
             jobs.launch {
                 try {
-                    extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = true, toolId = window.toolId)
+                    extension = viewModel.gatewayApi.applyExtension(service.id, confirmed = true, toolId = window.toolId, expectedVersion = stagedVersion)
                     status = "官方前端已更新"
                     error = null
                 } catch (cancelled: CancellationException) { throw cancelled }
@@ -379,7 +390,7 @@ private fun OfficialWebView(
     theme: AppTheme, fontScale: Float, visible: Boolean, mouseMode: Boolean, viewModel: MainViewModel,
     onStatus: (String?) -> Unit, onRendererGone: () -> Unit, onPanelBackChanged: ((() -> Unit)?) -> Unit,
     nativeModalOpen: Boolean, modifier: Modifier, onWebViewRetainedChanged: (Boolean) -> Unit,
-    windowId: String, resourceScope: String, toolId: String,
+    windowId: String, resourceScope: String, toolId: String, onUpdateReady: () -> Unit,
 ) {
     val context = LocalContext.current
     val pointerContainers = remember { mutableStateMapOf<String, MouseModeWebViewContainer>() }
@@ -425,7 +436,7 @@ private fun OfficialWebView(
                 val result = CompletableDeferred<Any?>()
                 quickPickRequest = params to result
                 try { result.await() } finally { if (quickPickRequest?.second === result) quickPickRequest = null }
-            }, onOpenText = { textPreview = it })
+            }, onOpenText = { textPreview = it }, onUpdateReady = onUpdateReady)
     }
     DisposableEffect(session, windowId) {
         val unregister = viewModel.windowConnections.register(windowId, session::setSuspended)

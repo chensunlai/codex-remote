@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, realpath, stat } from "node:fs/promises";
+import { mkdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isNativeAbsolutePath } from "./native-path.js";
-import { OfficialExtensionStore, type OfficialExtensionPackage } from "./official-extension-store.js";
+import { compareVersion, OfficialExtensionStore, type OfficialExtensionPackage } from "./official-extension-store.js";
+import { localCodexVersion } from "./vscode-extension-version.js";
 import { resolveExtensionHostDirectory, resolveNodeExecutable } from "./node-runtime.js";
 import { superviseWindowsHost, type HostSupervisor } from "./windows-host-supervisor.js";
 import { codexCommand } from "./codex-command.js";
@@ -63,6 +64,55 @@ export class OfficialExtensionService {
   private closed = false;
   private changing = false;
   private transition: Promise<void> = Promise.resolve();
+  private followTimer: NodeJS.Timeout | undefined;
+  private followChecking = false;
+  private followError: string | undefined;
+  private followCandidate: string | undefined;
+  private followGeneration = 0;
+
+  startVersionFollower(): void {
+    this.transition = this.transition.then(async () => {
+      try { await stat(join(this.directory, "follow-vscode")); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") this.followError = String(error);
+        return;
+      }
+      if (!this.closed) this.scheduleFollower(true);
+    });
+  }
+
+  private scheduleFollower(enabled: boolean): void {
+    clearInterval(this.followTimer);
+    this.followTimer = undefined;
+    this.followError = undefined;
+    this.followCandidate = undefined;
+    this.followGeneration++;
+    if (enabled) {
+      this.followTimer = setInterval(() => void this.checkLocalVersion(), 300_000).unref();
+      void this.checkLocalVersion();
+    }
+  }
+
+  private async checkLocalVersion(): Promise<void> {
+    if (this.followChecking) return;
+    this.followChecking = true;
+    const generation = this.followGeneration;
+    try {
+      const version = await localCodexVersion();
+      if (!version) throw new Error("未找到此服务器用户安装的 VS Code Codex 插件");
+      const { active, candidate, operation } = await this.store.status();
+      if (generation !== this.followGeneration || operation?.state === "running") return;
+      this.followError = undefined;
+      if (active && compareVersion(version, active.version) <= 0) return;
+      if (candidate?.version !== version) {
+        await this.store.update(version);
+        await this.store.waitForUpdate();
+      }
+      if (generation === this.followGeneration) await this.request("extension.follow.apply", { version, generation });
+    } catch (error) {
+      if (generation === this.followGeneration) this.followError = error instanceof Error ? error.message : String(error);
+    } finally { this.followChecking = false; }
+  }
 
   constructor(
     private readonly directory: string,
@@ -73,7 +123,7 @@ export class OfficialExtensionService {
   ) { this.store = store ?? new OfficialExtensionStore(join(directory, "packages"), { toolId }); }
 
   async request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (["extension.view.attach", "extension.view.close", "extension.view.restart", "extension.apply"].includes(method)) {
+    if (["extension.view.attach", "extension.view.close", "extension.view.restart", "extension.apply", "extension.follow", "extension.follow.apply"].includes(method)) {
       const operation = this.transition.then(() => this.handleRequest(method, params));
       this.transition = operation.then(() => {}, () => {});
       return operation;
@@ -85,9 +135,33 @@ export class OfficialExtensionService {
     if (this.closed) throw new Error("官方扩展宿主已关闭");
     switch (method) {
       case "extension.status": return this.status();
+      case "extension.follow": {
+        if (this.toolId !== "codex" || typeof params.enabled !== "boolean") throw new Error("无效的版本跟随设置");
+        const marker = join(this.directory, "follow-vscode");
+        if (params.enabled) {
+          await mkdir(this.directory, { recursive: true, mode: 0o700 });
+          await writeFile(marker, "", { mode: 0o600 });
+        } else await rm(marker, { force: true });
+        this.scheduleFollower(params.enabled);
+        return this.status();
+      }
+      case "extension.follow.apply": {
+        if (!this.followTimer || this.followGeneration !== params.generation) return;
+        const candidate = (await this.store.status()).candidate;
+        if (!candidate || candidate.version !== params.version) return;
+        if (this.views.size) {
+          if (this.followCandidate !== candidate.version) {
+            this.followCandidate = candidate.version;
+            for (const view of this.views.values()) this.frame(view, "status", { state: "update-ready", version: candidate.version });
+          }
+          return;
+        }
+        return this.handleRequest("extension.apply", { confirmed: false, expectedVersion: candidate.version });
+      }
       case "extension.update": await this.store.update(); return this.status();
       case "extension.apply": {
         const state = await this.store.status();
+        if (params.expectedVersion && params.expectedVersion !== state.candidate?.version) throw new Error("待更新版本已变化，请重新检查");
         if (!state.candidate) return { confirmationRequired: false, ...await this.status() };
         if (this.views.size && params.confirmed !== true) return { confirmationRequired: true, ...await this.status() };
         this.changing = true;
@@ -98,6 +172,7 @@ export class OfficialExtensionService {
           const probe = await this.open("verify-" + randomUUID(), "verification", this.directory, state.candidate);
           try { await probe.started; } finally { await this.stop(probe); }
           await this.store.activate(state.candidate.sha256);
+          this.followCandidate = undefined;
           await this.stopAll("正在应用官方前端更新");
           return { confirmationRequired: false, ...await this.status() };
         } finally { this.changing = false; }
@@ -201,6 +276,8 @@ export class OfficialExtensionService {
       progress: state.operation,
       ...(state.operation?.error ? { error: state.operation.error } : {}),
       hosts: this.views.size,
+      ...(this.toolId === "codex" ? { followVSCode: Boolean(this.followTimer), followError: this.followError,
+        followCandidate: this.followCandidate === state.candidate?.version ? this.followCandidate : undefined } : {}),
     };
   }
 
@@ -233,6 +310,7 @@ export class OfficialExtensionService {
 
   close(): void {
     this.closed = true;
+    this.scheduleFollower(false);
     void this.stopAll("Agent 已停止");
   }
 
